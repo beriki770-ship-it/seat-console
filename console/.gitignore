@@ -1,0 +1,10 @@
+logs/
+state.json
+token.txt
+server.log
+server.err.log
+uploads/
+telegram-link-code.txt
+supervisor.log
+server.log.old-pre-supervisor
+test-data/

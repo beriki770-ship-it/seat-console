@@ -1,0 +1,1 @@
+The PC crashed in the middle of your last turn, so it was cut off. Do not start over: first check what is already on disk (files you wrote, the project's own notes, git status) to see how far you got, then continue the task from exactly where it stopped. If something you started was lost, redo only that part.

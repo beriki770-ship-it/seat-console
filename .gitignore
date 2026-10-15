@@ -1,0 +1,24 @@
+# Your own config (copy the *.example.json files)
+/seats.json
+/console/routines.json
+
+# Runtime data written by the console (also listed in console/.gitignore)
+/console/logs/
+/console/state.json
+/console/state.json.tmp
+/console/token.txt
+/console/uploads/
+/console/test-data/
+/console/telegram-link-code.txt
+/console/*.log
+/console/*.log.old*
+*.host.json
+*.host-out
+*.host.log
+
+# Owner's working notes
+/docs/PROGRESS-oss.md
+
+node_modules/
+.DS_Store
+Thumbs.db

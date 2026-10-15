@@ -1,0 +1,3 @@
+[
+  { "id": "weekly-review", "prompt": "Read the git log of the last 7 days in this repository and write a short summary of what changed. Change nothing.", "cron": "0 9 * * 1", "seat": "dev", "cwd": "C:/Users/you/projects/my-repo", "enabled": false, "mode": "auto" }
+]

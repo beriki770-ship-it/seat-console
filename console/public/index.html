@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<meta name="seat-token" content="__TOKEN__">
+<title>Seat Console</title>
+<meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#262624" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div id="saveBanner" role="alert" hidden>The console cannot save its state file. Conversations are kept in memory only: a restart now would lose what happened since the last good save.</div>
+<aside data-sid="seat-list" data-title="Seats and their conversations">
+  <h1>Seat Console</h1>
+  <nav id="seats"></nav>
+  <section id="routines" data-sid="routines" data-title="Scheduled routines (ask first, run on tap)"></section>
+</aside>
+<main data-sid="conversation" data-title="Conversation">
+  <header id="head" dir="auto"></header>
+  <div id="ctxscrim" hidden></div>
+  <div id="ctxpanel" role="dialog" aria-label="Context window" hidden></div>
+  <div id="banner" hidden><span></span><button type="button" id="resume">Resume</button></div>
+  <div id="pins" data-sid="pins" data-title="Pinned: questions, links and errors waiting for the user" hidden></div>
+  <section id="log" aria-live="polite"></section>
+  <form id="composer" data-sid="composer" data-title="Message composer">
+    <div id="quota" role="status" dir="auto" hidden></div>
+    <div id="suggest" aria-label="Suggested replies" hidden></div>
+    <textarea id="text" rows="2" dir="auto" placeholder="Message this seat. Enter sends, Shift+Enter adds a line."></textarea>
+    <div id="thumbs" hidden></div>
+    <div class="row">
+      <input id="cwd" dir="auto" aria-label="Working folder" spellcheck="false">
+      <select id="mode" aria-label="Permission mode"><option value="auto">auto</option><option value="ask">ask</option><option value="bypass">bypass</option></select>
+      <select id="model" aria-label="Model"><option value="">default model</option><option value="claude-opus-5-5">Opus 5.5</option><option value="claude-fable-5-1">Fable 5.1</option><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-haiku-5-5">Haiku 5.5</option><optgroup label="More models"><option value="claude-haiku-4-5">Haiku 4.5</option><option value="claude-sonnet-5">Sonnet 5</option><option value="claude-opus-5">Opus 5</option><option value="claude-fable-5">Fable 5</option><option value="claude-opus-4-8">Opus 4.8</option><option value="claude-opus-4-7">Opus 4.7</option><option value="claude-opus-4-6">Opus 4.6</option><option value="claude-sonnet-4-6">Sonnet 4.6</option></optgroup></select>
+      <label class="effort">effort <input id="effort" type="range" min="0" max="6" step="1" value="0" aria-label="Effort"> <output id="effortOut">default</output></label>
+      <button type="button" id="attach" title="Attach images">Attach</button><input type="file" id="file" accept="image/*" multiple hidden>
+      <button type="button" id="stop">Stop</button>
+      <button type="submit" id="go" class="primary">Send</button>
+    </div>
+  </form>
+</main>
+<div id="scrim" onclick="document.body.classList.remove('drawer')"></div>
+<script src="/paths.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

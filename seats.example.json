@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy to seats.json and edit. One seat = one Claude account you are entitled to use, signed in once with 'seat.ps1 <seat> -Login'. projectsDir = the default working folder of new conversations and the root that file previews may read from.",
+  "projectsDir": "C:/Users/you/projects",
+  "seats": {
+    "dev":    { "email": "dev-account@example.com", "role": "Application code: features, bug fixes, tests" },
+    "ops":    { "email": "ops-account@example.com", "role": "Operations: scripts, automation, infrastructure" },
+    "studio": { "email": "web-account@example.com", "role": "Websites and design work" }
+  }
+}
