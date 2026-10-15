@@ -45,8 +45,9 @@ export async function spawnHost({ base, script, exe, args, cwd, env, token }) {
 
 // Connect to a host. Output lines from byte offset `from` are replayed first, then streamed live: h.onLine(line, endOffset).
 // h.onExit(code, err) when claude exited; h.onClose() when the connection dropped without that (host died); neither fires after close().
+// h.socket() = another stream to talk over (a remote host: rhost.sshSocket, ssh stdio forwarding to the remote's loopback port).
 export function connectHost(info, from, h = {}) {
-  const sock = net.connect(info.port, '127.0.0.1');
+  const sock = h.socket ? h.socket() : net.connect(info.port, '127.0.0.1');
   let buf = '', connected = false, closing = false, exited = false, finish, fail;
   const ready = new Promise((ok, no) => { finish = ok; fail = no; });
   ready.catch(() => {});

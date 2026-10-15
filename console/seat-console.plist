@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Seat Console as a launchd user agent (macOS) - example, the twin of the Windows scheduled task (install-autostart.ps1).
+     Replace /Users/YOU/seat-console with the repo path (launchd does not expand ~). Install:
+       cp console/seat-console.plist ~/Library/LaunchAgents/seat-console.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/seat-console.plist
+     Stop / remove: launchctl bootout gui/$(id -u)/seat-console
+     Logs: console/server.log and console/supervisor.log. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>seat-console</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>/Users/YOU/seat-console/console/run-server.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/YOU/seat-console/console</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- launchd's PATH is short: node and claude (Homebrew, native installer) must be findable. -->
+    <key>PATH</key><string>/Users/YOU/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <!-- The per-conversation hosts must outlive a restart of the agent: launchd may not kill what the job started. -->
+  <key>AbandonProcessGroup</key><true/>
+  <key>StandardErrorPath</key><string>/Users/YOU/seat-console/console/launchd.err.log</string>
+</dict>
+</plist>

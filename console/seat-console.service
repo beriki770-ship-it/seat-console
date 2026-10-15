@@ -1,0 +1,26 @@
+# Seat Console as a systemd USER service (Linux) - example, the twin of the Windows scheduled task (install-autostart.ps1).
+# Assumes the repo at ~/seat-console; change the two paths if it lives elsewhere. Install:
+#   mkdir -p ~/.config/systemd/user && cp console/seat-console.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now seat-console
+#   loginctl enable-linger "$USER"     # keep it running when you are logged out (and start it at boot)
+# Logs: console/server.log and console/supervisor.log (journalctl --user -u seat-console only shows the supervisor's own errors).
+[Unit]
+Description=Seat Console (claude seats web console)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/seat-console/console
+ExecStart=/bin/sh %h/seat-console/console/run-server.sh
+# The node to use when it is not on systemd's short PATH (nvm, a tarball in ~/node): uncomment and point it at the binary.
+#Environment=NODE=%h/node/bin/node
+Environment=PATH=%h/.local/bin:%h/node/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+# IMPORTANT: KillMode=process. Each conversation's host runs in its own session but still in this unit's cgroup; the default
+# (control-group) would kill every running conversation on a restart. run-server.sh stops node itself when it gets SIGTERM.
+KillMode=process
+
+[Install]
+WantedBy=default.target

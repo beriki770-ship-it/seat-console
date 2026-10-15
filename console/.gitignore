@@ -8,3 +8,4 @@ telegram-link-code.txt
 supervisor.log
 server.log.old-pre-supervisor
 test-data/
+launchd.err.log

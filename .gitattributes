@@ -1,0 +1,4 @@
+# Shell scripts and unit files must keep LF on a Windows checkout too: they are run from WSL / copied to Linux and macOS as they are.
+*.sh text eol=lf
+*.service text eol=lf
+*.plist text eol=lf

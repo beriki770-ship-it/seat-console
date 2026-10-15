@@ -98,7 +98,7 @@ let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
   assert.equal(await isOurs(10, hostNeedle(base), lookup), true); assert.equal(await isOurs(11, hostNeedle(base), lookup), false); assert.equal(await isOurs(99, hostNeedle(base), lookup), false, 'no such process');
   assert.equal(await isOurs(10, '', lookup), false, 'no marker: refuse');
   assert.equal(await isOurs(10, 'x', async () => { throw new Error('wmi down'); }), false, 'query failure: treated as dead, not killed');
-  const killed = []; const k = guardedKillers({ taskkill: async (a) => killed.push(a.join(' ')), lookup });
+  const killed = []; const k = guardedKillers({ win: true, taskkill: async (a) => killed.push(a.join(' ')), lookup });
   await k.killHost(11, base); await k.killClaude(13, 'sess-1'); await k.killClaudeTree(13, 'sess-1'); await k.killHost(99, base);
   assert.deepEqual(killed, [], 'reused pids are never killed');
   await k.killHost(10, base); await k.killClaude(12, 'sess-1'); await k.killClaudeTree(12, 'sess-1');
@@ -109,12 +109,12 @@ let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
   let calls = 0; const flaky = async () => (++calls === 1 ? undefined : 'node host.mjs x.host-cfg.json');
   assert.equal(await ownership(5, 'x.host-cfg.json', flaky), 'yes'); assert.equal(calls, 2, 'one retry after a failed query');
   assert.equal(await ownership(5, 'n', async () => undefined), 'unknown', 'failed twice: unknown, not no');
-  const killed = [], logs = []; const k = guardedKillers({ taskkill: async (a) => killed.push(a.join(' ')), lookup: async () => undefined, created: async () => 1000, log: (l) => logs.push(l) });
+  const killed = [], logs = []; const k = guardedKillers({ win: true, taskkill: async (a) => killed.push(a.join(' ')), lookup: async () => undefined, created: async () => 1000, log: (l) => logs.push(l) });
   await k.killHost(7, 'a/b', 2000); await k.killClaude(8, ['s1'], 1000); await k.killClaudeTree(9, ['s1'], 5000);
   assert.equal(killed.length, 3, 'unknown + alive + created no later than the spawn record: kills, with the image-name filter');
   assert.ok(killed[0].includes('IMAGENAME eq node.exe') && killed[1].includes('IMAGENAME eq claude.exe') && killed[2].includes('IMAGENAME eq claude.exe'));
   { // review finding: unknown ownership must not kill a reused pid
-    const kl = [], lg = []; const mk = (created) => guardedKillers({ taskkill: async (a) => kl.push(a.join(' ')), lookup: async () => undefined, created, log: (l) => lg.push(l) });
+    const kl = [], lg = []; const mk = (created) => guardedKillers({ win: true, taskkill: async (a) => kl.push(a.join(' ')), lookup: async () => undefined, created, log: (l) => lg.push(l) });
     await mk(async () => 3000).killClaude(8, ['s1'], 2000); assert.equal(kl.length, 0, 'process newer than the spawn record = a reused pid: skipped');
     await mk(async () => null).killHost(8, 'a/b', 2000); assert.equal(kl.length, 0, 'no such process: nothing to kill');
     await mk(async () => undefined).killClaude(8, ['s1'], 2000); assert.equal(kl.length, 0, 'creation time unavailable: skipped');
@@ -122,7 +122,7 @@ let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
     assert.equal(lg.length, 4); assert.ok(lg.every((l) => l.includes('[kill] SKIPPED')), 'every skip is logged');
     await mk(async () => 1000).killClaude(8, ['s1'], 2000); assert.equal(kl.length, 1, 'older than the spawn record: killed');
   }
-  const k2 = guardedKillers({ taskkill: async (a) => killed.push(a.join(' ')), lookup: async () => 'claude.exe --resume spawn-id' }); killed.length = 0;
+  const k2 = guardedKillers({ win: true, taskkill: async (a) => killed.push(a.join(' ')), lookup: async () => 'claude.exe --resume spawn-id' }); killed.length = 0;
   await k2.killClaude(8, ['new-id', 'spawn-id']); assert.equal(killed.length, 1, 'session id drifted since spawn: the spawn-time id still matches');
   await k2.killClaude(8, ['new-id']); assert.equal(killed.length, 1, 'no needle matches: a reused pid is left alone');
   const src = fs.readFileSync(new URL('./server.mjs', import.meta.url), 'utf8');
@@ -134,10 +134,24 @@ let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
   assert.equal(crashLoop({ lastExit: 'uncaught', lastStartAt: 1000 }, 30000), true); assert.equal(crashLoop({ lastExit: 'uncaught', lastStartAt: 1000 }, 90000), false); assert.equal(crashLoop({ lastStartAt: 1000 }, 2000), false);
   pass('procid: failed WMI query retried, then falls back to the filtered kill; drifted session id; no isOurs at reattach; crash loop detection');
 }
-{ // the real WMI query on this machine: our own process answers, a nonsense pid does not
-  const { cmdlineOf } = await import('./procid.mjs');
+{ // the real lookup on this machine (WMI on Windows, /proc or ps on POSIX): our own process answers, a nonsense pid does not
+  const { cmdlineOf, createdOf } = await import('./procid.mjs');
   const mine = await cmdlineOf(process.pid); assert.ok(mine && mine.includes('test-host.mjs'), 'own command line: ' + mine);
-  assert.equal(await cmdlineOf(4194300), null); pass('cmdlineOf: real Get-CimInstance answers for this pid, null for a missing one');
+  assert.equal(await cmdlineOf(4194300), null); pass('cmdlineOf: real lookup answers for this pid, null for a missing one');
+  if (process.platform !== 'win32') { // POSIX units: creation time from ps, and the kill path goes through signal(pid, tree), never taskkill
+    const born = await createdOf(process.pid); assert.ok(Math.abs(born - (Date.now() - process.uptime() * 1000)) < 3000, 'own creation time: ' + born);
+    assert.equal(await createdOf(4194300), null);
+    const sig = [], tk = []; const k = guardedKillers({ taskkill: async (a) => tk.push(a), signal: (p, tree) => sig.push([p, tree]), lookup: async (p) => (p === 21 ? 'node host.mjs a.host-cfg.json' : p === 22 ? 'claude -p --resume s1' : 'other') });
+    await k.killHost(21, 'x/a'); await k.killClaude(22, ['s1']); await k.killClaudeTree(22, ['s1']); await k.killHost(23, 'x/a');
+    assert.deepEqual(sig, [[21, false], [22, true], [22, true]]); assert.equal(tk.length, 0);
+    const { posixKill } = await import('./procid.mjs'); const { spawn } = await import('node:child_process');
+    const grp = spawn('sh', ['-c', 'sleep 30 & sleep 30; wait'], { detached: true, stdio: 'ignore' }); await sleep(300);
+    const kids = () => { try { return fs.readFileSync(`/proc/${grp.pid}/task/${grp.pid}/children`, 'utf8').trim().split(/\s+/).filter(Boolean).map(Number); } catch { return []; } };
+    const before = kids(); posixKill(grp.pid, true); await sleep(300);
+    const gone = (p) => { if (!pidAlive(p)) return true; try { return /\) Z /.test(fs.readFileSync(`/proc/${p}/stat`, 'utf8')); } catch { return true; } };   // a killed but not yet reaped process is a zombie
+    assert.ok(gone(grp.pid), 'group leader gone'); for (const p of before) assert.ok(gone(p), 'group member ' + p + ' gone');
+    pass(`procid POSIX: ps creation time, signal-based guarded kills, posixKill(tree) takes the whole group (${before.length} children)`);
+  }
 }
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`all ${ok} host tests passed`);

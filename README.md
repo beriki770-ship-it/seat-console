@@ -29,12 +29,21 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 
 Stated honestly, as tested:
 
-- **Windows.** Developed and tested on Windows 11 only. The server uses `powershell.exe`, Windows process lookup, junctions and the Task Scheduler. It will not run on macOS or Linux without porting work.
+- **Windows 11** is the tested platform (see [Platforms](#platforms) for Linux and macOS).
 - **Node.js 24** (tested with 24.16). Older versions are untested.
 - **Windows PowerShell 5.1** (built into Windows).
 - **Python 3** on `PATH` as `python` (a tiny helper copies MCP and trust settings into each seat's config).
 - **Claude Code CLI**, installed by you (native installer at `%USERPROFILE%\.local\bin\claude.exe`, or the npm global package) and **signed in by you**, once per seat. Seat Console never asks for or handles your credentials; the CLI keeps them in the seat's own config folder.
 - Optional: **Tailscale** (phone access), a **Telegram** bot token (notifications and control).
+
+## Platforms
+
+- **Windows** is the tested platform and the one the console is used on every day.
+- **Linux** support passes the offline tests and a fake-claude smoke test (`console/smoke-fake.mjs`) in WSL Ubuntu, but it has not been used in daily work.
+- **macOS** code paths are written but have **not been tested on real Mac hardware**.
+- **Remote servers** (the read-only view and full control over SSH, see [Remote servers](#remote-servers)) were tested only against a local WSL sshd with a fake claude, not yet against a real Claude login on a remote server.
+
+Contributions and test reports for macOS and Linux are welcome: open an issue with your OS, Node version and what worked or broke.
 
 ## Install
 
@@ -148,6 +157,53 @@ To install it as an app, the phone needs HTTPS, which `tailscale serve` provides
 
 Undo with `tailscale serve reset`. Requests that come in through `tailscale serve` are treated as remote and need Basic auth, even though they reach the server from loopback.
 
+## Linux / macOS
+
+Same server and files; Windows behaviour is unchanged. Needs Node 22+, `claude` on `PATH` (or `~/.local/bin/claude`), `sh`, `ps` (macOS; Linux reads `/proc`), `lsof` or `fuser` (only for `start-console.sh`), and `python3` (only to merge `~/.claude.json` settings into each seat). Set `projectsDir` in `seats.json` to a folder that exists, for example `/home/you/projects`.
+
+```sh
+git clone https://github.com/beriki770-ship-it/seat-console.git ~/seat-console
+cd ~/seat-console && cp seats.example.json seats.json   # then edit it
+sh seat.sh dev --login          # once per seat; sh seat.sh --status lists them
+sh console/start-console.sh     # starts the server, opens http://127.0.0.1:4850 (--no-browser to skip)
+```
+
+Seats live in `~/.claude-seats/<seat>`, with symlinks (instead of junctions) to your `~/.claude` folders. `sh console/run-server.sh` is the supervisor: it restarts the server after any exit (at most 6 starts a minute) and stops it on SIGTERM.
+
+**Autostart on Linux (systemd user service).** `console/seat-console.service` assumes the repo at `~/seat-console`; edit the paths if it lives elsewhere.
+
+```sh
+mkdir -p ~/.config/systemd/user && cp console/seat-console.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now seat-console
+loginctl enable-linger "$USER"   # keep it running when you are logged out, and start it at boot
+```
+
+Keep `KillMode=process` in the unit: the default would kill every running conversation's host on a restart.
+
+**Autostart on macOS (launchd, untested on real hardware).** In `console/seat-console.plist` replace `/Users/YOU/seat-console` with the repo path (launchd does not expand `~`), then:
+
+```sh
+cp console/seat-console.plist ~/Library/LaunchAgents/seat-console.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/seat-console.plist
+# stop and remove: launchctl bootout gui/$(id -u)/seat-console
+```
+
+Still Windows-only: `smoke.ps1` / `smoke.mjs`, `recover.ps1`, `send.ps1`, `get.ps1` and `install-autostart.ps1` (the service and plist files replace it).
+
+## Remote servers
+
+The console can also show Claude runs on other Linux machines, reached over SSH. Copy `remotes.example.json` to `remotes.json` in the repo root (gitignored) and restart the console. Each entry: `name` (`a-z`, `0-9`, `-`), `target` (`user@host`), `identity` (key file; `~` is your home folder), `seat` (a label), `paths` (globs of stream-json run files). The host key must already be in `known_hosts`: ssh runs in batch mode and never asks.
+
+**Read-only (the default).** Runs of `claude -p --output-format stream-json` that write to a file on the remote show up as conversations under `remote: <name>`, live. The console only ever runs `ls` and `tail` there. It follows the newest 20 matching files per remote and mirrors their lines to `console/logs/remote-<name>/`. These rows have no composer, and every POST for them is refused. If the remote is unreachable, the group says so and the console retries with backoff; the console start never waits for a remote.
+
+**Full control (`"control": true`).** The console can then start conversations that run on the remote, under the remote user's own Claude login: send, Stop, approvals, compact, rename, idle stop and resume work as for a local seat, and a finished run gets a "Continue this session" button. Optional fields: `port` (ssh port), `node` and `claude` (paths of the remote binaries; a non-interactive ssh has a short `PATH`, so the native installer's claude is usually `~/.local/bin/claude`). The remote needs Linux, Node 18+, a signed-in `claude`, `setsid`, `realpath`, `stat`, and sshd with `AllowTcpForwarding yes` (the default). Run the one-time setup, which only writes `~/.seat-console/` there (run it again after updating `host.mjs`, `hostlink.mjs` or `procid.mjs`):
+
+```sh
+node console/rhost.mjs setup <name>
+```
+
+The console reaches each remote host over `ssh -W` (stdio forwarding), so no port is opened on either side. Remote hosts keep running when the console restarts and are reconnected afterwards. Removing `"control"` from an entry parks its conversations (hidden and refused) until you set it again, so stop them first.
+
 ## Scripting
 
 ```powershell
@@ -165,6 +221,8 @@ Offline tests, no Claude account or quota needed:
 $env:TZ = 'Europe/Vienna'   # one routine test assumes the local clock is the default SEAT_CONSOLE_TZ
 Get-ChildItem console\test-*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { "FAILED: $($_.Name)" } }
 ```
+
+`node console/smoke-fake.mjs --port 4852` runs a test instance with a fake claude (no login, no quota) and checks start, reply, a hard kill of the server mid-turn, reattach, Stop and leftovers; on Linux / macOS add `--supervisor` to cover `run-server.sh` too. It takes the seat name from your `seats.json`.
 
 `console\smoke.ps1` is an end-to-end test on a separate test instance (port 4851). **It uses a real seat named `ops` and spends real quota** (small model), so run it only when you mean to. `console\start-test.ps1` / `stop-test.ps1` start and stop that isolated test instance (own data folder, no Tailscale, Telegram off).
 

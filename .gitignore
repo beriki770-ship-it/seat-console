@@ -1,6 +1,7 @@
 # Your own config (copy the *.example.json files)
 /seats.json
 /console/routines.json
+/remotes.json
 
 # Runtime data written by the console (also listed in console/.gitignore)
 /console/logs/

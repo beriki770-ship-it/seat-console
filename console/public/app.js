@@ -35,7 +35,9 @@ const seen = new IntersectionObserver((es) => es.forEach((e) => { if (e.isInters
 const whenVisible = (el, fn) => { el._go = fn; seen.observe(el); };
 // Preview cards for files a message names (detector lives in paths.js). One card per path per message; a 403/404 turns into a quiet note.
 function previews(text) {
-  const paths = findPaths(text); if (!paths.length) return null;
+  // `/`-rooted paths count only when the console runs on Linux / macOS: told by the seat's folder (C:\... on Windows), the page has no other hint.
+  const posix = /^\//.test(seats.find((s) => s.name === cur.seat)?.cwd || '');
+  const paths = findPaths(text, posix); if (!paths.length) return null;
   const box = div('previews', '');
   for (const p of paths) {
     const src = `/api/file?conv=${encodeURIComponent(cur.id || '')}&path=${encodeURIComponent(p)}`, name = p.split(/[\\/]/).pop(), kind = fileKind(p);
@@ -116,7 +118,7 @@ function render(ev, st, target = $('log')) {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'hand'; b.textContent = 'Send to seat…';
       b.onclick = () => {
         const sel = document.createElement('select'); sel.setAttribute('aria-label', 'Target seat');
-        sel.innerHTML = '<option value="">Send to seat…</option>' + seats.map((s) => `<option>${esc(s.name)}</option>`).join('');
+        sel.innerHTML = '<option value="">Send to seat…</option>' + seats.filter((s) => !s.remote).map((s) => `<option>${esc(s.name)}</option>`).join('');
         sel.onchange = () => sel.value && handoff(sel.value, ev.result);
         b.replaceWith(sel); sel.focus();
       };
@@ -180,6 +182,11 @@ async function showConversation() {
   $('banner').hidden = !(c && (c.status === 'interrupted' || c.status === 'stopped'));
   $('banner').firstElementChild.textContent = c && c.status === 'interrupted' ? 'Interrupted: the server restarted while this turn was running. Resume continues the same session.' : 'Stopped. Sending a message resumes this conversation.';
   $('menu').onclick = () => document.body.classList.toggle('drawer');
+  // A remote run (server: remote.mjs) is read-only: no composer, no pins; the server refuses every POST for it anyway.
+  const ro = !!c?.remote; $('composer').hidden = ro; $('readonly').hidden = !ro; document.body.classList.toggle('readonly', ro);
+  // A remote with "control": true can pick a finished run up again: Continue opens a NEW conversation there that resumes the run's session.
+  const ctl = ro && !!s.control; $('continue').hidden = !ctl;
+  $('readonly').firstElementChild.textContent = ctl ? 'A run on the remote server, shown as its log.' : 'Read-only: this run lives on a remote server. Nothing can be sent from here.';
   menuMark(); showMarks();
 }
 
@@ -190,7 +197,7 @@ const ctxBtnHtml = (c) => {
   const x = c?.ctx; if (!x) return '';
   return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="Context window"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span>${x.compacting ? 'compacting…' : ctxText(x)}</span></button>`;
 };
-const ctxBusy = (c) => c.status === 'working' || c.status === 'waiting' || c.status === 'interrupted' || c.ctx?.compacting;
+const ctxBusy = (c) => c.remote || c.status === 'working' || c.status === 'waiting' || c.status === 'interrupted' || c.ctx?.compacting;
 function ctxPanelHtml(c) {
   const x = c.ctx, b = x.breakdown;
   const rows = b ? b.categories.map((k) => `<tr class="${/deferred/.test(k.name) || k.derived ? 'def' : ''}"><td>${esc(k.name)}</td><td>${kfmt(k.tokens)}</td><td>${k.pct}%</td></tr>`).join('') : '';
@@ -256,7 +263,7 @@ const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''
       <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="Context window ${esc(ctxText(c.ctx))}">${Math.round(c.ctx.pct)}%</span>` : ''}
       <span class="cost" title="API-price estimate, not billed (subscription)">~$${(c.cost || 0).toFixed(2)}</span>
       <small>${c.mode === 'bypass' ? '<span class="badge bypass">bypass</span> ' : ''}${label[c.status] || c.status}${c.background ? ' · ' + c.background : ''}${c.pending ? ' · ' + c.pending + ' waiting' : ''}</small>${c.needsAnswer ? '<span class="needs">❓ waiting for your answer</span>' : ''}</button>
-      <button class="more" data-more="${c.id}" aria-label="Conversation menu">⋯</button></div>`
+      ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="Conversation menu">⋯</button>`}</div>`
   + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">Rename</button><button data-archive="${c.id}" data-to="${!c.archived}">${c.archived ? 'Unarchive' : 'Archive'}</button><button class="danger" data-del="${c.id}">Delete</button></div>` : '');
 
 function showSeats() {
@@ -264,7 +271,7 @@ function showSeats() {
   $('seats').innerHTML = seats.map((s) => {
     const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived);
     return `<section class="seatbox"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}</div>
-    <button data-new="${s.name}" title="New conversation">+ new</button></div>`
+    ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="New conversation">+ new</button>`}</div>`
     + live.slice(0, 12).map((c) => convRow(c, s.name)).join('')
     + (arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${showArch[s.name] ? 'Hide' : 'Show'} archived (${arch.length})</button>` : '')
     + (showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
@@ -278,6 +285,7 @@ function scheduleSeats() {
   seatsTimer = setTimeout(() => { seatsTimer = 0; seatsAt = performance.now(); requestAnimationFrame(showSeats); }, Math.max(0, 250 - (performance.now() - seatsAt)));
 }
 async function pick(seat, id) {
+  if (!id && seats.find((s) => s.name === seat && s.remote && !s.control)) seat = seats.find((s) => !s.remote).name;   // a read-only remote group has no new-conversation draft (no composer)
   cur = { seat, id }; localStorage.setItem('seat', seat);
   pending.length = 0; showThumbs();
   if (id) delete convo[id];                // events of a conversation that was not watched were not delivered: always load it fresh
@@ -314,7 +322,7 @@ function flush() {
 
 async function init() {
   seats = await api('/api/seats');
-  if (!seats.find((s) => s.name === cur.seat)) cur.seat = seats[0].name;
+  if (!seats.find((s) => s.name === cur.seat && (!s.remote || s.control))) cur.seat = seats[0].name;   // a read-only remote group has no "new conversation" draft
   await pick(cur.seat, null);
   openHash(); window.addEventListener('hashchange', openHash);
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
@@ -483,6 +491,10 @@ $('composer').onsubmit = async (e) => {
 };
 $('text').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); } };
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
+$('continue').onclick = async () => {
+  const r = await api('/api/remote-continue', { id: cur.id }); if (r.error) return alert(r.error);
+  seats = await api('/api/seats'); await pick(cur.seat, r.conversationId);
+};
 $('resume').onclick = async () => { const r = await api('/api/resume', { conversationId: cur.id }); if (r.error) $('log').appendChild(div('msg note err', esc(r.error))); };
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {

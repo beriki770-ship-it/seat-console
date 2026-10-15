@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { readOutFrom } from './hostlink.mjs';
+import { posixKill } from './procid.mjs';
 
 const cfg = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const atomic = (f, o) => { fs.writeFileSync(f + '.tmp', JSON.stringify(o)); fs.renameSync(f + '.tmp', f); };
@@ -15,7 +16,9 @@ const send = (s, o) => { if (!s.destroyed) s.write(JSON.stringify(o) + '\n'); };
 const tokenOk = (t) => { const a = Buffer.from(String(t)), b = Buffer.from(cfg.token); return a.length === b.length && crypto.timingSafeEqual(a, b); };
 
 let child;
-const killClaude = () => { if (child?.pid) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); }; // tree: claude's tools are children
+const WIN = process.platform === 'win32';
+// tree: claude's tools are children. POSIX: claude leads its own process group (spawned detached below), so -pid kills the group.
+const killClaude = () => { if (!child?.pid) return; if (WIN) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }); else posixKill(child.pid, true); };
 const server = net.createServer((s) => {
   let buf = '', authed = false;
   const t = setTimeout(() => s.destroy(), 3000);
@@ -37,7 +40,7 @@ const server = net.createServer((s) => {
 });
 
 server.listen(0, '127.0.0.1', () => {
-  child = spawn(cfg.exe, cfg.args, { cwd: cfg.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  child = spawn(cfg.exe, cfg.args, { cwd: cfg.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: !WIN }); // detached on Windows would open a console window
   child.on('error', (e) => { atomic(cfg.exit, { code: -1, err: e.message }); process.exit(1); });
   child.on('spawn', () => atomic(cfg.info, { pid: process.pid, port: server.address().port, token: cfg.token, claudePid: child.pid }));
   child.stdin.on('error', () => {});

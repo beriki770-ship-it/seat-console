@@ -24,7 +24,7 @@ export function createLifecycle(d) {
   function killSilent(c) {
     const r = R(c), hi = d.hostInfoOf(c);
     r.silent = false; r.silentGaveUp = false;
-    if (!hi || !d.pidAlive(hi.pid)) return Promise.resolve();
+    if (!hi || !(hi.remote || d.pidAlive(hi.pid))) return Promise.resolve();   // a remote host's pid is not a local one: the guarded remote kill checks it there
     return track(r, (async () => { await d.killHostPid(hi.pid, c); await d.killClaudePid(hi.claudePid, c); cleanIfIdle(c); })());
   }
 
@@ -93,7 +93,7 @@ export function createLifecycle(d) {
         await null; // first suspension: a throw below must not run `finally` before `r.starting` has been assigned (it would then stay set for ever)
         while (r.stopping) await r.stopping;
         const hi = d.hostInfoOf(c);
-        if (hi && d.pidAlive(hi.pid)) {
+        if (hi && (hi.remote || d.pidAlive(hi.pid))) {   // remote: its local record exists only while the host may still run there (removed once it is known gone)
           // Silent host: while the console is still knocking, starting a second claude beside it would fork the session; once it gave up, the host is dead weight.
           if (!r.silentGaveUp) throw new Error('The seat host of this conversation is running but not answering yet; the console is retrying, try again in a minute.');
           await killSilent(c);

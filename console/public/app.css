@@ -74,6 +74,8 @@ pre code { background:none; padding:0; }
 
 /* ---- composer ---- */
 #composer { padding:10px 24px 14px; border-top:1px solid var(--line); background:var(--bg); }
+/* remote run (read-only): the note takes the composer's place, pins are hidden (app.js toggles body.readonly) */
+#readonly { margin:0; padding:12px 24px 14px; border-top:1px solid var(--line); color:var(--mute); font-size:13px; } #readonly[hidden], #composer[hidden], body.readonly .pinbtn { display:none; }
 #text { width:100%; resize:vertical; max-height:40vh; padding:10px 12px; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--ink); font:inherit; }
 #text:focus, #cwd:focus { outline:2px solid var(--accent); outline-offset:-1px; }
 .row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }

@@ -17,7 +17,7 @@ import { markInterrupted, isCleanExit, crashLoop, crashWarnDue } from './recover
 import { createRoutines } from './routines.mjs';
 import { slimEvent, slimEvents, toolDetail, memTrim, memSlim } from './slim.mjs';
 import { applyBackground, isActivity, backgroundText } from './background.mjs';
-import { convThrottle, retry, rotateLog, turnStart, turnEnd, clearTurns, lastHoff, eventWindow, pickIdle, clipChars, staleTurns, CLAMP_MS, lineHandler, compactFile, failCounter, isBenignCrash, guard, offsetFor, gate, viaServe, resolveIn, outFiles } from './hardening.mjs';
+import { convThrottle, retry, rotateLog, turnStart, turnEnd, clearTurns, lastHoff, eventWindow, pickIdle, clipChars, staleTurns, CLAMP_MS, lineHandler, compactFile, failCounter, isBenignCrash, guard, offsetFor, gate, viaServe, resolveIn, outFiles, isDeniedPath } from './hardening.mjs';
 import { createLifecycle } from './lifecycle.mjs';
 import { guardedKillers, hostNeedle } from './procid.mjs';
 import { applyCtx, parseContextReply, ctxLevel, AUTOCOMPACT_BUFFER } from './context.mjs';
@@ -25,6 +25,8 @@ import { runRetention, readLogText, restoreLog, gzPath, purgeArchive } from './r
 import { viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
 import { markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
+import { loadRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
+import * as rhost from './rhost.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { findPaths } = createRequire(import.meta.url)('./public/paths.js');   // the browser's preview detector: the same paths become Telegram attachments
@@ -58,7 +60,8 @@ fs.mkdirSync(DATA, { recursive: true });
 // seats.json (copy seats.example.json): the seats plus `projectsDir`, the default cwd and the root file previews may read from.
 const CONFIG = JSON.parse(fs.readFileSync(path.join(SEATS_DIR, 'seats.json'), 'utf8').replace(/^﻿/, ''));
 const SEATS = CONFIG.seats;
-const HOME = process.env.USERPROFILE;
+const WIN = process.platform === 'win32';
+const HOME = WIN ? process.env.USERPROFILE : os.homedir();
 // claude --effort choices (2.1.284) plus 'ultracode', the app's top stop: it has no CLI flag, so it runs
 // at --effort max and every message carries the 'ultracode' keyword, which opts the turn into Workflow orchestration.
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
@@ -76,7 +79,9 @@ function cleanEnv() {
 // Claude desktop app (MSIX), so its real files live in the package's LocalCache; %APPDATA%\npm
 // only exists in the app's virtualized view. Started by the scheduled task or a shortcut we are
 // OUTSIDE that view, so look in the real places first.
-const CLAUDE_EXE = (() => {
+// Linux / macOS: `claude` on PATH, else the native installer's ~/.local/bin and the usual npm-global / Homebrew bins (a systemd or launchd PATH is short).
+const CLAUDE_EXE = !WIN ? [...(process.env.PATH || '').split(path.delimiter).filter(Boolean).map((d) => path.join(d, 'claude')),
+  path.join(HOME, '.local/bin/claude'), path.join(HOME, '.npm-global/bin/claude'), '/usr/local/bin/claude', '/opt/homebrew/bin/claude'].find((p) => fs.existsSync(p)) || 'claude' : (() => {
   const npmExe = 'npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe';
   const pkgs = path.join(process.env.LOCALAPPDATA, 'Packages');
   const candidates = [
@@ -86,7 +91,10 @@ const CLAUDE_EXE = (() => {
   ];
   return candidates.find(p => fs.existsSync(p)) || candidates[candidates.length - 1];
 })();
-const TAILSCALE = 'C:\\Program Files\\Tailscale\\tailscale.exe';
+const TAILSCALE = WIN ? 'C:\\Program Files\\Tailscale\\tailscale.exe' : 'tailscale';
+// TEST instance only: `--claude <file.mjs|binary>` runs a fake claude (no login, no quota) for the smoke runs on Windows and Linux; a .mjs runs under this node.
+const FAKE_CLAUDE = ISOLATED && arg('claude') ? path.resolve(arg('claude')) : null;
+const CLAUDE_CMD = !FAKE_CLAUDE ? [CLAUDE_EXE] : /\.m?js$/.test(FAKE_CLAUDE) ? [process.execPath, FAKE_CLAUDE] : [FAKE_CLAUDE];
 const DEFAULT_CWD = path.resolve(CONFIG.projectsDir || path.join(HOME, 'projects'));
 const STATE_FILE = path.join(DATA, 'state.json');
 const TOKEN_FILE = path.join(DATA, 'token.txt');
@@ -142,6 +150,14 @@ state.quotaWarned ??= {};   // seat -> resetsAt (s) of the 5 h window the 90 % T
 state.telegramMsgs ??= {};  // telegram message_id -> conversation id, so a reply finds its conversation
 state.tgOffset ??= 0;       // next getUpdates offset: without it a restart re-reads (and re-runs) the last updates Telegram still holds
 for (const c of Object.values(state.conversations)) if (c.working && !c.turns) c.turns = 1; // state.json from before the pending-turn counter
+// ---- remotes (remotes.json): read before anything looks at a conversation, because a conversation can live on a remote (c.remote = its name) ----
+const REMOTES = loadRemotes(path.join(SEATS_DIR, 'remotes.json'), HOME);
+const CTL = new Map(REMOTES.filter((r) => r.control).map((r) => [r.name, r]));   // remotes with "control": true: the console may start conversations there (rhost.mjs)
+// A conversation on a remote that is no longer control: true (or no longer configured) is PARKED: moved out of state.conversations, so no route, Telegram button
+// or timer can reach it, and read-only stays read-only. It comes back unchanged when the remote is control: true again. Its host, if it still runs there, is left alone.
+state.parkedConvs ??= {};
+for (const [id, c] of Object.entries(state.conversations)) if (c.remote && !CTL.has(c.remote)) { state.parkedConvs[id] = c; delete state.conversations[id]; }
+for (const [id, c] of Object.entries(state.parkedConvs)) if (CTL.has(c.remote)) { state.conversations[id] = c; delete state.parkedConvs[id]; }
 // Request data picks conversations/seats/modes by key: plain `obj[key]` would resolve "__proto__" / "constructor" to a real object.
 const convOf = (id) => (typeof id === 'string' && Object.hasOwn(state.conversations, id) ? state.conversations[id] : undefined);
 const hasKey = (o, k) => typeof k === 'string' && Object.hasOwn(o, k);
@@ -163,7 +179,7 @@ const R = (c) => { let r = rt.get(c.id); if (!r) { r = { proc: null, events: nul
 // Each conversation's claude.exe lives in its own detached host (host.mjs), so a conversation whose host is still alive keeps working through a server restart: it is reattached by reattachAll() below, not interrupted.
 const hostBase = (c) => path.join(DATA, 'logs', c.seat, c.id);
 const hostInfoOf = (c) => readJson(hostPaths(hostBase(c)).info);
-const liveHosts = new Set(Object.values(state.conversations).filter((c) => { try { const i = hostInfoOf(c); return i && pidAlive(i.pid); } catch { return false; } }).map((c) => c.id)); // a malformed entry is handled (and logged) by reattachAll
+const liveHosts = new Set(Object.values(state.conversations).filter((c) => { try { const i = hostInfoOf(c); return i && (c.remote || pidAlive(i.pid)); } catch { return false; } }).map((c) => c.id)); // a malformed entry is handled (and logged) by reattachAll; a remote host is asked over ssh after the start (reattachRemotes)
 const crashLoopStart = crashLoop(state, Date.now()); state.lastExit = null; state.lastStartAt = Date.now();
 const crashed = markInterrupted(state, liveHosts) || crashLoopStart; saveState();
 for (const c of Object.values(state.conversations)) { R(c).status = c.interrupted ? 'interrupted' : 'stopped'; }
@@ -182,7 +198,8 @@ function broadcastEvent(c, ev, i) {
 // (c.bg, persisted so a console restart does not forget them) or events kept arriving in the last 20 s after the result.
 const QUIET_MS = 20000;
 const effStatus = (c) => { const r = R(c); if (r.status === 'stopped' && r.proc) return 'idle'; /* a live process is never `stopped` */ return r.status === 'idle' && ((c.bg?.length || 0) > 0 || Date.now() - r.activityAt < QUIET_MS) ? 'working' : r.status; };
-const summary = (c) => { const r = R(c), status = r.shown = effStatus(c); return { id: c.id, seat: c.seat, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status, background: backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
+// A conversation on a remote that ssh cannot reach (and that has no live link) reads `error · unreachable since HH:MM` until the remote answers again.
+const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
@@ -293,9 +310,79 @@ async function toolDetailFull(c, id) {
   return toolDetail(await Promise.all([use, res].filter(Boolean).map((e) => fullEvent(c, e))), id);
 }
 
+// ---- remote read-only conversations (remote.mjs): a Claude run on another machine, its stream-json file followed over ssh ----
+// Each remote file is a conversation in state.remoteConvs, NOT in state.conversations: nothing that starts, sends, stops, reaps or archives looks there,
+// and every POST route resolves ids with convOf, so a remote conversation can never be written to. The lines are mirrored into a local jsonl
+// (logs/remote-<name>/<id>.jsonl) through pushEvent, the same path local events take: slim events in memory, /api/tool reads the full row from the mirror,
+// and a restart continues after the last mirrored line (its `roff` = byte offset in the remote file), so nothing is shown twice.
+state.remoteConvs ??= {};
+const remoteDown = new Map();   // remote name -> since when ssh fails (ms)
+const groupOf = (name) => 'remote: ' + name;
+const remoteOf = (id) => (typeof id === 'string' && Object.hasOwn(state.remoteConvs, id) ? state.remoteConvs[id] : undefined);
+const viewOf = (id) => convOf(id) || remoteOf(id);   // the GET routes that READ a conversation (page, tool row, live stream) only
+const downText = (name) => (remoteDown.has(name) ? 'unreachable since ' + viennaHm(remoteDown.get(name)) : '');
+const remoteStale = (c) => !c.done && Date.now() - (c.grewAt || 0) > STALE_MS;   // no line for 30 min and no `result`: a killed run, shown idle and read once a minute
+const remoteSummary = (c) => ({ id: c.id, seat: groupOf(c.remote), title: c.title, mode: 'remote', cwd: null, model: null, effort: null, cost: c.cost, status: remoteDown.has(c.remote) ? 'error' : c.done || remoteStale(c) ? 'idle' : 'working',
+  background: downText(c.remote) || (remoteStale(c) ? 'no new lines for 30+ min' : ''), pending: 0, needsAnswer: false, pins: [], suggest: [], archived: false, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c), remote: true });
+const viewSummary = (c) => (remoteOf(c.id) === c ? remoteSummary(c) : summary(c));   // a conversation STARTED on a remote also carries c.remote, but it is a normal one
+function remoteConv(r, file) {
+  const id = 'remote-' + crypto.createHash('sha1').update(r.name + '\n' + file).digest('hex').slice(0, 16);
+  return (state.remoteConvs[id] ??= { id, seat: 'remote-' + r.name, remote: r.name, file, title: path.posix.basename(file, '.jsonl'), cost: 0, updatedAt: Date.now() });   // seat = its log folder
+}
+let remoteSave = null;   // a 70 MB first read is thousands of lines: state.json is written at most once a second for them
+function remoteLine(c, line, end, live) {
+  c.grewAt = Date.now();   // the file grew (any line, even one skipped below): not stale
+  const ev = parseLine(line); if (!ev) return;   // not an event object: skipped, the follower's offset still moves past it
+  if (NOISE.has(ev.subtype) || ev.type === 'rate_limit_event' || /^control_/.test(ev.type || '')) return;   // the remote account's quota is not a local seat's
+  ev.roff = end;
+  applyCtx(c.ctx ??= {}, ev);
+  if (ev.session_id) c.sessionId = ev.session_id;
+  if (ev.type === 'result') { c.cost = ev.total_cost_usd ?? c.cost; c.done = true; } else if (ev.type === 'assistant' || ev.type === 'user') c.done = false;
+  c.updatedAt = Date.now();
+  pushEvent(c, ev);
+  broadcast({ conv: remoteSummary(c) });
+  remoteSave ??= setTimeout(() => { remoteSave = null; saveState(); }, 1000);
+  // The same finished/error message a local turn gets (Telegram is off on a test instance). Not for results read from byte 0: that is history.
+  if (ev.type === 'result' && live) tg.notify(ev.is_error ? 'error' : 'done', { seat: groupOf(c.remote), title: c.title, text: ev.result || '', convId: c.id, files: [], ...ctxNote(c) }, PHONE).catch(notifyFailed);
+}
+// ssh to a remote failed (err = its message) or worked again (err = null): reported by the follower and by every control action (rhost.mjs).
+function remoteStatus(name, err) {
+  if (!err === !remoteDown.has(name)) return;
+  if (err) { remoteDown.set(name, Date.now()); console.log(`[remote] ${name} unreachable: ${err} (retrying with backoff)`); } else { remoteDown.delete(name); console.log(`[remote] ${name} reachable again`); }
+  for (const c of Object.values(state.remoteConvs)) if (c.remote === name) broadcast({ conv: remoteSummary(c) });
+  for (const c of Object.values(state.conversations)) if (c.remote === name) broadcast({ conv: summary(c) });
+}
+function startRemotes() {
+  const followed = REMOTES.filter((r) => r.paths.length);   // a control remote may have no run files to follow
+  const followers = followed.map((r) => followRemote(r, {
+    offsetOf: async (file) => (await loadLogAsync(remoteConv(r, file))).findLast((e) => e.roff)?.roff || 0,
+    onLines: (file, lines, live) => { const c = remoteConv(r, file); for (const x of lines) remoteLine(c, x.line, x.end, live); },
+    done: (file) => { const c = remoteConv(r, file); return !!c.done || remoteStale(c); },
+    onStatus: (err) => remoteStatus(r.name, err) }));
+  process.on('exit', () => followers.forEach((f) => f.stop()));   // the ssh in flight goes with the server (a forced kill skips this: that ssh ends with its tail)
+  if (followed.length) console.log(`[remote] following ${followed.map((r) => r.name).join(', ')} (read-only)`);
+}
+
+// ---- conversations STARTED on a remote (control: true; rhost.mjs). They live in state.conversations like local ones (c.remote = the remote's name, c.seat =
+// 'remote-<name>' = its log folder) and go through the same send / permission / stop / reap / reattach code; what differs is only where the host runs:
+// spawn, liveness, kills and file cleanup go over ssh, the link is `ssh -W`. A local copy of the host record (logs/remote-<name>/<id>.host.json, with `remote`)
+// marks "this conversation may still have a host there"; it is removed once the host is known to be gone.
+const ctlOf = (c) => (c.remote ? CTL.get(c.remote) : null);
+const ctlByGroup = (name) => [...CTL.values()].find((r) => groupOf(r.name) === name || 'remote-' + r.name === name) || null;   // the page sends the group name, a conversation its seat
+// The remote ssh actions of ONE conversation run one after another: a cleanup still in flight must never delete the files of the host started right after it.
+const rseq = (c, fn) => { const r = R(c), run = (r.rseq || Promise.resolve()).then(fn, fn); r.rseq = run.catch(() => {}); return run; };
+// Is the conversation's host still running? Local: its pid. Remote: asked over ssh (pid + its own cfg name in the command line, so a reused pid is not ours);
+// null = ssh failed, unknown.
+async function hostAlive(c, info) {
+  const rem = ctlOf(c); if (!rem) return pidAlive(info.pid);
+  const a = await rhost.remoteAlive(rem, info.pid, hostNeedle(hostBase(c)));
+  remoteStatus(rem.name, a === null ? 'ssh failed while checking a host' : null);
+  return a;
+}
+
 const HOST_JS = path.join(HERE, 'host.mjs');
 // Remove the host's files (info/out/exit/log) once its claude is gone, and forget the replay offset that belonged to them.
-function cleanHostFiles(c) { const p = hostPaths(hostBase(c)); for (const f of [p.info, p.out, p.exit, p.cfg]) fs.rmSync(f, { force: true }); c.hostOff = 0; }
+function cleanHostFiles(c) { const p = hostPaths(hostBase(c)); for (const f of [p.info, p.out, p.exit, p.cfg]) fs.rmSync(f, { force: true }); c.hostOff = 0; const rem = ctlOf(c); if (rem) rseq(c, () => rhost.remoteClean(rem, c.id)); }
 // taskkill without blocking the event loop (a synchronous call stalled every conversation and the page for the time it took).
 const taskkill = (args) => new Promise((ok) => execFile('taskkill', args, { windowsHide: true, timeout: 10000 }, () => ok()));
 // A host that survived the server but lost its claude, or whose claude outlived a dead host: kill what is left (by pid, image name checked so a reused pid is safe).
@@ -303,12 +390,17 @@ const taskkill = (args) => new Promise((ok) => execFile('taskkill', args, { wind
 const killers = guardedKillers({ taskkill });
 // The running claude carries the id it was SPAWNED with; c.sessionId can change on resume/compact, so both are accepted.
 const sessionNeedles = (c) => [c.spawnSessionId, c.sessionId].filter(Boolean);
-const killClaudePid = (pid, c) => killers.killClaude(pid, sessionNeedles(c), c.spawnedAt);
-const killHostPid = (pid, c) => killers.killHost(pid, hostBase(c), c.spawnedAt);
+// A remote conversation's pids live on the remote: killed there, with the same command-line check (rhost.remoteKill). A kill ssh could not deliver THROWS:
+// the teardown then stops before it removes the host record (lifecycle.mjs track/cleanIfIdle), so the host is never forgotten while it may still run there;
+// silentGaveUp lets the next message try the kill again before it starts a new one, and a restart reattaches it.
+// remoteKillFailed: startProc refuses to start a second claude while the old host may still run there (lifecycle's teardown swallows the throw).
+const remoteKilled = (c) => (ok) => { R(c).remoteKillFailed = !ok; if (!ok) { R(c).silentGaveUp = true; throw new Error(`remote ${c.remote} unreachable: its host could not be stopped`); } };
+const killClaudePid = (pid, c) => (ctlOf(c) ? rhost.remoteKill(ctlOf(c), pid, sessionNeedles(c), true).then(remoteKilled(c)) : killers.killClaude(pid, sessionNeedles(c), c.spawnedAt));
+const killHostPid = (pid, c) => (ctlOf(c) ? rhost.remoteKill(ctlOf(c), pid, hostNeedle(hostBase(c)), false).then(remoteKilled(c)) : killers.killHost(pid, hostBase(c), c.spawnedAt));
 // Stop / lost host / start / make room live in lifecycle.mjs (testable against fakes): a stop and a start of one conversation may overlap, see the header there.
 const { isBusy, busyCount, killProc, hostLost, stopConv, stopIdle, makeRoom, ensureProc } = createLifecycle({
   R, convs: () => Object.values(state.conversations), QUIET_MS, MAX_PER_SEAT,
-  killHostPid, killClaudePid, killTree: (pid, c) => killers.killClaudeTree(pid, sessionNeedles(c), c.spawnedAt),
+  killHostPid, killClaudePid, killTree: (pid, c) => (ctlOf(c) ? killClaudePid(pid, c) : killers.killClaudeTree(pid, sessionNeedles(c), c.spawnedAt)),
   hostInfoOf, pidAlive, cleanHostFiles, startProc: (c) => startProc(c), pickIdle, clearTurns, setStatus, pushEvent, log: (l) => console.log(l) });
 
 // `end` = byte offset after this line in the host's output file; stored on the events it produces so a reattach can resume exactly after the last one logged.
@@ -367,7 +459,7 @@ function handleLine(c, line, end) {
     else {
     // Needs-your-answer mark, auto-pins and suggestions of this turn (marks.mjs); persisted, the summary carries them to the page.
     markTurn(c, { result: ev.result || '', isError: !!ev.is_error, i: evIndex, asks: r.turnAsks }); r.turnAsks = []; saveState();   // spent: a later result of the same turn must not pin them again broadcast({ conv: summary(c) });
-    const info = { needsAnswer: !!c.needsAnswer, seat: c.seat, title: c.title, text: ev.result, convId: c.id, files: [...r.turnFiles], out: { writes: [...r.turnWrites], named: findPaths(ev.result || ''), since: r.turnAt ?? Infinity }, ...quotaOf(c.seat), ...ctxNote(c) };   // out: Write targets + files the reply names (the console's preview cards), see outFiles; no turnAt (turn began before a restart) = no named files
+    const info = { needsAnswer: !!c.needsAnswer, seat: c.seat, title: c.title, text: ev.result, convId: c.id, files: [...r.turnFiles], out: { writes: [...r.turnWrites], named: findPaths(ev.result || '', !WIN), since: r.turnAt ?? Infinity }, ...quotaOf(c.seat), ...ctxNote(c) };   // out: Write targets + files the reply names (the console's preview cards), see outFiles; no turnAt (turn began before a restart) = no named files
     if (ev.is_error) { r.done = null; tg.notify('error', info, PHONE).catch(notifyFailed); }
     else { r.done = { info, at: Date.now() }; settleDone(c); }   // the latest result wins; it is announced once ALL work of the conversation is over
     }
@@ -416,7 +508,7 @@ function settleDone(c) {
   const { info } = r.done; r.done = null;
   console.log(`[done] ${new Date().toISOString().slice(11, 19)} conv=${c.id.slice(0, 8)} notify=sent`);
   // The turn's files follow as replies to the done-message, under the same rules as /api/file (outFiles in hardening.mjs).
-  tg.notify('done', info, PHONE, info.ctxCompact ? tg.compactButton(c.id) : null).then((m) => { const f = m && outFiles(info.out, c, FILE_RULES); return f?.length ? tg.sendFiles(m.message_id, f) : null; }).catch(notifyFailed);
+  tg.notify('done', info, PHONE, info.ctxCompact ? tg.compactButton(c.id) : null).then((m) => { const f = m && !c.remote && outFiles(info.out, c, FILE_RULES);   /* a remote conversation's files are on the remote: never matched against this PC's */ return f?.length ? tg.sendFiles(m.message_id, f) : null; }).catch(notifyFailed);
 }
 // Once a second: announce settled conversations, and refresh the page when the 20 s "recent events" window of a conversation runs out.
 setInterval(guard('tick', () => { for (const c of Object.values(state.conversations)) { if (staleTurns(c, R(c), Date.now(), CLAMP_MS)) { clearTurns(c); R(c).clampAt = 0; setStatus(c, 'idle'); console.log(`[turns] conv=${c.id.slice(0, 8)}: result seen, nothing since: pending-turn counter cleared`); } settleDone(c); if (effStatus(c) !== R(c).shown) broadcast({ conv: summary(c) }); } }), 1000).unref();
@@ -439,15 +531,21 @@ async function initSeat(seat) {
   if (e.pending) return e.pending;
   if (e.sig && e.sig === sigOf() && !e.sig.includes('0')) return;
   // Under memory pressure powershell starts slowly: 120 s, and one retry after 2 s before the send fails. The log line tells a timeout (killed) from a real script error.
-  const runInit = () => new Promise((ok, no) => execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(SEATS_DIR, 'seat.ps1'), seat, '-InitOnly'], { encoding: 'utf8', windowsHide: true, timeout: 120000, env: cleanEnv() }, // a server started from a Claude session must not hand its CLAUDE_* vars to seat.ps1 either
-    (err, out, serr) => (err ? (console.log(`[init] seat ${seat} -InitOnly error killed=${err.killed} code=${err.code} signal=${err.signal}`), no(new Error('seat.ps1 -InitOnly failed: ' + String(serr || out || err.message).slice(0, 300)))) : ok())));
+  // POSIX: seat.sh, the same steps with symlinks instead of junctions.
+  const [initExe, initArgs] = WIN ? ['powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(SEATS_DIR, 'seat.ps1'), seat, '-InitOnly']] : ['sh', [path.join(SEATS_DIR, 'seat.sh'), seat, '--init-only']];
+  const runInit = () => new Promise((ok, no) => execFile(initExe, initArgs, { encoding: 'utf8', windowsHide: true, timeout: 120000, env: cleanEnv() }, // a server started from a Claude session must not hand its CLAUDE_* vars to seat.ps1 either
+    (err, out, serr) => (err ? (console.log(`[init] seat ${seat} -InitOnly error killed=${err.killed} code=${err.code} signal=${err.signal}`), no(new Error((WIN ? 'seat.ps1 -InitOnly' : 'seat.sh --init-only') + ' failed: ' + String(serr || out || err.message).slice(0, 300)))) : ok())));
   e.pending = runInit().catch(() => new Promise((r) => setTimeout(r, 2000)).then(runInit));
   try { await e.pending; e.sig = sigOf(); console.log(`[init] seat ${seat} prepared`); } finally { e.pending = null; }
 }
 async function startProc(c) {
-  await initSeat(c.seat);
-  const configDir = path.join(HOME, '.claude-seats', c.seat);
-  const role = `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.`;
+  const rem = ctlOf(c);   // a remote conversation: no seat dir to prepare, claude runs there under the remote's own login
+  if (!rem) await initSeat(c.seat);
+  else if (R(c).remoteKillFailed) throw new Error(`remote ${rem.name} unreachable: the previous host there could not be stopped; send again when it answers`);
+  const configDir = rem ? `(remote ${rem.name}: its own login)` : path.join(HOME, '.claude-seats', c.seat);
+  const ending = 'End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.';
+  const role = rem ? `You are a Claude session on the remote machine '${rem.name}', driven from the user's Seat Console. ${ending}`
+    : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${ending}`;
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...MODE_ARGS[c.mode],
     '--append-system-prompt', role, '--name', `seat:${c.seat}`];
   // First start pins the session id to the conversation id; every later start resumes it.
@@ -456,7 +554,11 @@ async function startProc(c) {
   if (c.effort) args.push('--effort', c.effort === 'ultracode' ? 'max' : c.effort);
   // claude runs inside a detached host (hostlink.mjs / host.mjs); the host dies only with claude, never with this server. Its env is the clean env + this seat's config dir.
   c.spawnSessionId = c.sessionId; // what this claude's command line will carry (--session-id / --resume)
-  const info = await spawnHost({ base: hostBase(c), script: HOST_JS, exe: CLAUDE_EXE, args, cwd: c.cwd, env: { ...cleanEnv(), CLAUDE_CONFIG_DIR: configDir }, token: crypto.randomBytes(24).toString('hex') });
+  // Remote: the host starts there (rhost.spawnRemoteHost); the local copy of its record (+ `remote`) is what hostInfoOf / reattach find after a console restart.
+  const info = rem ? await rseq(c, () => rhost.spawnRemoteHost(rem, { id: c.id, args, cwd: c.cwd, token: crypto.randomBytes(24).toString('hex') })).then((i) => {
+    remoteStatus(rem.name, null); fs.mkdirSync(path.dirname(hostBase(c)), { recursive: true }); fs.writeFileSync(hostPaths(hostBase(c)).info, JSON.stringify({ ...i, remote: rem.name })); return i;
+  }, (e) => { if (e.down) remoteStatus(rem.name, e.message); throw e; })
+    : await spawnHost({ base: hostBase(c), script: HOST_JS, exe: CLAUDE_CMD[0], args: [...CLAUDE_CMD.slice(1), ...args], cwd: c.cwd, env: { ...cleanEnv(), CLAUDE_CONFIG_DIR: configDir }, token: crypto.randomBytes(24).toString('hex') });
   c.spawnedAt = Date.now(); // host + claude were created before this instant: the creation-time fallback of the guarded kills (procid.mjs) needs it when the command-line lookup fails
   c.hostOff = 0; c.hostGen = (c.hostGen || 0) + 1; // a new host-out file starts at byte 0: offsets logged by the previous host no longer apply
   const r = R(c); r.procCost = 0; c.started = true; r.silent = false; r.lineFailed = false; r.compacted = false; r.appendFailed = false; saveState(); // a new host-out file: nothing from the old one applies
@@ -472,10 +574,13 @@ function attach(c, info, from, { reattach = false } = {}) {
   const onLine = lineHandler({ c, r, handle: (line, end) => handleLine(c, line, end), onAdvance: () => { offTimer ??= setTimeout(() => { offTimer = null; saveState(); }, 1000); },
     sizeOf: () => { try { return fs.statSync(hostPaths(hostBase(c)).out).size; } catch { return 0; } },
     onError: (e, line) => console.log(`[line] handleLine threw conv=${c.id.slice(0, 8)} (${String(line).slice(0, 80)}): ${e?.stack || e}`) }); // the replay offset stays before the failing line
+  const rem = ctlOf(c);
   const link = connectHost(info, from, {
     onLine,
     onExit: (code, err) => { if (r.proc === p) procGone(c, code, err); },
-    onClose: () => { if (r.proc === p) hostLost(c); },
+    // Remote: a dropped link is first of all a network event, the host may well still run there: ask before calling it lost (remoteDropped).
+    onClose: () => { if (r.proc === p) (rem ? remoteDropped(c) : hostLost(c)); },
+    ...(rem ? { socket: () => rhost.sshSocket(rem, info.port), timeout: 25000 } : {}),   // ssh's own connect timeout is 10 s
   });
   const p = { pid: info.claudePid, hostPid: info.pid, link, stdin: { get writable() { return link.writable; }, write: (s) => link.write(s) } };
   r.proc = p; r.buf = '';
@@ -505,7 +610,7 @@ function rebuildPerms(c) { // approvals still open = logged console_perm without
 async function tryAttach(c, info, from, tries = 3) {
   for (let i = 0; i < tries; i++) {
     try { const p = attach(c, info, from, { reattach: true }); await p.link.ready; return true; }
-    catch { R(c).proc?.link.close(); R(c).proc = null; if (!pidAlive(info.pid)) return false; await new Promise((r) => setTimeout(r, 500)); }
+    catch { R(c).proc?.link.close(); R(c).proc = null; if ((await hostAlive(c, info)) === false) return false; await new Promise((r) => setTimeout(r, 500)); }
   }
   return false;
 }
@@ -523,9 +628,10 @@ function reconnectLater(c, info, left = 20) {
   const t = setTimeout(async () => {
     const r = R(c);
     if (r.proc || r.starting || r.stopping || !hasKey(state.conversations, c.id) || !r.silent) return; // stopped, deleted or restarted meanwhile (killProc/killSilent clear `silent`)
-    if (!pidAlive(info.pid)) { r.silent = false; return; }
+    const alive = await hostAlive(c, info);   // remote: null = ssh failed, keep knocking
+    if (alive === false) { r.silent = false; if (c.remote) reattachOne(c); return; }   // a remote host that is gone: replay its last output there and clean up
     const from = Math.max(c.hostOff || 0, lastHoff(eventsOf(c), c.hostGen));
-    if (await tryAttach(c, info, from, 1)) adopt(c, info); else if (left > 1) reconnectLater(c, info, left - 1); else r.silentGaveUp = true; // gave up: the next send may kill this host and start fresh
+    if (alive && await tryAttach(c, info, from, 1)) adopt(c, info); else if (left > 1) reconnectLater(c, info, left - 1); else r.silentGaveUp = true; // gave up: the next send may kill this host and start fresh
   }, 30000); t.unref();
 }
 async function reattachAll() {
@@ -543,27 +649,42 @@ async function reattachAll() {
   }
   // 2. conversations with a host record: read what the host wrote while we were away, then reconnect if it still runs.
   // In parallel: each handshake can take seconds (3 tries x 5 s on a slow host) and the page is blocked (503) until all are done. The conversations are independent.
-  await Promise.all(Object.values(state.conversations).map(async (c) => { try {
+  // Remote conversations are NOT awaited here (reattachRemotes, after `ready`): an unreachable remote must never hold up the start.
+  await Promise.all(Object.values(state.conversations).filter((c) => !c.remote).map(reattachOne));
+}
+const reattachRemotes = () => { for (const c of Object.values(state.conversations)) if (c.remote) reattachOne(c); };
+// The link of a remote conversation dropped without the host saying claude exited: a network event first of all. reattachOne asks the remote: still running ->
+// reconnect (the host replays what was missed); unreachable -> `unreachable since`, knocking every 30 s; gone -> its last output is read there, then cleaned up.
+function remoteDropped(c) {
+  const r = R(c), p = r.proc; r.proc = null; p.link.close(); r.perms.clear(); r.silent = true;   // silent: no second claude is started beside it meanwhile
+  console.log(`[host] conv=${c.id.slice(0, 8)}: link to remote ${c.remote} dropped, checking the host there`);
+  reattachOne(c);
+}
+// One conversation with a host record (start, or a remote link that dropped). Never rejects.
+async function reattachOne(c) { try {
     const info = hostInfoOf(c); if (!info) return;
     await loadLogAsync(c);   // before the sync replay below: its eventsOf() then finds the events loaded, the start never blocks on a full log read
-    const r = R(c), p = hostPaths(hostBase(c));
+    const r = R(c), p = hostPaths(hostBase(c)), rem = ctlOf(c);
     let from = Math.max(c.hostOff || 0, lastHoff(eventsOf(c), c.hostGen));
     r.procCost = 0;
+    // Remote: asked over ssh first (true / false / null = unreachable). A live remote host replays from `from` itself when we connect; a gone one is read from its file there.
+    const reach = rem ? await hostAlive(c, info) : true;
     // The output file stays readable when the host is gone. A line that throws is logged and skipped: it must not abort the start of every conversation, and c.hostOff stays before it.
-    for (const x of readOutFrom(p.out, from).lines) { from = x.end; try { handleLine(c, x.line, x.end); if (!r.lineFailed) c.hostOff = x.end; } catch (e) { r.lineFailed = true; console.log(`[line] replay: handleLine threw conv=${c.id.slice(0, 8)}: ${e?.stack || e}`); } }
+    for (const x of !rem ? readOutFrom(p.out, from).lines : reach === false ? await rhost.remoteOutFrom(rem, c.id, from) : []) { from = x.end; try { handleLine(c, x.line, x.end); if (!r.lineFailed) c.hostOff = x.end; } catch (e) { r.lineFailed = true; console.log(`[line] replay: handleLine threw conv=${c.id.slice(0, 8)}: ${e?.stack || e}`); } }
     // No command-line check here: a failed WMI query under start-up load made a LIVE host look dead (files deleted, claude orphaned). A reused pid cannot answer the token handshake in tryAttach.
     // A host spawned before this PC's last boot cannot be alive: after a reboot Windows reuses its pid for something else (2026-10-15: unsecapp.exe),
     // and the console waited forever on a host that would never answer. Such a conversation is simply interrupted, so Resume starts a fresh host.
-    const running = pidAlive(info.pid) && !(c.spawnedAt && c.spawnedAt < Date.now() - os.uptime() * 1000);
-    if (running && await tryAttach(c, info, from)) adopt(c, info);
+    // (The remote's uptime is not this PC's: the boot check is local only; remotely the command-line check in hostAlive is the pid-reuse guard.)
+    const running = rem ? reach !== false : pidAlive(info.pid) && !(c.spawnedAt && c.spawnedAt < Date.now() - os.uptime() * 1000);
+    if (running && reach && await tryAttach(c, info, from)) adopt(c, info);
     else if (running) {
       c.bg = []; r.silent = true; // counts against the seat's cap and is killed by Stop/Delete/eviction (killSilent) - see lifecycle.mjs
-      if (c.working) { clearTurns(c); c.interrupted = true; pushEvent(c, { type: 'console_error', text: 'seat host is running but did not answer: the turn is shown as interrupted; the console keeps trying to reconnect' }); }
+      if (c.working) { clearTurns(c); c.interrupted = true; pushEvent(c, { type: 'console_error', text: reach === null ? `remote ${c.remote} is unreachable: the turn is shown as interrupted; the console keeps trying to reconnect (the host keeps running there)` : 'seat host is running but did not answer: the turn is shown as interrupted; the console keeps trying to reconnect' }); }
       setStatus(c, c.interrupted ? 'interrupted' : 'stopped');
-      console.log(`[host] conv=${c.id.slice(0, 8)}: host ${info.pid} alive but silent, left running (retrying every 30 s)`);
+      console.log(`[host] conv=${c.id.slice(0, 8)}: host ${info.pid} ${reach === null ? 'not reachable (remote ' + c.remote + ')' : 'alive but silent'}, left running (retrying every 30 s)`);
       reconnectLater(c, info);
     } else {
-      const ex = readJson(p.exit); await killClaudePid(info.claudePid, c); cleanHostFiles(c); c.bg = [];
+      const ex = readJson(p.exit); await killClaudePid(info.claudePid, c); cleanHostFiles(c); c.bg = []; r.silent = false;
       if (c.working) { clearTurns(c); c.interrupted = true; pushEvent(c, { type: 'console_error', text: ex ? `process exited (${ex.code}) ${String(ex.err || '').trim()}` : 'seat host is gone: the turn was interrupted, use recover to continue it' }); setStatus(c, 'interrupted'); }
       else setStatus(c, R(c).status === 'interrupted' ? 'interrupted' : 'stopped');
       console.log(`[host] conv=${c.id.slice(0, 8)}: host not running (${ex ? 'claude exited ' + ex.code : 'gone'})`);
@@ -571,12 +692,12 @@ async function reattachAll() {
   } catch (e) { // one bad conversation must never abort the start of the others
     console.log(`[reattach] conv=${String(c?.id).slice(0, 8)} failed: ${e?.stack || e}`);
     try { c.working = false; c.turns = 0; c.interrupted = true; setStatus(c, 'interrupted'); } catch (e2) { console.log(`[reattach] could not mark it interrupted: ${e2.message}`); }
-  } }));
-}
+    const info = c.remote && hostInfoOf(c); if (info) { R(c).silent = true; reconnectLater(c, info); }   // e.g. ssh failed half-way: its host may still run there, keep asking
+  } }
 
 // Idle conversations only wait for the next message: after IDLE_REAP_MS without any event (and no background work, no open approval) the process is stopped
 // (status `stopped`; the next send resumes the same session). The cap of MAX_PER_SEAT live processes is made of busy conversations only: an idle one is evicted for a new start.
-const IDLE_REAP_MS = +arg('reap-ms') || 15 * 60000;
+const IDLE_REAP_MS = +arg('reap-ms') || 5 * 60000; // 5 min since 2026-10-15: idle claude processes hold ~0.5 GB each; was 15 min
 async function reapIdle() {
   for (const c of Object.values(state.conversations)) {
     if (!R(c).proc || isBusy(c) || Date.now() - R(c).lastAt < IDLE_REAP_MS) continue;
@@ -641,14 +762,16 @@ function binBody(req, max) {
 async function send(b) {
   let c = b.conversationId && convOf(b.conversationId);
   if (b.conversationId && !c) throw new Error('unknown conversation');
-  const seat = c ? c.seat : b.seat;
-  if (!hasKey(SEATS, seat)) throw new Error('unknown seat');
+  const rem = c ? ctlOf(c) : ctlByGroup(b.seat);   // a new conversation on a control remote: the page sends its group name ("remote: <name>")
+  const seat = c ? c.seat : rem ? 'remote-' + rem.name : b.seat;
+  if (!rem && !hasKey(SEATS, seat)) throw new Error('unknown seat');
   if (b.mode && !hasKey(MODE_ARGS, b.mode)) throw new Error('unknown mode');
-  const cwd = b.cwd || c?.cwd || state.cwds[seat] || DEFAULT_CWD;
-  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('cwd does not exist: ' + cwd);
+  const cwd = b.cwd || c?.cwd || state.cwds[seat] || (rem ? await rhost.remoteHome(rem) : DEFAULT_CWD);
+  // A remote folder only has to be an absolute path here: it is checked THERE, a missing one fails the host start with claude's own error.
+  if (rem ? !/^\/[^\0\r\n]*$/.test(cwd) : !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('cwd does not exist: ' + cwd);
   if (c && R(c).slash && Date.now() - R(c).slash.at < 600000) throw new Error('/' + R(c).slash.kind + ' is running on this conversation: send again when it has finished.');
   const created = !c;
-  if (!c) c = newConversation(seat, { cwd, model: b.model, effort: b.effort, mode: b.mode });
+  if (!c) { c = newConversation(seat, { cwd, model: b.model, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }
   // Anything below failing (spawn, bad image id, dead stdin) must not leave a ghost conversation behind that THIS call created.
   try {
   // cwd, model and effort are fixed per process: changing one restarts it on the same session. Mode never changes after start.
@@ -819,12 +942,25 @@ function uploadFile(name, c) {
   if (!c || !/^\d+-\d+\.(?:png|jpg|gif|webp)$/.test(name || '')) return null;
   const f = path.join(UPLOADS, c.id, name); return fs.existsSync(f) ? f : null;
 }
-function serveFile(req, res, url) {
+// A file named in a REMOTE conversation is fetched over ssh (rhost.remoteFile: under the conversation's folder after the remote realpath, at most 25 MB) and served
+// from memory; the same name rules as here apply to the asked and to the real path (no denied names, no .claude, preview types only).
+const okRemoteName = (f) => !isDeniedPath(f) && !/\.claude/i.test(f) && !!MIME[path.posix.extname(f).slice(1).toLowerCase()];
+async function remoteFileOf(c, p) {
+  if (!p || !okRemoteName(path.posix.resolve(c.cwd, p))) return 'forbidden';
+  const got = await rhost.remoteFile(ctlOf(c), c.cwd, p);
+  return got && typeof got === 'object' && !okRemoteName(got.real) ? 'forbidden' : got;
+}
+async function serveFile(req, res, url) {
   const conv = convOf(url.searchParams.get('conv'));
-  const real = url.searchParams.has('upload') ? uploadFile(url.searchParams.get('upload'), conv) : resolveIn(url.searchParams.get('path'), conv, FILE_RULES);
+  let real, buf;
+  if (conv?.remote && !url.searchParams.has('upload')) {
+    let got; try { got = await remoteFileOf(conv, url.searchParams.get('path')); } catch (e) { return json(res, 502, { error: e.message }); }
+    if (got === 'too large') return json(res, 413, { error: 'over 25 MB: open it on the server' });
+    if (got && typeof got === 'object') ({ real, buf } = got); else real = got;
+  } else real = url.searchParams.has('upload') ? uploadFile(url.searchParams.get('upload'), conv) : resolveIn(url.searchParams.get('path'), conv, FILE_RULES);
   if (real === 'forbidden') return json(res, 403, { error: 'not allowed' });
   if (!real) return json(res, 404, { error: 'no such file' });
-  const size = fs.statSync(real).size, type = MIME[path.extname(real).slice(1).toLowerCase()];
+  const size = buf ? buf.length : fs.statSync(real).size, type = MIME[path.extname(real).slice(1).toLowerCase()];
   const head = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
   // html/svg run script: a sandbox CSP without allow-same-origin gives them an opaque origin, so they cannot reach this page's token.
   if (/html|svg/.test(type)) head['Content-Security-Policy'] = 'sandbox allow-scripts';
@@ -838,12 +974,17 @@ function serveFile(req, res, url) {
   head['Content-Length'] = size ? end - start + 1 : 0;
   res.writeHead(code, head);
   if (req.method === 'HEAD' || !size) return res.end();
+  if (buf) return res.end(buf.subarray(start, end + 1));
   fs.createReadStream(real, { start, end }).on('error', () => res.destroy()).pipe(res);
 }
 const EVENT_PAGE = 500;
 let serveSeen = false;   // the [serve] header-names line is logged once per server start
-const seatsView = () => Object.keys(SEATS).map((name) => ({ name, email: SEATS[name].email, role: SEATS[name].role, cwd: state.cwds[name] || DEFAULT_CWD,
-  usage: state.usage[name] || null, conversations: Object.values(state.conversations).filter((c) => c.seat === name).sort((a, b) => b.updatedAt - a.updatedAt).map(summary) }));
+const seatsView = () => [...Object.keys(SEATS).map((name) => ({ name, email: SEATS[name].email, role: SEATS[name].role, cwd: state.cwds[name] || DEFAULT_CWD,
+  usage: state.usage[name] || null, conversations: Object.values(state.conversations).filter((c) => c.seat === name).sort((a, b) => b.updatedAt - a.updatedAt).map(summary) })),
+  // remote groups after the seats: read-only runs (no "+ new"); the role line carries "unreachable since HH:MM" while ssh fails.
+  // control: true adds "+ new" (`control`) and lists the conversations started there next to the runs (viewSummary tells them apart).
+  ...REMOTES.map((r) => ({ name: groupOf(r.name), email: r.target, role: (remoteDown.has(r.name) ? downText(r.name) + ' · ' : '') + (r.control ? 'control' : 'read-only') + (r.seat ? ' · ' + r.seat : ''), remote: true, control: r.control, cwd: null, usage: null,
+    conversations: [...Object.values(state.remoteConvs), ...Object.values(state.conversations)].filter((c) => c.remote === r.name).sort((a, b) => b.updatedAt - a.updatedAt).map(viewSummary) }))];
 
 async function handler(req, res) {
   try {
@@ -870,7 +1011,7 @@ async function handler(req, res) {
       const from = req.headers.referer || origin || '';
       let fromOrigin = null; try { fromOrigin = new URL(from).origin; } catch {}
       if (!fromOrigin || !ALLOWED_ORIGINS.includes(fromOrigin)) return json(res, 403, { error: 'file previews are served to the console page only' });
-      return serveFile(req, res, url);
+      return await serveFile(req, res, url);   // await: a throw inside it still ends in the 500 below
     }
     if (req.method === 'GET' && STATIC[url.pathname]) {
       const [file, type] = STATIC[url.pathname];
@@ -884,14 +1025,14 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/routines') return json(res, 200, routines.view());
     if (req.method === 'GET' && url.pathname === '/api/digest') return json(res, 200, digestMessage(Date.now(), url.searchParams.get('kind') === 'evening' ? 'evening' : 'morning'));   // the digest text + buttons, nothing is sent
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
-      const c = convOf(url.searchParams.get('id')); if (!c) return json(res, 404, { error: 'no conversation' });
+      const c = viewOf(url.searchParams.get('id')); if (!c) return json(res, 404, { error: 'no conversation' });
       // The last EVENT_PAGE events (a long conversation would otherwise ship megabytes on every open); ?before=<index> returns the page before that index.
       const pending = [...R(c).perms.keys()], before = url.searchParams.has('before') ? +url.searchParams.get('before') || 0 : null;
       const w = eventWindow(eventsOf(c), pending, before, EVENT_PAGE);
-      return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify({ conv: summary(c), events: slimEvents(w.events, w.from), pending, from: w.from, total: w.total }));
+      return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify({ conv: viewSummary(c), events: slimEvents(w.events, w.from), pending, from: w.from, total: w.total }));
     }
     if (req.method === 'GET' && url.pathname === '/api/tool') {   // full input/output of one tool row, fetched when it is expanded
-      const c = convOf(url.searchParams.get('conv')); if (!c) return json(res, 404, { error: 'no conversation' });
+      const c = viewOf(url.searchParams.get('conv')); if (!c) return json(res, 404, { error: 'no conversation' });
       const d = await toolDetailFull(c, url.searchParams.get('id') || ''); if (!d) return json(res, 404, { error: 'no such tool call' });
       return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify(d));
     }
@@ -909,7 +1050,7 @@ async function handler(req, res) {
       // Tells the page how many events exist now: one it missed between its snapshot read and this registration shows up as hello.total > snapshot.total (the client resyncs).
       // The log of a conversation not opened since the start is read async (loadLogAsync, like reattachAll): a sync read of a 60 MB log blocked every client.
       // Registered (clients.add) only after the count, as before: an event emitted while it loads is in the total, so the page sees hello.total > snapshot and resyncs.
-      const wc = out.watch && convOf(out.watch), total = wc ? (await loadLogAsync(wc)).length : 0;
+      const wc = out.watch && viewOf(out.watch), total = wc ? (await loadLogAsync(wc)).length : 0;
       if (req.socket.destroyed || res.destroyed) { if (gz) out.destroy(); return; }   // the page left while the log loaded
       if (wc) out.write(`data: ${JSON.stringify({ hello: true, conv: wc.id, total })}\n\n`);
       if (saveError) out.write('data: {"saveError":true}\n\n'); clients.add(out);
@@ -945,6 +1086,21 @@ async function handler(req, res) {
         }
         try { return json(res, 200, await routines.act(String(b.id), String(b.action))); } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
       }
+      // "Continue" on a finished run of a control remote: a NEW conversation there that resumes the run's session (--resume <its session_id>) in the run's folder,
+      // both read from the run's init event. No process yet: the first message starts it. A read-only remote is refused; a run still writing too (two claudes, one session).
+      if (url.pathname === '/api/remote-continue') {
+        const rc = remoteOf(b.id), rem = rc && CTL.get(rc.remote);
+        if (!rem) return json(res, 400, { error: rc ? 'this remote is read-only ("control": true is not set in remotes.json)' : 'unknown remote run' });
+        if (!rc.done && !remoteStale(rc)) return json(res, 409, { error: 'this run is still writing: continue it once it has finished' });
+        const init = (await loadLogAsync(rc)).findLast((e) => e.type === 'system' && e.subtype === 'init'), sid = init?.session_id || rc.sessionId, cwd = init?.cwd;
+        if (!/^[0-9a-f-]{36}$/.test(sid || '') || typeof cwd !== 'string' || !/^\/[^\0\r\n]*$/.test(cwd)) return json(res, 409, { error: 'the run log names no session id and folder to resume' });
+        // a conversation of this console may be running that very session (its claude writes into a followed path): never two claudes on one session
+        if (Object.values(state.conversations).some((x) => x.remote === rem.name && x.sessionId === sid && (R(x).proc || R(x).starting || hostInfoOf(x)))) return json(res, 409, { error: 'this session is already running in a conversation here: open that one' });
+        const c = newConversation('remote-' + rem.name, { cwd, mode: hasKey(MODE_ARGS, b.mode) ? b.mode : 'auto' });
+        Object.assign(c, { remote: rem.name, sessionId: sid, started: true, title: 'continue: ' + rc.title });   // started: the first start resumes instead of creating a session
+        saveState(); broadcast({ conv: summary(c) });
+        return json(res, 200, { ok: true, conversationId: c.id, sessionId: sid });
+      }
       const c = convOf(b.conversationId);
       if (!c) return json(res, 400, { error: 'unknown conversation' });
       if (url.pathname === '/api/stop') { await stopConv(c); return json(res, 200, { ok: true }); }
@@ -959,7 +1115,8 @@ async function handler(req, res) {
         // An idle process is only waiting for input, so it is stopped and removed; a running turn or an open approval refuses.
         if (c.working || c.bg?.length || R(c).perms.size || R(c).starting) return json(res, 409, { error: 'conversation is running: stop it first' });
         await killProc(c);
-        if (R(c).proc || R(c).starting) return json(res, 409, { error: 'a message started this conversation again: stop it first' }); // a send slipped in while the kill ran: deleting now would orphan its host
+        if (R(c).proc || R(c).starting) return json(res, 409, { error: 'a message started this conversation again: stop it first' });
+        if (c.remote && hostInfoOf(c)) return json(res, 409, { error: `remote ${c.remote} unreachable: its host there could not be stopped, try again when it answers` });   // deleting now would orphan it // a send slipped in while the kill ran: deleting now would orphan its host
         delete state.conversations[c.id]; rt.delete(c.id); saveState();
         fs.rmSync(logFile(c), { force: true }); fs.rmSync(logFile(c) + '.restore', { force: true }); purgeArchive(DATA, c); fs.rmSync(path.join(UPLOADS, c.id), { recursive: true, force: true });
         for (const x of fs.readdirSync(path.dirname(logFile(c))).filter((n) => n.startsWith(c.id + '.host'))) fs.rmSync(path.join(path.dirname(logFile(c)), x), { force: true }); // host leftovers (log)
@@ -1003,6 +1160,8 @@ bindTailscale(); setInterval(bindTailscale, 10000).unref();
 if (!ISOLATED) tg.start();   // a test instance never polls Telegram
 if (crashLoopStart && !ISOLATED && crashWarnDue(state, Date.now())) { saveState(); tg.send('⚠️ Seat Console is restarting after an uncaught error (twice within a minute). See server.err.log.').catch(notifyFailed); }
 routines.start();
+startRemotes();   // after `ready`: an unreachable remote never holds up the start
+reattachRemotes();   // same: conversations whose host runs on a remote are reconnected in the background
 // After a crash the interrupted conversations are offered on Telegram (one message, buttons) and never resumed without a tap: resuming spends quota.
 // The network is often not up right after a boot, so the message is retried until it goes out (or nothing is interrupted any more).
 if (crashed && interruptedConvs().length) (async () => {
@@ -1023,7 +1182,7 @@ setInterval(() => reapIdle().catch((e) => console.log('[idle] ' + e.message)), M
 // Not while a jsonl append failed or a line threw (the file is then the only durable copy); compactFile re-checks that the file really is empty afterwards.
 function compactHostOut(c) {
   const r = R(c);
-  if (!r.proc || !c.hostOff || c.working || c.bg?.length || r.perms.size || r.appendFailed || r.lineFailed || Date.now() - r.lastAt < SETTLE_MS) return;
+  if (!r.proc || c.remote || !c.hostOff || c.working || c.bg?.length || r.perms.size || r.appendFailed || r.lineFailed || Date.now() - r.lastAt < SETTLE_MS) return;
   const was = { off: c.hostOff, gen: c.hostGen };
   let done = false;
   // The file restarts at byte 0: a new generation, so offsets logged before no longer apply. Persisted BEFORE the truncate (see compactFile); put back if the truncate did not happen.

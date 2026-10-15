@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to remotes.json (gitignored). Each remote = a Linux machine. Read-only (default): the console follows its stream-json run files (only ls and tail ever run there); paths: globs, letters/digits and _ . / ~ * ? - only. \"control\": true also lets the console START conversations there (needs `node console/rhost.mjs setup <name>` once; see README 'Remote servers'); port/node/claude optional.",
+  "remotes": [
+    { "name": "render-box", "target": "ubuntu@render.example.com", "identity": "~/.ssh/id_ed25519", "seat": "renders", "paths": ["~/runs/*-run.jsonl"] },
+    { "name": "build-box", "target": "ubuntu@203.0.113.11", "identity": "~/.ssh/id_ed25519", "seat": "builds", "paths": [], "control": true, "port": 22, "node": "node", "claude": "~/.local/bin/claude" }
+  ]
+}

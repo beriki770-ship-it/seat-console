@@ -67,7 +67,9 @@ export function isDeniedPath(real) {
 }
 // A path a message names -> the real file, null (missing), or 'forbidden'. Allowed: under the projects folder or the conversation's cwd, a preview type (rules.mime),
 // never this server's folder (token.txt, chat logs) or data dir, never .claude, never a denied name. Used by GET /api/file and by the Telegram file sender alike.
-const under = (file, dir) => { const f = file.toLowerCase(), d = dir.toLowerCase().replace(/[\\/]+$/, ''); return f === d || f.startsWith(d + path.sep); };
+// Case folded where the file system folds case (Windows, macOS by default); on Linux /x/Projects and /x/projects are two different folders.
+const fold = process.platform === 'linux' ? (s) => s : (s) => s.toLowerCase();
+const under = (file, dir) => { const f = fold(file), d = fold(dir).replace(/[\\/]+$/, ''); return f === d || f.startsWith(d + path.sep); };
 export function resolveIn(p, c, { projects, here, data, defaultCwd, mime }) {
   if (!p) return null;
   const base = c?.cwd || defaultCwd;
@@ -86,9 +88,9 @@ export function outFiles({ writes = [], named = [], since = 0 }, c, rules) {
   const seen = new Set(), out = [];
   for (const [p, fresh] of [...writes.map((p) => [p, false]), ...named.map((p) => [p, true])]) {
     try {
-      const real = resolveIn(p, c, rules); if (!real || real === 'forbidden' || seen.has(real.toLowerCase()) || !SEND_EXT.has(path.extname(real).slice(1).toLowerCase())) continue;
+      const real = resolveIn(p, c, rules); if (!real || real === 'forbidden' || seen.has(fold(real)) || !SEND_EXT.has(path.extname(real).slice(1).toLowerCase())) continue;
       const st = fs.statSync(real); if (fresh && st.mtimeMs < since) continue;
-      seen.add(real.toLowerCase()); if (st.size) out.push({ path: real, name: path.basename(real), size: st.size });
+      seen.add(fold(real)); if (st.size) out.push({ path: real, name: path.basename(real), size: st.size });
     } catch {}   // a file deleted or a cwd gone in between: not sent, nothing else breaks
   }
   return out;
