@@ -39,7 +39,7 @@ Stated honestly, as tested:
 ## Install
 
 ```powershell
-git clone https://github.com/<you>/seat-console.git
+git clone https://github.com/beriki770-ship-it/seat-console.git
 cd seat-console
 copy seats.example.json seats.json
 notepad seats.json
