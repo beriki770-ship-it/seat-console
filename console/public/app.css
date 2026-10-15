@@ -54,6 +54,12 @@ small { display:block; color:var(--mute); font-size:12px; line-height:1.35; }
 #saveBanner[hidden] { display:none; }
 #log { flex:1; min-height:0; overflow:auto; padding:20px 24px; display:flex; flex-direction:column; gap:12px; }
 .msg { max-width:820px; width:100%; margin:0 auto; overflow-wrap:anywhere; }
+/* A wide table scrolls inside itself; the log never pans sideways on a phone. */
+.msg table { display:block; max-width:100%; overflow-x:auto; }
+#log { overflow-x:hidden; }
+/* Lists are LTR boxes holding dir=auto items: an RTL item hangs its bullet outside the RIGHT edge (sideways
+   scroll on a phone). RTL items keep the bullet inside the line instead. */
+.msg li:dir(rtl) { list-style-position:inside; }
 .user { background:var(--user); padding:10px 14px; border-radius:14px; white-space:pre-wrap; }
 .assistant p { margin:.4em 0; }
 .assistant ul { margin:.4em 0; padding-inline-start:1.4em; }

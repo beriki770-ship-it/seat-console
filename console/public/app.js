@@ -493,7 +493,25 @@ $('composer').onsubmit = async (e) => {
 // On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
 const TOUCH = matchMedia('(pointer: coarse)').matches;
 if (TOUCH) { $('text').placeholder = 'Message this seat. Tap Send to send.'; $('text').enterKeyHint = 'enter'; }
-$('text').onkeydown = (e) => { if (!TOUCH && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); } };
+// A new line inside a list continues it: "1. x" -> "2. ", "- x" -> "- "; Enter on an empty item ends the list.
+function continueList(t) {
+  const s = t.selectionStart; if (s !== t.selectionEnd) return false;
+  const line = t.value.slice(t.value.lastIndexOf('\n', s - 1) + 1, s);
+  const m = line.match(/^(\s*)(?:(\d+)([.)])|([-*•]))\s+(.*)$/); if (!m) return false;
+  const [, ind, num, dot, bullet, rest] = m, start = s - line.length;
+  if (!rest.trim()) { t.setRangeText('', start, s, 'end'); return true; }   // empty item: drop the marker, stop the list
+  t.setRangeText('\n' + ind + (num ? `${+num + 1}${dot} ` : `${bullet} `), s, s, 'end'); return true;
+}
+$('text').onkeydown = (e) => {
+  if (TOUCH || e.key !== 'Enter' || e.isComposing) return;   // phone keyboards: handled in beforeinput below
+  if (!e.shiftKey) { e.preventDefault(); $('composer').requestSubmit(); return; }
+  if (continueList(e.target)) { e.preventDefault(); e.target.dispatchEvent(new Event('input', { bubbles: true })); }
+};
+// Android keyboards often report Enter as key "Unidentified" in keydown; beforeinput always names the line break.
+$('text').addEventListener('beforeinput', (e) => {
+  if (!TOUCH || (e.inputType !== 'insertLineBreak' && e.inputType !== 'insertParagraph')) return;
+  if (continueList(e.target)) { e.preventDefault(); e.target.dispatchEvent(new Event('input', { bubbles: true })); }
+});
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
 $('continue').onclick = async () => {
   const r = await api('/api/remote-continue', { id: cur.id }); if (r.error) return alert(r.error);
