@@ -744,6 +744,47 @@ function claimImages(c, ids, buffers, draftId) {
   for (const buf of buffers || []) names.push(storeImage(c.id, buf));
   return names;
 }
+// ---- any other file (pdf, zip, txt, ...): stored as is, the message names its path so claude opens it with its own tools ----
+// 50 MB: the body is held in memory while it arrives, so the cap bounds RAM; Telegram's own bot download limit is 20 MB, phone documents fit far below.
+const FILE_MAX = 50 * 1024 * 1024;
+// The client's name is never trusted: last path part only, NFC, letters/marks/digits (any script, so Hebrew stays) and ` ._()+,-`, no `..`, no leading/trailing
+// dot or space, at most 80 characters before a short extension. The stored name is `<ts>-<n>-<safe>`, so a reserved Windows name (con.txt) can never be the whole name.
+function safeName(raw) {
+  const s = String(raw || '').split(/[\\/]/).pop().normalize('NFC').replace(/[^\p{L}\p{M}\p{N} ._()+,-]/gu, '_').replace(/\.{2,}/g, '.').replace(/\s+/g, ' ').replace(/^[ .]+|[ .]+$/g, '');
+  const ext = /\.[\p{L}\p{N}]{1,10}$/u.exec(s)?.[0] || '', stem = [...s.slice(0, s.length - ext.length)].slice(0, 80).join('').replace(/[ .]+$/, '');
+  return (stem || 'file') + ext;
+}
+const fileLabel = (stored) => stored.replace(/^\d+-\d+-/, '');
+function storeFile(dirName, buf, name, draftId) {
+  if (buf.length > FILE_MAX) throw new Error('file over 50 MB');
+  fs.mkdirSync(path.join(UPLOADS, dirName), { recursive: true });
+  const stored = `${draftId ? draftId + '-' : ''}${Date.now()}-${++imgSeq}-${safeName(name)}`;
+  fs.writeFileSync(path.join(UPLOADS, dirName, stored), buf);
+  return stored;
+}
+// Same claim rules as images (staged files only for their own draft). Every id is checked and, for a remote conversation, copied there (rem) BEFORE any
+// staged file is moved: a refused id or a failed copy leaves the draft's files where they were, so a retry of the same send still finds them.
+// -> [{ stored, label, size, path }]: path = what claude is told (the remote path for a remote conversation).
+async function claimFiles(c, ids, buffers, draftId, rem) {
+  const got = [];
+  for (const id of ids || []) {
+    const m = /^(_staged|[0-9a-f-]{36})\/(?:([0-9a-f]{16})-)?(\d+-\d+-[^\\/]+)$/.exec(String(id));
+    const staged = m && m[1] === '_staged';
+    if (!m || safeName(fileLabel(m[3])) !== fileLabel(m[3]) || (staged ? !m[2] || m[2] !== draftId : m[1] !== c.id || m[2])) throw new Error('bad file id');
+    const from = path.join(UPLOADS, m[1], (m[2] ? m[2] + '-' : '') + m[3]); if (!fs.existsSync(from)) throw new Error('file gone: ' + fileLabel(m[3]));
+    got.push({ from, stored: m[3], staged });
+  }
+  for (const f of buffers || []) { const stored = storeFile(c.id, f.data, f.name); got.push({ from: path.join(UPLOADS, c.id, stored), stored }); }
+  const out = [];
+  // A remote claude cannot read this PC: each file is copied to ~/.seat-console/uploads/<conv>/ there and the message names the REMOTE path.
+  for (const g of got) out.push({ stored: g.stored, label: fileLabel(g.stored), size: fs.statSync(g.from).size, path: rem ? await rhost.putUpload(rem, c.id, g.stored, fs.readFileSync(g.from)) : path.join(UPLOADS, c.id, g.stored) });
+  for (const g of got.filter((x) => x.staged)) { fs.mkdirSync(path.join(UPLOADS, c.id), { recursive: true }); fs.renameSync(g.from, path.join(UPLOADS, c.id, g.stored)); }
+  return out;
+}
+const sizeText = (n) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+// Telegram files arrive as bytes: an image (magic bytes, within the image cap) keeps the image path, anything else is a file.
+const asImage = (buf) => !!sniffImage(buf) && buf.length <= IMG_MAX;
+
 // Staged files nobody claimed (draft abandoned) are swept after an hour.
 function sweepStaged() {
   const dir = path.join(UPLOADS, '_staged');
@@ -754,7 +795,7 @@ const imageBlock = (c, name) => ({ type: 'image', source: { type: 'base64', medi
 function binBody(req, max) {
   return new Promise((ok, no) => {
     let n = 0; const chunks = [];
-    req.on('data', (x) => { n += x.length; if (n > max) { no(new Error('over 15 MB')); req.destroy(); } else chunks.push(x); });
+    req.on('data', (x) => { n += x.length; if (n > max) { no(new Error(`over ${max / 1024 / 1024} MB`)); req.destroy(); } else chunks.push(x); });
     req.on('end', () => ok(Buffer.concat(chunks)));
   });
 }
@@ -787,12 +828,13 @@ async function send(b) {
   if (created) state.cwds[seat] = cwd; // the seat's default folder follows NEW conversations only, not every message into an old one
   await ensureProc(c);
   const images = claimImages(c, b.images, b.imageBuffers, b.draftId);
+  const files = await claimFiles(c, b.files, b.fileBuffers, b.draftId, rem);
   autoTitle(c, b.title || clipChars(b.text.trim().replace(/\s+/g, ' '), 60));   // never over a title the user set (rename)
   if (!b.auto) answered(c);   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
-  pushEvent(c, { type: 'console_user', text: b.text, ...(images.length ? { images } : {}) });
+  pushEvent(c, { type: 'console_user', text: b.text, ...(images.length ? { images } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.stored, label: f.label, size: f.size })) } : {}) });
   const r = R(c); if (!c.turns) { r.turnFiles.clear(); r.turnWrites.clear(); r.turnAsks = []; r.turnAt = Date.now() - 2000; } // a second message mid-turn keeps the files the running turn already wrote; turnAt (2 s mtime slack): reply-named files count from here
   r.clampAt = 0; turnStart(c); setStatus(c, r.perms.size ? 'waiting' : 'working'); // clampAt of the previous result must not clamp this new turn before its first event
-  const text = c.effort === 'ultracode' ? 'ultracode\n\n' + b.text : b.text;
+  const text = (c.effort === 'ultracode' ? 'ultracode\n\n' + b.text : b.text) + files.map((f) => `\nAttached file: ${f.path} (${f.label}, ${sizeText(f.size)})`).join('');
   if (!writeProc(c, { type: 'user', message: { role: 'user', content: images.length ? [{ type: 'text', text }, ...images.map((n) => imageBlock(c, n))] : text } })) {
     turnEnd(c); setStatus(c, c.turns ? 'working' : 'error'); throw new Error('seat process is not accepting input, try again');
   }
@@ -821,9 +863,10 @@ async function tgDecision(convShort, requestId, allow) {
   decide(c, requestId, allow);
   return allow ? 'Allowed' : 'Denied';
 }
-async function tgReply(convId, { text, images }) {
+async function tgReply(convId, { text, images, files = [] }) {
   const c = convOf(convId); if (!c) throw new Error('that conversation was deleted');
-  await send({ conversationId: c.id, text, imageBuffers: images.map((i) => i.data) });
+  const all = [...images, ...files];   // a photo sent "as a file" is still an image
+  await send({ conversationId: c.id, text, imageBuffers: all.filter((x) => asImage(x.data)).map((x) => x.data), fileBuffers: all.filter((x) => !asImage(x.data)).map((x) => ({ data: x.data, name: x.name })) });
   return sentLine(c.seat, c.title);
 }
 tgReply.acceptsImages = true;
@@ -939,7 +982,7 @@ const MIME = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', png
 const FILE_RULES = { projects: PROJECTS, here: HERE, data: DATA, defaultCwd: DEFAULT_CWD, mime: MIME };
 // An upload is served only through its own conversation's id; the name is matched against a strict pattern, never joined raw.
 function uploadFile(name, c) {
-  if (!c || !/^\d+-\d+\.(?:png|jpg|gif|webp)$/.test(name || '')) return null;
+  if (!c || !(/^\d+-\d+\.(?:png|jpg|gif|webp)$/.test(name || '') || (/^\d+-\d+-[^\\/]+$/.test(name) && safeName(fileLabel(name)) === fileLabel(name)))) return null;
   const f = path.join(UPLOADS, c.id, name); return fs.existsSync(f) ? f : null;
 }
 // A file named in a REMOTE conversation is fetched over ssh (rhost.remoteFile: under the conversation's folder after the remote realpath, at most 25 MB) and served
@@ -960,8 +1003,10 @@ async function serveFile(req, res, url) {
   } else real = url.searchParams.has('upload') ? uploadFile(url.searchParams.get('upload'), conv) : resolveIn(url.searchParams.get('path'), conv, FILE_RULES);
   if (real === 'forbidden') return json(res, 403, { error: 'not allowed' });
   if (!real) return json(res, 404, { error: 'no such file' });
-  const size = buf ? buf.length : fs.statSync(real).size, type = MIME[path.extname(real).slice(1).toLowerCase()];
+  const size = buf ? buf.length : fs.statSync(real).size, type = MIME[path.extname(real).slice(1).toLowerCase()] || 'application/octet-stream';   // only an attached file can be of another type: it downloads
   const head = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+  // An attached file of an unknown type, or an attached html/svg (it would run script inline), downloads instead of opening. RFC 5987: '()* encoded too.
+  if (type === 'application/octet-stream' || (url.searchParams.has('upload') && /html|svg/.test(type))) head['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(fileLabel(path.basename(real))).replace(/['()*]/g, (ch) => '%' + ch.charCodeAt(0).toString(16).toUpperCase())}`;
   // html/svg run script: a sandbox CSP without allow-same-origin gives them an opaque origin, so they cannot reach this page's token.
   if (/html|svg/.test(type)) head['Content-Security-Policy'] = 'sandbox allow-scripts';
   const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
@@ -1060,12 +1105,15 @@ async function handler(req, res) {
     if (req.method === 'POST') {
       if (!same(req.headers['x-seat-token'] || '', TOKEN)) return json(res, 403, { error: 'bad token' });
       if (url.pathname === '/api/upload') {
-        // Raw image bytes in the body; ?conv= is the conversation (absent for a draft: the file waits in _staged).
-        if (+req.headers['content-length'] > IMG_MAX) return json(res, 413, { error: 'over 15 MB' });
+        // Raw bytes in the body; ?conv= is the conversation (absent for a draft: the file waits in _staged); ?name= the file's name (any file that is not an image).
+        if (+req.headers['content-length'] > FILE_MAX) return json(res, 413, { error: 'over 50 MB' });
         const conv = url.searchParams.get('conv'); if (conv && !convOf(conv)) return json(res, 400, { error: 'unknown conversation' });
         const draft = url.searchParams.get('draft'); if (!conv && !/^[0-9a-f]{16}$/.test(draft || '')) return json(res, 400, { error: 'draft id required' });
         const dir = conv || '_staged';
-        return json(res, 200, { ok: true, id: `${dir}/${storeImage(dir, await binBody(req, IMG_MAX), conv ? null : draft)}` });
+        const buf = await binBody(req, FILE_MAX);
+        if (asImage(buf)) return json(res, 200, { ok: true, id: `${dir}/${storeImage(dir, buf, conv ? null : draft)}` });   // magic bytes say image: today's image path
+        const stored = storeFile(dir, buf, url.searchParams.get('name'), conv ? null : draft);
+        return json(res, 200, { ok: true, file: true, id: `${dir}/${stored}`, name: fileLabel(stored.replace(/^[0-9a-f]{16}-/, '')), size: buf.length });
       }
       const b = await body(req);
       if (url.pathname === '/api/send') {
@@ -1119,6 +1167,7 @@ async function handler(req, res) {
         if (c.remote && hostInfoOf(c)) return json(res, 409, { error: `remote ${c.remote} unreachable: its host there could not be stopped, try again when it answers` });   // deleting now would orphan it // a send slipped in while the kill ran: deleting now would orphan its host
         delete state.conversations[c.id]; rt.delete(c.id); saveState();
         fs.rmSync(logFile(c), { force: true }); fs.rmSync(logFile(c) + '.restore', { force: true }); purgeArchive(DATA, c); fs.rmSync(path.join(UPLOADS, c.id), { recursive: true, force: true });
+        if (ctlOf(c)) rhost.remoteRmUploads(ctlOf(c), c.id);   // the copies made for its claude there
         for (const x of fs.readdirSync(path.dirname(logFile(c))).filter((n) => n.startsWith(c.id + '.host'))) fs.rmSync(path.join(path.dirname(logFile(c)), x), { force: true }); // host leftovers (log)
         broadcast({ removed: c.id }); return json(res, 200, { ok: true });
       }

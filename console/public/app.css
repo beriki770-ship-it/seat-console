@@ -130,6 +130,7 @@ button:disabled, select:disabled { opacity:.55; cursor:default; }
 #thumbs[hidden] { display:none; }
 .thumbwrap { position:relative; }
 .thumbwrap button { position:absolute; top:-6px; inset-inline-end:-6px; width:22px; height:22px; padding:0; border-radius:50%; line-height:1; }
+.fchip { display:inline-block; max-width:260px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; color:var(--accent); text-decoration:none; overflow-wrap:anywhere; }
 .thumb { height:72px; width:auto; max-width:160px; object-fit:cover; border-radius:8px; border:1px solid var(--line); display:block; }
 .user .thumbs { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; white-space:normal; }
 .user .thumb { height:120px; }

@@ -49,6 +49,9 @@ export async function spawnHost({ base, script, exe, args, cwd, env, token }) {
 export function connectHost(info, from, h = {}) {
   const sock = h.socket ? h.socket() : net.connect(info.port, '127.0.0.1');
   let buf = '', connected = false, closing = false, exited = false, finish, fail;
+  // Writes made before the host answered the hello wait here: the host drops a connection whose unauthenticated buffer passes 4 KB, so a big first
+  // message (an image, a long paste) sent right after a fresh spawn could land in one chunk with the hello and the host was "lost" (2026-10-15).
+  const early = [];
   const ready = new Promise((ok, no) => { finish = ok; fail = no; });
   ready.catch(() => {});
   const timer = setTimeout(() => { fail(new Error('host handshake timeout')); sock.destroy(); }, h.timeout ?? 5000);
@@ -59,7 +62,7 @@ export function connectHost(info, from, h = {}) {
     while ((i = buf.indexOf('\n')) >= 0) {
       let m; try { m = JSON.parse(buf.slice(0, i)); } catch { m = null; }
       buf = buf.slice(i + 1); if (!m) continue;
-      if (m.ok) { connected = true; clearTimeout(timer); finish(true); }
+      if (m.ok) { connected = true; clearTimeout(timer); for (const x of early.splice(0)) sock.write(x); finish(true); }
       else if (m.l !== undefined) h.onLine?.(m.l, m.o);
       else if (m.x !== undefined) { exited = true; h.onExit?.(m.x, m.err || ''); }
     }
@@ -69,7 +72,7 @@ export function connectHost(info, from, h = {}) {
   return {
     ready,
     get writable() { return sock.writable && !sock.destroyed; },
-    write(str) { if (!sock.writable || sock.destroyed) return false; sock.write(JSON.stringify({ w: str }) + '\n'); return true; },
+    write(str) { if (!sock.writable || sock.destroyed) return false; const l = JSON.stringify({ w: str }) + '\n'; if (connected) sock.write(l); else early.push(l); return true; },
     kill() { if (sock.writable) sock.write(JSON.stringify({ kill: true }) + '\n'); },
     close() { closing = true; sock.destroy(); },
   };

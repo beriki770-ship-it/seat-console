@@ -147,10 +147,11 @@ export function buildDigest(data, now, base) {
 
 // onDecision(convShort, requestId, allow) -> Promise<string> outcome text, throws when already answered.
 // msgMap (persisted by the caller) maps each sent message_id -> conversation id, so a Telegram REPLY finds its conversation.
-// onReply(convId, { text, images:[{data:Buffer}] }) -> Promise<string> confirmation line (HTML, see sentLine).
+// onReply(convId, { text, images:[{data:Buffer}], files:[{data:Buffer, name}] }) -> Promise<string> confirmation line (HTML, see sentLine).
 // onNewTask({seat, model, mode, text}) starts the conversation (throws if it cannot); onList() -> [{id, seat, title, status}]; findConv(idPrefix) -> {id, seat, title}|null; seats = seat names; phoneBase = console URL for "open" buttons.
 // Uploads of every conversation share ONE serial queue (see sendFiles).
 let fileQueue = Promise.resolve();
+export const TG_FILE_MAX = 20 * 1024 * 1024;   // Telegram's own limit for a bot's getFile download
 export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error('compact is not available'); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: 'routines are off' }), onRoutineList = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000 }) {
   let warned = false;
   const base = () => (typeof phoneBase === 'function' ? phoneBase() : phoneBase); // a function when the console URL can change after start (Tailscale coming up late)
@@ -242,11 +243,15 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
   async function handleMessage(cfg, msg) {
     const say = (text, extra) => callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text, reply_to_message_id: msg.message_id, allow_sending_without_reply: true, disable_web_page_preview: true, ...extra }).catch(() => {});
     const text = (msg.text || msg.caption || '').trim();
+    // A file sent as a document / video / audio / voice note: the same reply routing as a photo. The bot API downloads at most TG_FILE_MAX.
+    const doc = msg.document || msg.video || msg.audio || msg.voice;
     const reqs = async () => {
-      if (!msg.photo?.length) return [];
-      const f = await call(cfg, 'getFile', { file_id: msg.photo[msg.photo.length - 1].file_id });
-      const r = await fetch(`${apiBase}/file/bot${cfg.botToken}/${f.file_path}`, { signal: AbortSignal.timeout(30000) });
-      return [{ data: Buffer.from(await r.arrayBuffer()) }];
+      const att = msg.photo?.length ? msg.photo[msg.photo.length - 1] : doc; if (!att) return [];
+      if (att.file_size > TG_FILE_MAX) throw Object.assign(new Error('too big'), { tooBig: true });
+      let f; try { f = await call(cfg, 'getFile', { file_id: att.file_id }); } catch (e) { throw /too big/i.test(e.message) ? Object.assign(e, { tooBig: true }) : e; }
+      const r = await fetch(`${apiBase}/file/bot${cfg.botToken}/${f.file_path}`, { signal: AbortSignal.timeout(120000) });
+      if (!r.ok) throw new Error('download ' + r.status);
+      return [{ data: Buffer.from(await r.arrayBuffer()), name: att.file_name || String(f.file_path).split('/').pop() }];
     };
     // 1. a reply to one of our notifications goes into THAT conversation
     const convId = msg.reply_to_message && Object.hasOwn(msgMap, msg.reply_to_message.message_id) ? msgMap[msg.reply_to_message.message_id] : undefined;
@@ -279,7 +284,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     if (text.startsWith('/')) return void (await say('🤷 Unknown command. <code>/help</code> shows what there is.'));
     // 3. a plain message: continues the conversation picked with "continue", else becomes a new task
     if (live(cont)) { const c = cont; cont = null; return void (await deliver(c.convId, text, msg, say, reqs)); }
-    if (msg.photo?.length) return void (await say('📷 Photos: reply to the notification of the conversation they belong to.'));
+    if (msg.photo?.length || doc) return void (await say('📎 Photos and files: reply to the notification of the conversation they belong to.'));
     if (!text) return;
     const pid = Math.random().toString(16).slice(2, 8);
     for (const [k, v] of pickers) if (!live(v)) pickers.delete(k);
@@ -287,13 +292,15 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     await say(`${taskQuote(text)}\nWhich seat?`, { reply_markup: seatKb(pid, await onUsage().catch(() => ({}))) });
   }
   async function deliver(convId, text, msg, say, reqs) {
-    let images = [];
-    if (msg.photo?.length) {
+    let images = [], files = [];
+    const isDoc = !msg.photo?.length && !!(msg.document || msg.video || msg.audio || msg.voice);
+    if (msg.photo?.length || isDoc) {
       if (!onReply.acceptsImages) return void (await say('📷 Photos can only be sent through the console.'));
-      try { images = await reqs(); } catch { return void (await say('❌ <b>Could not download the photo</b>')); }
+      let got; try { got = await reqs(); } catch (e) { return void (await say(e.tooBig ? '📎 <b>File too big for the bot</b> · Telegram lets a bot download up to 20 MB. Send it through the console (Attach).' : `❌ <b>Could not download the ${isDoc ? 'file' : 'photo'}</b>`)); }
+      if (isDoc) files = got; else images = got;
     }
-    if (!text && !images.length) return void (await say('✍️ Nothing to send. Reply with text' + (onReply.acceptsImages ? ' or a photo.' : '.')));
-    let out; try { out = await onReply(convId, { text: text || 'See the attached image.', images }); } catch (e) { out = errLine('Not sent', e.message); }
+    if (!text && !images.length && !files.length) return void (await say('✍️ Nothing to send. Reply with text' + (onReply.acceptsImages ? ', a photo or a file.' : '.')));
+    let out; try { out = await onReply(convId, { text: text || (files.length ? 'See the attached file.' : 'See the attached image.'), images, files }); } catch (e) { out = errLine('Not sent', e.message); }
     await say(out);
   }
 

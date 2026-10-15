@@ -109,6 +109,18 @@ export async function remoteFile(r, cwd, p) {
   return { real: x.out.toString('utf8', 0, nl), buf: x.out.subarray(nl + 1) };
 }
 
+// A file attached to a remote conversation: its bytes go over ssh stdin into ~/.seat-console/uploads/<id>/<ts>-<n><.ext> (ASCII name: the
+// local one may hold Hebrew, which SAFE_PATH refuses), via a .tmp + rename so claude never sees half a file. -> the remote absolute path.
+export async function putUpload(r, id, stored, buf) {
+  check(ID, id, 'conversation id');
+  const name = check(NEEDLE, stored.replace(/^(\d+-\d+)-.*?((?:\.[A-Za-z0-9]{1,10})?)$/, '$1$2'), 'file name'), dir = `${DIR}/uploads/${id}`;
+  const x = await sshRun(r, `umask 077 && mkdir -p ${dir} && { cat > ${dir}/${name}.tmp && mv -f ${dir}/${name}.tmp ${dir}/${name} || { rm -f ${dir}/${name}.tmp; exit 1; }; }`, { input: buf, timeout: 300000 });
+  if (x.code !== 0) throw fail(r, x, 'copying an attached file');
+  return `${await remoteHome(r)}/${dir}/${name}`;
+}
+// A deleted conversation's attached files on the remote. Never rejects.
+export const remoteRmUploads = (r, id) => sshRun(r, `rm -rf -- ${DIR}/uploads/${check(ID, id, 'id')}; true`, { timeout: 20000 });
+
 // The stream connectHost (hostlink.mjs) talks over instead of a TCP socket: this ssh's stdin/stdout ARE the host's loopback port on the remote.
 export function sshSocket(r, port) {
   const args = [...sshArgs(r, '').slice(0, -2), '-W', `127.0.0.1:${check(PID, port, 'port')}`, r.target];   // sshArgs minus its target + command

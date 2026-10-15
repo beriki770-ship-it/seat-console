@@ -17,7 +17,8 @@ readline.createInterface({ input: process.stdin }).on('line', (l) => {
   if (m.type === 'control_response' && waiting) { const w = waiting; waiting = null; return w(m.response?.response?.behavior === 'allow'); }
   if (m.type !== 'user') return;
   const text = typeof m.message?.content === 'string' ? m.message.content : (m.message?.content || []).map((b) => b.text || '').join(' ');
-  const reply = `echo: ${text} (pid ${process.pid})`;
+  const imgs = (Array.isArray(m.message?.content) ? m.message.content : []).filter((b) => b.type === 'image' && b.source?.data).length;   // attachment tests: image blocks arrive
+  const reply = `echo: ${text} (pid ${process.pid})${imgs ? ` [images: ${imgs}]` : ''}`;
   out({ type: 'system', subtype: 'init', model: 'fake', cwd: process.cwd() });
   if (/perm/.test(text)) {
     out({ type: 'control_request', request_id: `perm-${process.pid}-${Date.now()}`, request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'echo fake' } } });

@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -60,6 +61,17 @@ let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
   await l2.ready; assert.ok(await until(() => again.length >= 1)); assert.deepEqual(again, ['{"late":1}'], 'reconnect replays from the offset only');
   l2.write('after\n'); assert.ok(await until(() => again.length === 2)); assert.equal(JSON.parse(again[1]).echo, 'after');
   pass('host survives server loss, replay from offset, input after reattach');
+  // a big first write right after connect is held until the host said ok: a host busy at spawn time can read it in ONE chunk with the hello and drops
+  // an unauthenticated buffer over 4 KB. A stand-in host answers ok only after 300 ms and records what arrived before that.
+  {
+    let before = '', after = '';
+    const fake = net.createServer((s) => { s.setEncoding('utf8'); let okd = false; s.on('data', (d) => { if (okd) after += d; else before += d; }); setTimeout(() => { okd = true; s.write('{"ok":true}\n'); }, 300); });
+    await new Promise((r) => fake.listen(0, '127.0.0.1', r));
+    const lb = connectHost({ port: fake.address().port, token: 't' }, 0, {});
+    lb.write('x'.repeat(20000) + '\n'); await lb.ready; assert.ok(await until(() => after.length > 20000));
+    assert.equal(before, '{"hello":"t","from":0}\n', 'only the hello is sent before the ok'); lb.close(); fake.close();
+  }
+  pass('a 20 KB write before the handshake waits for the ok');
   // wrong token is refused
   const bad = connectHost({ ...info, token: 'nope' }, 0, { timeout: 1500 });
   await assert.rejects(bad.ready); pass('wrong token refused');

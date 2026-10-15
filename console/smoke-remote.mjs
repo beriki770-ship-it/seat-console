@@ -115,6 +115,16 @@ try {
     if (JSON.stringify(got) !== JSON.stringify([200, 'remote preview ok', 206, 'remote', 403, 403, 404, 413, 403])) throw new Error(JSON.stringify(got));
     return `200 "${a.text}" | Range 206 "${b.text}" | symlink out 403 | /etc/hostname 403 | missing 404 | 25 MB+1 413 | no Referer 403`;
   });
+  await step('an attached file is copied to the remote and the message names the REMOTE path (same bytes)', async () => {
+    const buf = crypto.randomBytes(300000), sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+    const up = await new Promise((ok, no) => { const q = http.request({ host: '127.0.0.1', port: PORT, method: 'POST', path: `/api/upload?conv=${id}&name=${encodeURIComponent('summary report.pdf')}`, headers: { 'X-Seat-Token': TOKEN, 'Content-Length': buf.length } }, (res) => { let t = ''; res.on('data', (d) => (t += d)); res.on('end', () => ok(JSON.parse(t))); }); q.on('error', no); q.end(buf); });
+    if (!up.file) throw new Error(JSON.stringify(up));
+    await send({ conversationId: id, text: 'attach check', files: [up.id] });
+    const res = await idleWith(id, 'Attached file: /root/.seat-console/uploads/' + id + '/'), p = /Attached file: (\S+) \(summary report\.pdf, /.exec(res)?.[1];
+    const remoteSha = p && (await rsh(`sha256sum -- ${p}`)).split(' ')[0];
+    if (remoteSha !== sha(buf)) throw new Error(`${p}: ${remoteSha} != ${sha(buf)}`);
+    return `${p} sha256 ${remoteSha.slice(0, 16)} = local`;
+  });
   await step('console hard-killed mid-turn: the remote host keeps running, the restart reattaches and the SAME claude finishes the turn', async () => {
     await send({ conversationId: id, text: 'slow after restart' }); await sleep(1000); await kill();
     if (!(await alive(pid0))) throw new Error('remote claude died with the console');

@@ -71,6 +71,7 @@ function render(ev, st, target = $('log')) {
   if (ev.type === 'console_user') {
     const u = div('msg user', esc(ev.text)); u.dir = 'auto'; u.appendChild(pinBtn());
     if (ev.images?.length) { const t = div('thumbs', ''); for (const n of ev.images) { const src = `/api/file?conv=${encodeURIComponent(cur.id)}&upload=${encodeURIComponent(n)}`; t.insertAdjacentHTML('beforeend', `<a href="${src}" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="attached image" src="${src}"></a>`); } u.appendChild(t); }
+    if (ev.files?.length) { const t = div('thumbs', ''); for (const f of ev.files) t.insertAdjacentHTML('beforeend', `<a class="fchip" dir="ltr" href="/api/file?conv=${encodeURIComponent(cur.id)}&upload=${encodeURIComponent(f.name)}" target="_blank" rel="noopener">📎 <bdi>${esc(f.label)}</bdi> · ${sizeText(f.size)}</a>`); u.appendChild(t); }
     out.push(u);
   }
   else if (ev.type === 'console_error') out.push(div('msg note err', esc(ev.text)));
@@ -481,10 +482,10 @@ $('log').onclick = async (e) => {
 };
 $('composer').onsubmit = async (e) => {
   e.preventDefault();
-  const text = $('text').value.trim() || (pending.length ? 'See the attached image.' : ''); if (!text) return;
+  const text = $('text').value.trim() || (pending.length ? (pending.some((p) => p.file) ? 'See the attached file.' : 'See the attached image.') : ''); if (!text) return;
   if (!cur.id && $('mode').value === 'bypass' && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Start it?')) return;
   $('text').value = '';
-  const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: cur.id ? undefined : $('mode').value, images: pending.map((p) => p.id), draftId });
+  const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: cur.id ? undefined : $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
   if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; return; }
   pending.length = 0; showThumbs(); draftId = newDraftId();
   if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId); }
@@ -511,15 +512,16 @@ async function handoff(seat, result) {
   $('text').focus();
 }
 
-// ---- image attachments (button, clipboard paste). Uploaded at once, referenced by id when the message is sent. ----
-const pending = [];          // { id, url } uploaded but not yet sent
+// ---- attachments (button: any file; clipboard paste: images). Uploaded at once, referenced by id when the message is sent. The server decides image or file by magic bytes. ----
+const pending = [];          // { id, url } image / { id, file: true, name, size } other file, uploaded but not yet sent
+const sizeText = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 // Random per draft, sent with upload and send: the server only lets a send claim staged files that carry its own draft id.
 // getRandomValues, not randomUUID: the page is plain http over Tailscale, where randomUUID does not exist.
 const newDraftId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
 let draftId = newDraftId();
 function showThumbs() {
   const t = $('thumbs'); t.hidden = !pending.length;
-  t.innerHTML = pending.map((p, i) => `<span class="thumbwrap"><img class="thumb" alt="attached image" src="${p.url}"><button type="button" data-rm="${i}" aria-label="Remove image">×</button></span>`).join('');
+  t.innerHTML = pending.map((p, i) => `<span class="thumbwrap">${p.file ? `<span class="fchip" dir="ltr">📎 <bdi>${esc(p.name)}</bdi> · ${sizeText(p.size)}</span>` : `<img class="thumb" alt="attached image" src="${p.url}">`}<button type="button" data-rm="${i}" aria-label="Remove ${p.file ? 'file' : 'image'}">×</button></span>`).join('');
 }
 // The API refuses images over 5 MB, so big phone photos are re-encoded smaller in the browser first.
 async function shrink(f) {
@@ -533,11 +535,12 @@ async function shrink(f) {
 }
 async function attach(files) {
   for (let f of files) {
-    if (!f.type.startsWith('image/')) continue;
-    f = await shrink(f);
-    const r = await fetch('/api/upload' + (cur.id ? '?conv=' + cur.id : '?draft=' + draftId), { method: 'POST', headers: { 'X-Seat-Token': TOKEN }, body: f }).then((x) => x.json());
-    if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); continue; }
-    pending.push({ id: r.id, url: URL.createObjectURL(f) });
+    const name = f.name;
+    if (f.type.startsWith('image/')) f = await shrink(f);
+    const r = await fetch('/api/upload' + (cur.id ? '?conv=' + cur.id : '?draft=' + draftId) + '&name=' + encodeURIComponent(name || 'file'), { method: 'POST', headers: { 'X-Seat-Token': TOKEN }, body: f })
+      .then((x) => x.json(), () => ({ error: 'upload failed' }));
+    if (r.error) { $('log').appendChild(div('msg note err', esc(`${name}: ${r.error}`))); continue; }
+    pending.push(r.file ? { id: r.id, file: true, name: r.name, size: r.size } : { id: r.id, url: URL.createObjectURL(f) });
   }
   showThumbs();
 }
