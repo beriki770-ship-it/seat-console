@@ -8,7 +8,9 @@ It works with the Claude Code CLI that you installed and signed in to yourself. 
 
 ## Demo video
 
-<!-- TODO(owner): add the demo video link here. -->
+[![Seat Console demo, 3 minutes](docs/media/seat-console-demo.jpg)](docs/media/seat-console-demo.mp4)
+
+A 3-minute walkthrough: one console for every agent, crash recovery, approvals and files on the phone.
 
 ## Features
 
