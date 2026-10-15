@@ -5,6 +5,7 @@ Thanks for helping. A few ground rules keep the project small and safe:
 - **No npm dependencies.** The console runs on plain Node.js modules. A change that needs a package has to explain why the standard library cannot do it.
 - **Run the offline tests** before you open a pull request. They need no Claude account and spend no quota:
   ```powershell
+  $env:TZ = 'Europe/Vienna'   # one routine test assumes the local clock is the default SEAT_CONSOLE_TZ
   Get-ChildItem console\test-*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { "FAILED: $($_.Name)" } }
   ```
 - **Test against the test instance**, never your everyday console: `console\start-test.ps1` starts one on port 4851 with its own data folder, no Tailscale and Telegram off. `console\smoke.ps1` runs the end-to-end check there, but it uses a real seat and real quota.

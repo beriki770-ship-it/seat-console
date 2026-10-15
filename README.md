@@ -160,6 +160,7 @@ Undo with `tailscale serve reset`. Requests that come in through `tailscale serv
 Offline tests, no Claude account or quota needed:
 
 ```powershell
+$env:TZ = 'Europe/Vienna'   # one routine test assumes the local clock is the default SEAT_CONSOLE_TZ
 Get-ChildItem console\test-*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { "FAILED: $($_.Name)" } }
 ```
 
