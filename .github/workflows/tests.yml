@@ -20,6 +20,8 @@ jobs:
           node-version: 24
       - name: Run console/test-*.mjs
         shell: pwsh
+        env:
+          TZ: Europe/Vienna   # the routine tests build local-clock times and expect them on the default SEAT_CONSOLE_TZ wall clock
         run: |
           $failed = @()
           foreach ($t in Get-ChildItem console/test-*.mjs) {
