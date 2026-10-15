@@ -490,7 +490,10 @@ $('composer').onsubmit = async (e) => {
   pending.length = 0; showThumbs(); draftId = newDraftId();
   if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId); }
 };
-$('text').onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); } };
+// On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
+const TOUCH = matchMedia('(pointer: coarse)').matches;
+if (TOUCH) { $('text').placeholder = 'Message this seat. Tap Send to send.'; $('text').enterKeyHint = 'enter'; }
+$('text').onkeydown = (e) => { if (!TOUCH && e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('composer').requestSubmit(); } };
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
 $('continue').onclick = async () => {
   const r = await api('/api/remote-continue', { id: cur.id }); if (r.error) return alert(r.error);
