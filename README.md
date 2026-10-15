@@ -22,7 +22,7 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 - **Routines.** Recurring prompts on a cron schedule. They never run unattended: at the due time you get a Telegram message with Run / Skip buttons, and the run starts on your tap (or with "Run now" in the web sidebar).
 - **Daily digests** at 08:00 and 21:00: quota per seat, stuck conversations, what finished, errors in the server log, today's routines.
 - **Phone-friendly, installable (PWA).** Works over Tailscale with Basic auth; with `tailscale serve` you get HTTPS and can install it as an app.
-- **Handy extras.** Image attachments, per-seat 5-hour usage bar, context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
+- **Handy extras.** Attachments of any file type, per-seat 5-hour usage bar, context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
 - **Zero npm dependencies.** Plain Node.js modules and static files. No build step.
 
 ## Requirements
