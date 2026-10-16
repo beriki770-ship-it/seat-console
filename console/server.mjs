@@ -343,7 +343,19 @@ function remoteLine(c, line, end, live) {
   broadcast({ conv: remoteSummary(c) });
   remoteSave ??= setTimeout(() => { remoteSave = null; saveState(); }, 1000);
   // The same finished/error message a local turn gets (Telegram is off on a test instance). Not for results read from byte 0: that is history.
-  if (ev.type === 'result' && live) tg.notify(ev.is_error ? 'error' : 'done', { seat: groupOf(c.remote), title: c.title, text: ev.result || '', convId: c.id, files: [], ...ctxNote(c) }, PHONE).catch(notifyFailed);
+  if (ev.type === 'result' && live) remoteDone(c, ev);
+}
+// A finished `claude -p` run can write dozens of result lines at once (seen: 64 results in one second, one Telegram
+// message each, some refused with 429). Wait until no further result came for 15 s, then send ONE message for the
+// last one, through the same 60 s per-conversation throttle local turns use.
+const remoteDoneTimers = new Map();
+function remoteDone(c, ev) {
+  clearTimeout(remoteDoneTimers.get(c.id));
+  remoteDoneTimers.set(c.id, setTimeout(() => {
+    remoteDoneTimers.delete(c.id);
+    if (!doneThrottle.allow(c.id)) return;
+    tg.notify(ev.is_error ? 'error' : 'done', { seat: groupOf(c.remote), title: c.title, text: ev.result || '', convId: c.id, files: [], ...ctxNote(c) }, PHONE).catch(notifyFailed);
+  }, 15000).unref());
 }
 // ssh to a remote failed (err = its message) or worked again (err = null): reported by the follower and by every control action (rhost.mjs).
 function remoteStatus(name, err) {
