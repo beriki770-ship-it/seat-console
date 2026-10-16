@@ -1235,6 +1235,24 @@ if (crashed && interruptedConvs().length) (async () => {
 sweepStaged(); setInterval(sweepStaged, 3600e3).unref();
 // Digest: a test instance has Telegram off and never schedules it (GET /api/digest shows the text). Retention: once shortly after start (after reattach), then at 04:00 Vienna.
 if (!ISOLATED) { setInterval(guard('digest', digestTick), 30000).unref(); digestTick(); }
+// Usage poll: rate_limit_event only arrives on a console turn, so work done on the same account in another client (desktop app, terminal)
+// never moved the meter and it could sit far below the real value. Ask Anthropic for the account's real 5 h window every 3 min.
+// Read-only use of the seat's current access token; never refreshes it (that would rotate the CLI's refresh token). Expired token = keep the last value.
+async function pollUsage() {
+  for (const seat of Object.keys(SEATS)) {
+    try {
+      const creds = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8'));
+      const tok = creds.claudeAiOauth?.accessToken; if (!tok) continue;
+      const r = await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + tok, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
+      if (!r.ok) continue;
+      const w = (await r.json()).five_hour; if (!w || typeof w.utilization !== 'number' || !w.resets_at) continue;
+      state.usage[seat] = { windows: { five_hour: { utilization: w.utilization / 100, resetsAt: Math.round(Date.parse(w.resets_at) / 1000) } }, at: Date.now() };
+      broadcast({ usage: { seat, ...state.usage[seat] } }); quotaWatch(seat);
+    } catch {}   // missing creds (e.g. macOS keychain) / network: the event path still updates the meter
+  }
+  saveState();
+}
+if (!ISOLATED) { setInterval(() => pollUsage().catch(() => {}), 180e3).unref(); pollUsage().catch(() => {}); }
 setTimeout(() => retentionRun().catch((e) => console.log('[retention] failed: ' + e.message)), 30000).unref();
 setInterval(guard('retention', () => { if (viennaHour(Date.now()) === 4 && state.lastRetentionFor !== viennaYmd(Date.now())) retentionRun().catch((e) => console.log('[retention] failed: ' + e.message)); }), 60000).unref();
 // Idle processes are stopped after IDLE_REAP_MS (see ensureProc); checked at least once a minute.
