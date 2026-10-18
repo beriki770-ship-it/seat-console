@@ -354,6 +354,7 @@ function remoteDone(c, ev) {
   remoteDoneTimers.set(c.id, setTimeout(() => {
     remoteDoneTimers.delete(c.id);
     if (!doneThrottle.allow(c.id)) return;
+    if (!ev.is_error && quietRepeat(c, ev.result)) return;
     tg.notify(ev.is_error ? 'error' : 'done', { seat: groupOf(c.remote), title: c.title, text: ev.result || '', convId: c.id, files: [], ...ctxNote(c) }, PHONE).catch(notifyFailed);
   }, 15000).unref());
 }
@@ -518,6 +519,7 @@ function settleDone(c) {
   // Two turns finishing within the throttle window: the later one stays pending (re-checked every second) and goes out when the window has passed, it is never dropped.
   if (!doneThrottle.allow(c.id)) return;
   const { info } = r.done; r.done = null;
+  if (!info.needsAnswer && quietRepeat(c, info.text)) { console.log(`[done] conv=${c.id.slice(0, 8)} notify=quiet (short repeat)`); return; }
   console.log(`[done] ${new Date().toISOString().slice(11, 19)} conv=${c.id.slice(0, 8)} notify=sent`);
   // The turn's files follow as replies to the done-message, under the same rules as /api/file (outFiles in hardening.mjs).
   tg.notify('done', info, PHONE, info.ctxCompact ? tg.compactButton(c.id) : null).then((m) => { const f = m && !c.remote && outFiles(info.out, c, FILE_RULES);   /* a remote conversation's files are on the remote: never matched against this PC's */ return f?.length ? tg.sendFiles(m.message_id, f) : null; }).catch(notifyFailed);
@@ -869,6 +871,15 @@ function decide(c, requestId, allow) {
 
 // ---- telegram: shares decide() with POST /api/permission, and routes replies through send() ----
 const doneThrottle = new Throttle(60000);
+// An agent waiting out a quota reset can wake itself every minute and end each turn with "Waiting." — one notification per minute.
+// A short reply right after another short one in the same conversation is a status ping, not news: at most one per REPEAT_QUIET_MS.
+// A long reply (the real report) or a question always goes out.
+const SHORT_CHARS = 160, REPEAT_QUIET_MS = 30 * 60000, lastDone = new Map();
+function quietRepeat(c, text, now = Date.now()) {
+  const short = String(text || '').trim().length < SHORT_CHARS, p = lastDone.get(c.id);
+  if (short && p?.short && now - p.at < REPEAT_QUIET_MS) return true;
+  lastDone.set(c.id, { at: now, short }); return false;
+}
 async function tgDecision(convShort, requestId, allow) {
   const c = Object.values(state.conversations).find((x) => x.id.startsWith(convShort));
   if (!c) throw new Error('conversation not found');
