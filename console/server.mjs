@@ -875,8 +875,10 @@ const doneThrottle = new Throttle(60000);
 // A short reply right after another short one in the same conversation is a status ping, not news: at most one per REPEAT_QUIET_MS.
 // A long reply (the real report) or a question always goes out.
 const SHORT_CHARS = 160, REPEAT_QUIET_MS = 30 * 60000, lastDone = new Map();
+const WAIT_RE = /(wait(ing)?|still (running|working)|reset|limit)|מחכה|ממתין|ממתינה|איפוס|מגבלה/i;
 function quietRepeat(c, text, now = Date.now()) {
   const short = String(text || '').trim().length < SHORT_CHARS, p = lastDone.get(c.id);
+  if (short && WAIT_RE.test(String(text || ''))) return true;   // a pure waiting status (quota reset, background agents) never pings
   if (short && p?.short && now - p.at < REPEAT_QUIET_MS) return true;
   lastDone.set(c.id, { at: now, short }); return false;
 }
