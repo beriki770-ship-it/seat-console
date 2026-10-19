@@ -179,15 +179,13 @@ async function showConversation() {
   $('cwd').value = c ? c.cwd : s.cwd;
   // An existing conversation's model and effort come from the conversation: left on whatever the last one used, the next message would silently restart it with those.
   if (c) { $('model').value = c.model || ''; $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || 'default'; }
-  if (c) $('mode').value = c.mode;   // changeable on an existing conversation too: the next message restarts it in the new mode (server send())
+  if (c) $('mode').value = c.mode || 'auto';   // a remote run has no mode; changeable on an existing conversation too: the next message restarts it in the new mode (server send())
   $('banner').hidden = !(c && (c.status === 'interrupted' || c.status === 'stopped'));
   $('banner').firstElementChild.textContent = c && c.status === 'interrupted' ? 'Interrupted: the server restarted while this turn was running. Resume continues the same session.' : 'Stopped. Sending a message resumes this conversation.';
   $('menu').onclick = () => document.body.classList.toggle('drawer');
-  // A remote run (server: remote.mjs) is read-only: no composer, no pins; the server refuses every POST for it anyway.
-  const ro = !!c?.remote; $('composer').hidden = ro; $('readonly').hidden = !ro; document.body.classList.toggle('readonly', ro);
-  // A remote with "control": true can pick a finished run up again: Continue opens a NEW conversation there that resumes the run's session.
-  const ctl = ro && !!s.control; $('continue').hidden = !ctl;
-  $('readonly').firstElementChild.textContent = ctl ? 'A run on the remote server, shown as its log.' : 'Read-only: this run lives on a remote server. Nothing can be sent from here.';
+  // A remote run (server: remote.mjs) of a read-only remote: no composer, no pins; the server refuses every POST for it anyway.
+  // A remote with "control": true: its run gets the composer, and the first message continues the run's session in a NEW conversation there (composer submit).
+  const ro = !!c?.remote, ctl = ro && !!s.control; $('composer').hidden = ro && !ctl; $('readonly').hidden = !ro || ctl; document.body.classList.toggle('readonly', ro && !ctl);
   menuMark(); showMarks();
 }
 
@@ -483,13 +481,19 @@ $('log').onclick = async (e) => {
 $('composer').onsubmit = async (e) => {
   e.preventDefault();
   const text = $('text').value.trim() || (pending.length ? (pending.some((p) => p.file) ? 'See the attached file.' : 'See the attached image.') : ''); if (!text) return;
-  const curConv = cur.id && seats.flatMap((s) => s.conversations || []).find((x) => x.id === cur.id);
-  if ($('mode').value === 'bypass' && (!cur.id || curConv?.mode !== 'bypass') && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Start it?')) return;
+  const run = curConv()?.remote ? cur.id : null;   // writing into a remote run continues its session in a new conversation
+  if ($('mode').value === 'bypass' && (!cur.id || run || curConv()?.mode !== 'bypass') && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Start it?')) return;
   $('text').value = '';
-  const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
+  if (run) {
+    const k = await api('/api/remote-continue', { id: run, mode: $('mode').value });
+    if (k.error) { $('log').appendChild(div('msg note err', esc(k.error))); $('text').value = text; return; }
+    cur.id = k.conversationId;
+  }
+  const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: run ? undefined : $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
   if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; return; }
   pending.length = 0; showThumbs(); draftId = newDraftId();
-  if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId); }
+  if (run) { seats = await api('/api/seats'); await pick(cur.seat, cur.id); }
+  else if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId); }
 };
 // On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
 const TOUCH = matchMedia('(pointer: coarse)').matches;
@@ -514,10 +518,6 @@ $('text').addEventListener('beforeinput', (e) => {
   if (continueList(e.target)) { e.preventDefault(); e.target.dispatchEvent(new Event('input', { bubbles: true })); }
 });
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
-$('continue').onclick = async () => {
-  const r = await api('/api/remote-continue', { id: cur.id }); if (r.error) return alert(r.error);
-  seats = await api('/api/seats'); await pick(cur.seat, r.conversationId);
-};
 $('resume').onclick = async () => { const r = await api('/api/resume', { conversationId: cur.id }); if (r.error) $('log').appendChild(div('msg note err', esc(r.error))); };
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {
