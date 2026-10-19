@@ -1296,17 +1296,30 @@ function accountUsage(rem, ev) {
 // Usage poll: rate_limit_event only arrives on a console turn, so work done on the same account in another client (desktop app, terminal)
 // never moved the meter and it could sit far below the real value. Ask Anthropic for the account's real 5 h window every 3 min.
 // Read-only use of the seat's current access token; never refreshes it (that would rotate the CLI's refresh token). Expired token = keep the last value.
+// The same two calls, run ON a remote whose claude is logged in to the seat's account: the token never leaves that machine, only the numbers come back.
+const REMOTE_USAGE_JS = `const o=require(require('os').homedir()+'/.claude/.credentials.json').claudeAiOauth;const h={Authorization:'Bearer '+o.accessToken,'anthropic-beta':'oauth-2025-04-20'};
+Promise.all(['profile','usage'].map((p)=>fetch('https://api.anthropic.com/api/oauth/'+p,{headers:h}).then((r)=>r.json()))).then(([p,u])=>console.log(JSON.stringify({email:p.account&&p.account.email,five_hour:u.five_hour||null})))`;
+// Seat -> its five_hour window. The PC token first; expired (a seat whose work all runs on a remote) -> the remote with "account": seat.
+// The remote's answer counts only if its account email is the seat's own: a remote whose default login is another account never lands on this meter.
+async function seatUsage(seat) {
+  const o = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8')).claudeAiOauth;
+  if (o?.accessToken && o.expiresAt > Date.now()) {   // expired: only the seat's own CLI refreshes it; the console never writes credentials
+    const r = await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
+    return r.ok ? (await r.json()).five_hour : undefined;
+  }
+  const rem = REMOTES.find((x) => x.account === seat && !remoteDown.has(x.name)); if (!rem || !SEATS[seat].email) return undefined;
+  const x = await rhost.sshRun(rem, rem.node + ' -', { input: REMOTE_USAGE_JS, timeout: 30000, max: 65536 });
+  const j = x.code === 0 ? parseLine(x.out.toString().trim().split('\n').pop()) : null;
+  return j && j.email === SEATS[seat].email ? j.five_hour : undefined;
+}
 async function pollUsage() {
   for (const seat of Object.keys(SEATS)) {
     try {
-      const creds = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8'));
-      const tok = creds.claudeAiOauth?.accessToken; if (!tok || creds.claudeAiOauth.expiresAt < Date.now()) continue;   // expired: only the seat's own CLI refreshes it; the console never writes credentials
-      const r = await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + tok, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
-      if (!r.ok) continue;
-      const w = (await r.json()).five_hour; if (!w || typeof w.utilization !== 'number' || !w.resets_at) continue;
-      state.usage[seat] = { windows: { five_hour: { utilization: w.utilization / 100, resetsAt: Math.round(Date.parse(w.resets_at) / 1000) } }, at: Date.now() };
+      const w = await seatUsage(seat); if (!w || typeof w.utilization !== 'number') continue;
+      // resets_at null = no 5 h window open (nothing used since the last reset): 0 %, shown as reset
+      state.usage[seat] = { windows: { five_hour: { utilization: w.utilization / 100, resetsAt: w.resets_at ? Math.round(Date.parse(w.resets_at) / 1000) : Math.floor(Date.now() / 1000) } }, at: Date.now() };
       broadcast({ usage: { seat, ...state.usage[seat] } }); quotaWatch(seat);
-    } catch {}   // missing creds (e.g. macOS keychain) / network: the event path still updates the meter
+    } catch {}   // missing creds / network / ssh: the event path still updates the meter
   }
   saveState();
 }
