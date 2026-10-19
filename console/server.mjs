@@ -829,16 +829,16 @@ async function send(b) {
   if (!c) { c = newConversation(seat, { cwd, model: b.model, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }
   // Anything below failing (spawn, bad image id, dead stdin) must not leave a ghost conversation behind that THIS call created.
   try {
-  // cwd, model and effort are fixed per process: changing one restarts it on the same session. Mode never changes after start.
-  const model = b.model || c.model;
+  // cwd, model, effort and permission mode are fixed per process: changing one restarts it on the same session (--resume keeps the conversation).
+  const model = b.model || c.model, mode = b.mode || c.mode;
   if (b.effort && !EFFORTS.includes(b.effort)) throw new Error('unknown effort');
   const effort = b.effort || c.effort;
   // Restarting the process ends its running turn: an explicit change is only taken while the conversation is idle, never silently mid-turn.
-  if (R(c).proc && (c.cwd !== cwd || model !== c.model || effort !== c.effort)) {
-    if (c.working || c.bg?.length || R(c).perms.size) throw new Error('This conversation is running: model, effort and folder can only be changed while it is idle. Wait for it to finish (or stop it), then send again.');
+  if (R(c).proc && (c.cwd !== cwd || model !== c.model || effort !== c.effort || mode !== c.mode)) {
+    if (c.working || c.bg?.length || R(c).perms.size) throw new Error('This conversation is running: model, effort, permission mode and folder can only be changed while it is idle. Wait for it to finish (or stop it), then send again.');
     await killProc(c);
   }
-  c.cwd = cwd; c.model = model || null; c.effort = effort || null;
+  c.cwd = cwd; c.model = model || null; c.effort = effort || null; c.mode = mode;
   if (created) state.cwds[seat] = cwd; // the seat's default folder follows NEW conversations only, not every message into an old one
   await ensureProc(c);
   const images = claimImages(c, b.images, b.imageBuffers, b.draftId);

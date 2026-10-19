@@ -179,7 +179,7 @@ async function showConversation() {
   $('cwd').value = c ? c.cwd : s.cwd;
   // An existing conversation's model and effort come from the conversation: left on whatever the last one used, the next message would silently restart it with those.
   if (c) { $('model').value = c.model || ''; $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || 'default'; }
-  $('mode').disabled = !!c; if (c) $('mode').value = c.mode;
+  if (c) $('mode').value = c.mode;   // changeable on an existing conversation too: the next message restarts it in the new mode (server send())
   $('banner').hidden = !(c && (c.status === 'interrupted' || c.status === 'stopped'));
   $('banner').firstElementChild.textContent = c && c.status === 'interrupted' ? 'Interrupted: the server restarted while this turn was running. Resume continues the same session.' : 'Stopped. Sending a message resumes this conversation.';
   $('menu').onclick = () => document.body.classList.toggle('drawer');
@@ -483,9 +483,10 @@ $('log').onclick = async (e) => {
 $('composer').onsubmit = async (e) => {
   e.preventDefault();
   const text = $('text').value.trim() || (pending.length ? (pending.some((p) => p.file) ? 'See the attached file.' : 'See the attached image.') : ''); if (!text) return;
-  if (!cur.id && $('mode').value === 'bypass' && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Start it?')) return;
+  const curConv = cur.id && seats.flatMap((s) => s.conversations || []).find((x) => x.id === cur.id);
+  if ($('mode').value === 'bypass' && (!cur.id || curConv?.mode !== 'bypass') && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Start it?')) return;
   $('text').value = '';
-  const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: cur.id ? undefined : $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
+  const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
   if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; return; }
   pending.length = 0; showThumbs(); draftId = newDraftId();
   if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId); }
