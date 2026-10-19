@@ -244,7 +244,8 @@ const until = (ms) => { const m = Math.ceil((ms - Date.now()) / 60000); return m
 const resetText = (ms) => ms <= Date.now() ? 'reset' : 'resets ' + clock(ms) + until(ms);
 const meter = (u) => !u ? '' : Object.entries(u.windows).filter(([k, v]) => k === 'five_hour' || v.resetsAt * 1000 > Date.now()).map(([k, v]) => {
   const gone = v.resetsAt * 1000 <= Date.now(), pct = gone ? 0 : Math.round(v.utilization * 100);
-  return `<small class="meter" title="resets ${esc(new Date(v.resetsAt * 1000).toLocaleString())}">${esc(k.replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, pct)}%"></i></span> ${pct}% <span class="reset" dir="auto">${resetText(v.resetsAt * 1000)}</span></small>`;
+  const old = u.at && Date.now() - u.at > 30 * 60000 ? ` · read ${clock(u.at)}` : '';   // a stale reading says when it was taken
+  return `<small class="meter" title="resets ${esc(new Date(v.resetsAt * 1000).toLocaleString())}">${esc(k.replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, pct)}%"></i></span> ${pct}% <span class="reset" dir="auto">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
 }).join('');
 // Composer warning: at 80 % or more of the 5 h window, name the seat with the most quota left ("ops at 85%, info free (12%)").
 function showQuota() {

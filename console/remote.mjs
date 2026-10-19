@@ -30,7 +30,8 @@ export function loadRemotes(file, home, log = console.log) {
       || (port !== null && !(Number.isInteger(port) && port > 0 && port < 65536)) || [r?.node, r?.claude].some((b) => b !== undefined && !(typeof b === 'string' && SAFE_BIN.test(b)))) {
       log(`[remote] entry ${JSON.stringify(r?.name)} skipped: needs name [a-z0-9-], target user@host, identity, paths (letters, digits, _ . / ~ * ? - only; may be empty with control: true), port 1-65535, node/claude (letters, digits, _ . / ~ - only)`); continue;
     }
-    out.push({ name: r.name, target: r.target, identity: r.identity.replace(/^~(?=[\\/])/, home), seat: typeof r.seat === 'string' ? r.seat : '', paths, port, control, node: r.node || 'node', claude: r.claude || 'claude' });
+    out.push({ name: r.name, target: r.target, identity: r.identity.replace(/^~(?=[\\/])/, home), seat: typeof r.seat === 'string' ? r.seat : '', paths, port, control, node: r.node || 'node', claude: r.claude || 'claude',
+      account: SAFE_NAME.test(r.account || '') ? r.account : null });   // the local seat whose Anthropic account this remote's claude uses: its usage feeds that seat's meter
   }
   return out;
 }

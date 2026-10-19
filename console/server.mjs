@@ -334,7 +334,8 @@ let remoteSave = null;   // a 70 MB first read is thousands of lines: state.json
 function remoteLine(c, line, end, live) {
   c.grewAt = Date.now();   // the file grew (any line, even one skipped below): not stale
   const ev = parseLine(line); if (!ev) return;   // not an event object: skipped, the follower's offset still moves past it
-  if (NOISE.has(ev.subtype) || ev.type === 'rate_limit_event' || /^control_/.test(ev.type || '')) return;   // the remote account's quota is not a local seat's
+  if (ev.type === 'rate_limit_event') { if (live) accountUsage(REMOTES.find((x) => x.name === c.remote), ev); return; }   // only a remote with "account" feeds a local seat's meter
+  if (NOISE.has(ev.subtype) || /^control_/.test(ev.type || '')) return;
   ev.roff = end;
   applyCtx(c.ctx ??= {}, ev);
   if (ev.session_id) c.sessionId = ev.session_id;
@@ -440,7 +441,7 @@ function handleLine(c, line, end) {
   }
   if (ev.type === 'control_cancel_request') { r.perms.delete(ev.request_id); broadcast({ conv: summary(c) }); return; }
   // The CLI reports the account's rate-limit windows with every turn; keep the latest per seat (free usage meter).
-  if (ev.type === 'rate_limit_event') { const w = ev.rate_limit_info?.unifiedWindows; if (w) { state.usage[c.seat] = { windows: w, at: Date.now() }; saveState(); broadcast({ usage: { seat: c.seat, ...state.usage[c.seat] } }); quotaWatch(c.seat); } return; }
+  if (ev.type === 'rate_limit_event') { const w = ev.rate_limit_info?.unifiedWindows; if (w) { state.usage[c.seat] = { windows: w, at: Date.now() }; saveState(); broadcast({ usage: { seat: c.seat, ...state.usage[c.seat] } }); quotaWatch(c.seat); if (c.remote) accountUsage(ctlOf(c), ev); } return; }
   if (NOISE.has(ev.subtype) || ev.type === 'control_response') return;
   // Context meter. The CLI answers /context and /compact with synthetic assistant/user messages (the table, the compaction summary, a replay of the older /context text):
   // while one of OUR slash commands runs they are not chat, only the numbers matter.
@@ -1286,6 +1287,12 @@ if (crashed && interruptedConvs().length) (async () => {
 sweepStaged(); setInterval(sweepStaged, 3600e3).unref();
 // Digest: a test instance has Telegram off and never schedules it (GET /api/digest shows the text). Retention: once shortly after start (after reattach), then at 04:00 Vienna.
 if (!ISOLATED) { setInterval(guard('digest', digestTick), 30000).unref(); digestTick(); }
+// A remote whose claude is logged in to a local seat's account (remotes.json "account") reports that account's quota:
+// it goes on the seat's meter. That seat's own PC token may sit expired for days when all its work runs on the remote.
+function accountUsage(rem, ev) {
+  const seat = rem?.account, w = ev.rate_limit_info?.unifiedWindows; if (!seat || !hasKey(SEATS, seat) || !w) return;
+  state.usage[seat] = { windows: w, at: Date.now() }; saveState(); broadcast({ usage: { seat, ...state.usage[seat] } }); quotaWatch(seat);
+}
 // Usage poll: rate_limit_event only arrives on a console turn, so work done on the same account in another client (desktop app, terminal)
 // never moved the meter and it could sit far below the real value. Ask Anthropic for the account's real 5 h window every 3 min.
 // Read-only use of the seat's current access token; never refreshes it (that would rotate the CLI's refresh token). Expired token = keep the last value.
@@ -1293,7 +1300,7 @@ async function pollUsage() {
   for (const seat of Object.keys(SEATS)) {
     try {
       const creds = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8'));
-      const tok = creds.claudeAiOauth?.accessToken; if (!tok) continue;
+      const tok = creds.claudeAiOauth?.accessToken; if (!tok || creds.claudeAiOauth.expiresAt < Date.now()) continue;   // expired: only the seat's own CLI refreshes it; the console never writes credentials
       const r = await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + tok, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
       if (!r.ok) continue;
       const w = (await r.json()).five_hour; if (!w || typeof w.utilization !== 'number' || !w.resets_at) continue;
