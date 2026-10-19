@@ -341,7 +341,7 @@ function onEvent(m) {
     if (cur.id === d.removed) pick(cur.seat, null);
     return;
   }
-  if (d.usage) { const s = seats.find((x) => x.name === d.usage.seat); if (s) { s.usage = { windows: d.usage.windows, at: d.usage.at }; scheduleSeats(); } return; }
+  if (d.usage) { const hit = seats.filter((x) => x.name === d.usage.seat || x.account === d.usage.seat); for (const s of hit) s.usage = { windows: d.usage.windows, at: d.usage.at }; if (hit.length) scheduleSeats(); return; }   // a remote group with that account mirrors the seat's meter
   if (d.hello) {   // before d.conv: a hello carries `conv` as a plain id string, not a summary object
     if (d.conv !== cur.id) return;
     if (loading && loading.id === d.conv) loading.hello = d.total;   // snapshot still loading: compared when it arrives

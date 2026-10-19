@@ -1091,7 +1091,7 @@ const seatsView = () => [...Object.keys(SEATS).map((name) => ({ name, email: SEA
   usage: state.usage[name] || null, conversations: Object.values(state.conversations).filter((c) => c.seat === name).sort((a, b) => b.updatedAt - a.updatedAt).map(summary) })),
   // remote groups after the seats: read-only runs (no "+ new"); the role line carries "unreachable since HH:MM" while ssh fails.
   // control: true adds "+ new" (`control`) and lists the conversations started there next to the runs (viewSummary tells them apart).
-  ...REMOTES.map((r) => ({ name: groupOf(r.name), email: r.target, role: (remoteDown.has(r.name) ? downText(r.name) + ' · ' : '') + (r.control ? 'control' : 'read-only') + (r.seat ? ' · ' + r.seat : ''), remote: true, control: r.control, cwd: null, usage: null,
+  ...REMOTES.map((r) => ({ name: groupOf(r.name), email: r.target, role: (remoteDown.has(r.name) ? downText(r.name) + ' · ' : '') + (r.control ? 'control' : 'read-only') + (r.seat ? ' · ' + r.seat : ''), remote: true, control: r.control, cwd: null, account: r.account, usage: (r.account && state.usage[r.account]) || null,   /* a remote with 'account' shows that seat's meter */
     conversations: [...Object.values(state.remoteConvs), ...Object.values(state.conversations)].filter((c) => c.remote === r.name).sort((a, b) => b.updatedAt - a.updatedAt).map(viewSummary) }))];
 
 async function handler(req, res) {
