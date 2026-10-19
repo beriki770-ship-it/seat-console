@@ -106,8 +106,9 @@ const MAX_PER_SEAT = 5;
 // Stream events the UI never shows: they would bloat the log and the browser.
 const NOISE = new Set(['hook_started', 'hook_response', 'commands_changed', 'post_turn_summary', 'task_summary']);
 const MODE_ARGS = {
-  auto: ['--permission-mode', 'auto', '--permission-prompt-tool', 'stdio'],
-  ask: ['--permission-mode', 'manual', '--permission-prompt-tool', 'stdio'],
+  // --allow-dangerously-skip-permissions on every mode only PERMITS a later live switch to bypass (setMode); it does not skip anything by itself.
+  auto: ['--permission-mode', 'auto', '--permission-prompt-tool', 'stdio', '--allow-dangerously-skip-permissions'],
+  ask: ['--permission-mode', 'manual', '--permission-prompt-tool', 'stdio', '--allow-dangerously-skip-permissions'],
   bypass: ['--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions'],
 };
 
@@ -422,6 +423,11 @@ function handleLine(c, line, end) {
   let ev; try { ev = JSON.parse(line); } catch { return; }
   const r = R(c);
   if (end) { ev.hoff = end; if (c.hostGen) ev.hgen = c.hostGen; } // the generation says which host-out file the offset belongs to
+  if (ev.type === 'control_response' && ctlPending.has(ev.response?.request_id)) {   // the answer to a request WE sent (ctlRequest)
+    const p = ctlPending.get(ev.response.request_id); ctlPending.delete(ev.response.request_id);
+    if (ev.response.subtype === 'success') p.resolve(ev.response.response); else p.reject(new Error(ev.response.error || 'refused'));
+    return;
+  }
   if (ev.type === 'control_request') {
     if (ev.request?.subtype !== 'can_use_tool') { writeProc(c, { type: 'control_response', response: { subtype: 'error', request_id: ev.request_id, error: 'unsupported by Seat Console' } }); return; }
     const q = ev.request;
@@ -527,6 +533,36 @@ function settleDone(c) {
 // Once a second: announce settled conversations, and refresh the page when the 20 s "recent events" window of a conversation runs out.
 setInterval(guard('tick', () => { for (const c of Object.values(state.conversations)) { if (staleTurns(c, R(c), Date.now(), CLAMP_MS)) { clearTurns(c); R(c).clampAt = 0; setStatus(c, 'idle'); console.log(`[turns] conv=${c.id.slice(0, 8)}: result seen, nothing since: pending-turn counter cleared`); } settleDone(c); if (effStatus(c) !== R(c).shown) broadcast({ conv: summary(c) }); } }), 1000).unref();
 // A seat process can die between our check and the write (EPIPE): never throw from here, tell the caller (false) and the page (console_error).
+// A control request to the running claude (stream-json), answered by a control_response with the same request_id (handleLine).
+const ctlPending = new Map();
+function ctlRequest(c, request, ms = 10000) {
+  if (!R(c).proc?.stdin?.writable) return Promise.reject(new Error('no running process'));
+  const id = 'sc-' + crypto.randomBytes(6).toString('hex');
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { ctlPending.delete(id); reject(new Error('no answer from the process')); }, ms);
+    ctlPending.set(id, { resolve: (v) => { clearTimeout(t); resolve(v); }, reject: (e) => { clearTimeout(t); reject(e); } });
+    writeProc(c, { type: 'control_request', request_id: id, request });
+  });
+}
+// Permission mode, changeable at any time. A live process is switched in place (set_permission_mode, no restart);
+// one that refuses (started before every mode carried --allow-dangerously-skip-permissions) is restarted when idle, refused when busy.
+// No process: the next start uses the new mode.
+const CLI_MODE = { auto: 'auto', ask: 'default', bypass: 'bypassPermissions' };
+async function setMode(c, mode) {
+  if (!hasKey(MODE_ARGS, mode)) throw new Error('unknown mode');
+  if (mode === c.mode) return 'same';
+  let how = 'next';
+  if (R(c).proc) {
+    try { await ctlRequest(c, { subtype: 'set_permission_mode', mode: CLI_MODE[mode] }); how = 'live'; }
+    catch (e) {
+      if (c.working || c.bg?.length || R(c).perms.size) throw new Error('The running agent refused the switch (' + e.message + '). Wait for this turn to finish, then change it.');
+      await killProc(c);
+    }
+  }
+  c.mode = mode; saveState(); broadcast({ conv: summary(c) });
+  console.log(`[mode] conv=${c.id.slice(0, 8)} -> ${mode} (${how})`);
+  return how;
+}
 function writeProc(c, obj) {
   const stdin = R(c).proc?.stdin;
   if (!stdin?.writable) { pushEvent(c, { type: 'console_error', text: 'seat process is not accepting input (it exited); send again to restart it' }); return false; }
@@ -829,16 +865,17 @@ async function send(b) {
   if (!c) { c = newConversation(seat, { cwd, model: b.model, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }
   // Anything below failing (spawn, bad image id, dead stdin) must not leave a ghost conversation behind that THIS call created.
   try {
-  // cwd, model, effort and permission mode are fixed per process: changing one restarts it on the same session (--resume keeps the conversation).
-  const model = b.model || c.model, mode = b.mode || c.mode;
+  // cwd, model and effort are fixed per process: changing one restarts it on the same session (--resume keeps the conversation). Mode: setMode (live switch).
+  if (!created && b.mode && b.mode !== c.mode) await setMode(c, b.mode);
+  const model = b.model || c.model;
   if (b.effort && !EFFORTS.includes(b.effort)) throw new Error('unknown effort');
   const effort = b.effort || c.effort;
   // Restarting the process ends its running turn: an explicit change is only taken while the conversation is idle, never silently mid-turn.
-  if (R(c).proc && (c.cwd !== cwd || model !== c.model || effort !== c.effort || mode !== c.mode)) {
-    if (c.working || c.bg?.length || R(c).perms.size) throw new Error('This conversation is running: model, effort, permission mode and folder can only be changed while it is idle. Wait for it to finish (or stop it), then send again.');
+  if (R(c).proc && (c.cwd !== cwd || model !== c.model || effort !== c.effort)) {
+    if (c.working || c.bg?.length || R(c).perms.size) throw new Error('This conversation is running: model, effort and folder can only be changed while it is idle. Wait for it to finish (or stop it), then send again.');
     await killProc(c);
   }
-  c.cwd = cwd; c.model = model || null; c.effort = effort || null; c.mode = mode;
+  c.cwd = cwd; c.model = model || null; c.effort = effort || null;
   if (created) state.cwds[seat] = cwd; // the seat's default folder follows NEW conversations only, not every message into an old one
   await ensureProc(c);
   const images = claimImages(c, b.images, b.imageBuffers, b.draftId);
@@ -1177,6 +1214,7 @@ async function handler(req, res) {
       const c = convOf(b.conversationId);
       if (!c) return json(res, 400, { error: 'unknown conversation' });
       if (url.pathname === '/api/stop') { await stopConv(c); return json(res, 200, { ok: true }); }
+      if (url.pathname === '/api/mode') { try { return json(res, 200, { ok: true, how: await setMode(c, String(b.mode)) }); } catch (e) { return json(res, 409, { error: e.message }); } }
       if (url.pathname === '/api/resume') { await ensureProc(c); setStatus(c, 'idle'); return json(res, 200, { ok: true, sessionId: c.sessionId }); }
       if (url.pathname === '/api/rename') { try { setTitle(c, b.title); } catch (e) { return json(res, 400, { error: e.message }); } saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true, title: c.title }); }
       if (url.pathname === '/api/pin') {   // manual 📌 on a message (action add, i = its event index) or the ✓ that releases a pin (action done)

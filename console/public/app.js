@@ -518,6 +518,14 @@ $('text').addEventListener('beforeinput', (e) => {
   if (continueList(e.target)) { e.preventDefault(); e.target.dispatchEvent(new Event('input', { bubbles: true })); }
 });
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
+// Permission mode applies at once, also mid-turn (server setMode): no message needed. A remote run has no process of its own (the composer continues it).
+$('mode').onchange = async () => {
+  const c = curConv(); if (!c || c.remote) return;
+  const m = $('mode').value;
+  if (m === 'bypass' && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Switch it?')) { $('mode').value = c.mode; return; }
+  const r = await api('/api/mode', { conversationId: c.id, mode: m });
+  if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('mode').value = c.mode; }
+};
 $('resume').onclick = async () => { const r = await api('/api/resume', { conversationId: cur.id }); if (r.error) $('log').appendChild(div('msg note err', esc(r.error))); };
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {
