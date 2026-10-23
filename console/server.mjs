@@ -346,6 +346,7 @@ function remoteLine(c, line, end, live) {
   remoteSave ??= setTimeout(() => { remoteSave = null; saveState(); }, 1000);
   // The same finished/error message a local turn gets (Telegram is off on a test instance). Not for results read from byte 0: that is history.
   if (ev.type === 'result' && live) remoteDone(c, ev);
+  else if (ev.type === 'result') console.log(`[done] remote conv=${c.id.slice(0, 10)} notify=skipped (read from byte 0 = history)`);
 }
 // A finished `claude -p` run can write dozens of result lines at once (seen: 64 results in one second, one Telegram
 // message each, some refused with 429). Wait until no further result came for 15 s, then send ONE message for the
@@ -355,8 +356,9 @@ function remoteDone(c, ev) {
   clearTimeout(remoteDoneTimers.get(c.id));
   remoteDoneTimers.set(c.id, setTimeout(() => {
     remoteDoneTimers.delete(c.id);
-    if (!doneThrottle.allow(c.id)) return;
-    if (!ev.is_error && quietRepeat(c, ev.result)) return;
+    if (!doneThrottle.allow(c.id)) { remoteDoneTimers.set(c.id, setTimeout(() => remoteDone(c, ev), 60000).unref()); console.log(`[done] remote conv=${c.id.slice(0, 10)} notify=deferred (throttle)`); return; }   // the LAST result must not be lost to the 60 s throttle: try again after it
+    if (!ev.is_error && quietRepeat(c, ev.result)) { console.log(`[done] remote conv=${c.id.slice(0, 10)} notify=quiet (short repeat)`); return; }
+    console.log(`[done] remote conv=${c.id.slice(0, 10)} notify=sent`);
     tg.notify(ev.is_error ? 'error' : 'done', { seat: groupOf(c.remote), title: c.title, text: ev.result || '', convId: c.id, files: [], ...ctxNote(c) }, PHONE).catch(notifyFailed);
   }, 15000).unref());
 }
