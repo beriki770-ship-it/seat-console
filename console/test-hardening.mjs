@@ -70,6 +70,9 @@ let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
   const d = eventWindow(all, ['r1'], null, 500); assert.equal(d.from, 50, 'an approval card still open is never left outside the window');
   assert.equal(eventWindow(all, ['r1'], 700, 500).from, 200, 'paging backwards ignores pending cards');
   pass('eventWindow: last page, earlier pages, open approvals kept');
+  const mix = Array.from({ length: 1000 }, (_, i) => ({ i, type: i % 10 ? 'sub' : 'x' })), seen = (e) => e.type === 'x';
+  const m = eventWindow(mix, [], null, 50, seen); assert.deepEqual([m.from, m.events.filter(seen).length], [500, 50], 'only drawn events count toward the page');
+  assert.equal(eventWindow(mix, [], 500, 50, seen).from, 0); pass('eventWindow: hidden events do not use up the page');
 }
 
 // idle eviction: the idle conversation that was quiet longest; none when all are busy

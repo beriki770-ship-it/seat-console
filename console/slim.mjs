@@ -19,7 +19,10 @@ function slimInput(input) {
 }
 
 // null = the page draws nothing for this event type (init, task progress, thinking tokens...). `i` = position in the conversation's event list.
+// A subagent's own messages (parent_tool_use_id set: its tool calls, results and its final report) stay in the raw log but are not drawn:
+// they buried the conversation (one real conversation: ~9,100 subagent lines against ~800 of its own). Its result still shows on the Agent row.
 export function slimEvent(ev, i) {
+  if (ev.parent_tool_use_id) return null;
   const t = ev.type, base = { type: t, ts: ev.ts, i };
   if (t === 'console_user' || t === 'console_error' || t === 'console_spawn' || t === 'console_perm_done') return { ...ev, i, hoff: undefined, hgen: undefined };
   if (t === 'console_perm') return { ...ev, i, hoff: undefined, hgen: undefined };   // the approval card shows the whole command: never clipped

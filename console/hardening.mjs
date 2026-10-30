@@ -43,9 +43,10 @@ export const clearTurns = (c) => { c.turns = 0; c.working = false; };
 export const lastHoff = (events, gen) => events.findLast((e) => e.hoff && (e.hgen || 0) === (gen || 0))?.hoff || 0;
 
 // The newest `page` events before index `before`; without `before` the window also reaches back to the oldest still-open approval card.
-export function eventWindow(all, pendingIds, before, page = 500) {
+// `drawn(e)`: only events the page draws count toward `page` (thousands of subagent and progress lines would otherwise fill it with nothing visible).
+export function eventWindow(all, pendingIds, before, page = 500, drawn = () => true) {
   const end = before == null ? all.length : Math.max(0, Math.min(all.length, before));
-  let from = Math.max(0, end - page);
+  let from = end, n = 0; while (from > 0 && n < page) if (drawn(all[--from])) n++;
   if (before == null) for (const id of pendingIds) { const i = all.findIndex((e) => e.type === 'console_perm' && e.requestId === id); if (i >= 0 && i < from) from = i; }
   return { from, events: all.slice(from, end), total: all.length };
 }

@@ -258,23 +258,30 @@ function showQuota() {
   box.hidden = false;
 }
 const showArch = (() => { try { return JSON.parse(localStorage.getItem('showArch') || '{}'); } catch { return {}; } })();
+// Folded seats: only the open conversation and the ones waiting on the user stay visible, the rest is one "N more" line. Kept per browser.
+const fold = (() => { try { return JSON.parse(localStorage.getItem('fold') || '{}'); } catch { return {}; } })();
+const saveFold = () => { try { localStorage.setItem('fold', JSON.stringify(fold)); } catch {} };
 let menuFor = null;   // conversation id whose ⋯ menu is open
 const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}" data-id="${c.id}" data-seat="${seat}">
       <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="Context window ${esc(ctxText(c.ctx))}">${Math.round(c.ctx.pct)}%</span>` : ''}
       <span class="cost" title="API-price estimate, not billed (subscription)">~$${(c.cost || 0).toFixed(2)}</span>
-      <small>${c.mode === 'bypass' ? '<span class="badge bypass">bypass</span> ' : ''}${label[c.status] || c.status}${c.background ? ' · ' + c.background : ''}${c.pending ? ' · ' + c.pending + ' waiting' : ''}</small>${c.needsAnswer ? '<span class="needs">❓ waiting for your answer</span>' : ''}</button>
+      <small>${c.mode === 'bypass' ? '<span class="badge bypass">bypass</span> ' : ''}${label[c.status] || c.status}${c.background ? ' · ' + c.background : ''}${c.pending ? ' · ' + c.pending + ' waiting' : ''}</small>${c.needsAnswer ? `<span class="needs">❓ waiting for your answer<span class="dismiss" data-dismiss="${c.id}" role="button" title="Close this question without answering">✕</span></span>` : ''}</button>
       ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="Conversation menu">⋯</button>`}</div>`
-  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">Rename</button><button data-archive="${c.id}" data-to="${!c.archived}">${c.archived ? 'Unarchive' : 'Archive'}</button><button class="danger" data-del="${c.id}">Delete</button></div>` : '');
+  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">Rename</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">Close question</button>` : ''}<button data-archive="${c.id}" data-to="${!c.archived}">${c.archived ? 'Unarchive' : 'Archive'}</button><button class="danger" data-del="${c.id}">Delete</button></div>` : '');
 
 function showSeats() {
   showQuota(); menuMark();
+  const allFolded = seats.every((s) => fold[s.name]);
+  $('foldall').textContent = allFolded ? 'Expand all' : 'Fold all'; $('foldall').dataset.to = String(!allFolded);
   $('seats').innerHTML = seats.map((s) => {
-    const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived);
-    return `<section class="seatbox"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}</div>
+    const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = !!fold[s.name];
+    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.pending || c.needsAnswer))) : live.slice(0, 12), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0;   // the open conversation stays even when archived
+    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${f ? 'Show' : 'Fold'} this seat's conversations">${f ? '▸' : '▾'}</button>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}</div>
     ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="New conversation">+ new</button>`}</div>`
-    + live.slice(0, 12).map((c) => convRow(c, s.name)).join('')
-    + (arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${showArch[s.name] ? 'Hide' : 'Show'} archived (${arch.length})</button>` : '')
-    + (showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
+    + shown.map((c) => convRow(c, s.name)).join('')
+    + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${hidden} more conversation${hidden > 1 ? 's' : ''}</button>` : '')
+    + (!f && arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${showArch[s.name] ? 'Hide' : 'Show'} archived (${arch.length})</button>` : '')
+    + (!f && showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
   }).join('');
 }
 
@@ -447,6 +454,7 @@ $('routines').onclick = async (e) => {
 };
 $('seats').onclick = async (e) => {
   const mo = e.target.closest('[data-more]'); if (mo) { menuFor = menuFor === mo.dataset.more ? null : mo.dataset.more; return showSeats(); }
+  const dm = e.target.closest('[data-dismiss]'); if (dm) { menuFor = null; const r = await api('/api/dismiss', { conversationId: dm.dataset.dismiss }); if (r.error) alert(r.error); return; }
   const ar = e.target.closest('[data-archive]'); if (ar) { menuFor = null; await api('/api/archive', { conversationId: ar.dataset.archive, archived: ar.dataset.to === 'true' }); return; }
   const de = e.target.closest('[data-del]');
   if (de) {
@@ -454,6 +462,7 @@ $('seats').onclick = async (e) => {
     if (!confirm('Delete this conversation, its log and its uploaded images? This cannot be undone.')) return;
     const r = await api('/api/delete', { conversationId: de.dataset.del }); if (r.error) alert(r.error); return;
   }
+  const fo = e.target.closest('[data-fold]'); if (fo) { fold[fo.dataset.fold] = !fold[fo.dataset.fold]; saveFold(); return showSeats(); }
   const at = e.target.closest('[data-archtoggle]'); if (at) { showArch[at.dataset.archtoggle] = !showArch[at.dataset.archtoggle]; try { localStorage.setItem('showArch', JSON.stringify(showArch)); } catch {} return showSeats(); }
   const rn = e.target.closest('[data-rename]'); if (rn) { menuFor = null; if (rn.dataset.rename !== cur.id) await pick(rn.dataset.seat, rn.dataset.rename); else showSeats(); return startRename(); }
   const n = e.target.closest('[data-new]'); if (n) return pick(n.dataset.new, null);
@@ -587,3 +596,4 @@ $('effort').addEventListener('input', () => { $('effortOut').textContent = EFFOR
 
 // Installable app (PWA): the service worker only runs on https or 127.0.0.1; on plain http over Tailscale this is skipped silently.
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+$('foldall').onclick = () => { const to = $('foldall').dataset.to === 'true'; for (const s of seats) fold[s.name] = to; saveFold(); showSeats(); };

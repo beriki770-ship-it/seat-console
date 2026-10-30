@@ -15,9 +15,15 @@ main { display:flex; flex-direction:column; min-width:0; min-height:0; height:10
 
 /* ---- seat list ---- */
 .seatbox { margin-bottom:14px; }
+.ahead { display:flex; justify-content:space-between; align-items:center; margin:0 8px 12px; }
+.ahead h1 { margin:0; }
+#foldall { font-size:12px; padding:2px 8px; }
+.foldbtn { border:0; background:none; color:var(--mute); padding:0 6px 0 0; font-size:12px; cursor:pointer; }   /* ▾ open / ▸ folded: a folded seat keeps only the open conversation and the ones waiting on the user */
 .seathead { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; padding:6px 8px; border-radius:8px; }
 .seathead.on { background:var(--user); }
 .seathead b { display:block; }
+.seathead > div { min-width:0; }   /* a long usage meter line used to push "+ new" out of the sidebar */
+.seathead > button { flex-shrink:0; white-space:nowrap; }
 small { display:block; color:var(--mute); font-size:12px; line-height:1.35; }
 .role { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:190px; }
 .conv { display:grid; grid-template-columns:auto 1fr auto; column-gap:8px; align-items:center; width:100%; text-align:start; border:0; background:none; color:inherit; padding:6px 8px 6px 14px; border-radius:8px; cursor:pointer; font:inherit; font-size:13px; }
@@ -128,8 +134,8 @@ button:disabled, select:disabled { opacity:.55; cursor:default; }
 .cmenu button { font-size:12px; padding:4px 10px; }
 .cmenu .danger { color:var(--warn); border-color:var(--warn); }
 .archtoggle { margin:4px 0 0 14px; padding:2px 8px; font-size:12px; border:0; background:none; color:var(--mute); }
-.meter { display:flex; align-items:center; gap:6px; margin-top:2px; }
-.meter .bar { display:inline-block; width:56px; height:5px; border-radius:3px; background:var(--line); overflow:hidden; }
+.meter { display:flex; align-items:center; gap:6px; margin-top:2px; flex-wrap:wrap; row-gap:0; }
+.meter .bar { display:inline-block; width:56px; height:5px; border-radius:3px; background:var(--line); overflow:hidden; flex-shrink:0; }
 .meter .bar i { display:block; height:100%; background:var(--run); }
 .meter .reset { white-space:nowrap; }
 #quota { margin-bottom:8px; padding:6px 10px; border-radius:8px; border:1px solid var(--warn); color:var(--warn); font-size:13px; }
@@ -182,6 +188,8 @@ main { position:relative; }
 
 /* ---- what a turn leaves for the user (app.js showMarks, server marks.mjs): "waiting for your answer" row mark, pin bar, suggestion chips ---- */
 .conv.answer { background:color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.conv .needs .dismiss { margin-inline-start:6px; padding:0 4px; border-radius:6px; cursor:pointer; font-weight:400; }
+.conv .needs .dismiss:hover { background:var(--accent); color:var(--bg); }
 .conv .needs { grid-column:2 / 4; justify-self:start; margin-top:3px; padding:1px 8px; border-radius:10px; border:1px solid var(--accent); background:var(--bg); color:var(--accent); font-size:11px; font-weight:600; }
 #menu.ans { position:relative; } #menu.ans::after { content:''; position:absolute; top:4px; right:4px; width:10px; height:10px; border-radius:50%; background:var(--accent); }
 #pins { display:flex; gap:6px; padding:6px 24px; border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:thin; }

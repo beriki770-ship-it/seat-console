@@ -22,6 +22,7 @@ const tr = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_
 }
 {
   const d = toolDetail([tu, tr], 't1'); assert.equal(d.input.content.length, 50000); assert.equal(toolDetail([tu], 'nope'), null);
+  assert.equal(slimEvent({ ...tu, parent_tool_use_id: 'toolu_x' }, 0), null); assert.equal(slimEvent({ ...tr, parent_tool_use_id: 'toolu_x' }, 0), null); pass('subagent messages (parent_tool_use_id) are not drawn');
   assert.equal(toolDetail([tu, tr], 't1').resultLen, 50000 + 1 + 7); pass('toolDetail returns the full input and the result of one tool call');
 }
 console.log(`all ${ok} slim tests passed`);

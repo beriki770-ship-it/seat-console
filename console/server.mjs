@@ -1138,7 +1138,7 @@ async function handler(req, res) {
       const c = viewOf(url.searchParams.get('id')); if (!c) return json(res, 404, { error: 'no conversation' });
       // The last EVENT_PAGE events (a long conversation would otherwise ship megabytes on every open); ?before=<index> returns the page before that index.
       const pending = [...R(c).perms.keys()], before = url.searchParams.has('before') ? +url.searchParams.get('before') || 0 : null;
-      const w = eventWindow(eventsOf(c), pending, before, EVENT_PAGE);
+      const w = eventWindow(eventsOf(c), pending, before, EVENT_PAGE, (e) => slimEvent(e, 0) !== null);
       return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify({ conv: viewSummary(c), events: slimEvents(w.events, w.from), pending, from: w.from, total: w.total }));
     }
     if (req.method === 'GET' && url.pathname === '/api/tool') {   // full input/output of one tool row, fetched when it is expanded
@@ -1224,6 +1224,7 @@ async function handler(req, res) {
         try { if (b.action === 'add') addManualPin(c, { i: b.i, text: b.text }); else if (b.action === 'done') donePin(c, String(b.id)); else throw new Error('unknown action'); } catch (e) { return json(res, 400, { error: e.message }); }
         saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true });
       }
+      if (url.pathname === '/api/dismiss') { answered(c); saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "waiting for your answer": cleared as if the user had answered, without sending a message
       if (url.pathname === '/api/archive') { c.archived = !!b.archived; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {
         // An idle process is only waiting for input, so it is stopped and removed; a running turn or an open approval refuses.
