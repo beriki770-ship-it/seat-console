@@ -130,7 +130,7 @@ button:disabled, select:disabled { opacity:.55; cursor:default; }
 .convrow .conv { flex:1; min-width:0; }
 .convrow.archived { opacity:.6; }
 .more { padding:2px 8px; border:0; background:none; font-size:16px; line-height:1; color:var(--mute); }
-.cmenu { display:flex; gap:8px; padding:2px 8px 6px 14px; }
+.cmenu { display:flex; flex-wrap:wrap; gap:6px; padding:2px 8px 6px 14px; }
 .cmenu button { font-size:12px; padding:4px 10px; }
 .cmenu .danger { color:var(--warn); border-color:var(--warn); }
 .archtoggle { margin:4px 0 0 14px; padding:2px 8px; font-size:12px; border:0; background:none; color:var(--mute); }
@@ -188,6 +188,7 @@ main { position:relative; }
 
 /* ---- what a turn leaves for the user (app.js showMarks, server marks.mjs): "waiting for your answer" row mark, pin bar, suggestion chips ---- */
 .conv.answer { background:color-mix(in srgb, var(--accent) 14%, transparent); box-shadow: inset 3px 0 0 var(--accent); }
+.conv .kept { color:var(--accent); }   /* ★ = kept visible when its seat is folded */
 .conv .needs .dismiss { margin-inline-start:6px; padding:0 4px; border-radius:6px; cursor:pointer; font-weight:400; }
 .conv .needs .dismiss:hover { background:var(--accent); color:var(--bg); }
 .conv .needs { grid-column:2 / 4; justify-self:start; margin-top:3px; padding:1px 8px; border-radius:10px; border:1px solid var(--accent); background:var(--bg); color:var(--accent); font-size:11px; font-weight:600; }

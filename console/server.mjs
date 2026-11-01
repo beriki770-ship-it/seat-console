@@ -200,7 +200,7 @@ function broadcastEvent(c, ev, i) {
 const QUIET_MS = 20000;
 const effStatus = (c) => { const r = R(c); if (r.status === 'stopped' && r.proc) return 'idle'; /* a live process is never `stopped` */ return r.status === 'idle' && ((c.bg?.length || 0) > 0 || Date.now() - r.activityAt < QUIET_MS) ? 'working' : r.status; };
 // A conversation on a remote that ssh cannot reach (and that has no live link) reads `error · unreachable since HH:MM` until the remote answers again.
-const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
+const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
@@ -1225,6 +1225,7 @@ async function handler(req, res) {
         saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true });
       }
       if (url.pathname === '/api/dismiss') { answered(c); saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "waiting for your answer": cleared as if the user had answered, without sending a message
+      if (url.pathname === '/api/keep') { c.keep = !!b.keep; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Keep shown": the row stays when its seat is folded (all devices)
       if (url.pathname === '/api/archive') { c.archived = !!b.archived; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {
         // An idle process is only waiting for input, so it is stopped and removed; a running turn or an open approval refuses.
