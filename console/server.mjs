@@ -27,6 +27,7 @@ import { markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTi
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
 import { loadRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
+import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { findPaths } = createRequire(import.meta.url)('./public/paths.js');   // the browser's preview detector: the same paths become Telegram attachments
@@ -200,7 +201,7 @@ function broadcastEvent(c, ev, i) {
 const QUIET_MS = 20000;
 const effStatus = (c) => { const r = R(c); if (r.status === 'stopped' && r.proc) return 'idle'; /* a live process is never `stopped` */ return r.status === 'idle' && ((c.bg?.length || 0) > 0 || Date.now() - r.activityAt < QUIET_MS) ? 'working' : r.status; };
 // A conversation on a remote that ssh cannot reach (and that has no live link) reads `error · unreachable since HH:MM` until the remote answers again.
-const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
+const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
@@ -482,6 +483,12 @@ function handleLine(c, line, end) {
     // Needs-your-answer mark, auto-pins and suggestions of this turn (marks.mjs); persisted, the summary carries them to the page.
     markTurn(c, { result: ev.result || '', isError: !!ev.is_error, i: evIndex, asks: r.turnAsks }); r.turnAsks = []; saveState();   // spent: a later result of the same turn must not pin them again broadcast({ conv: summary(c) });
     const info = { needsAnswer: !!c.needsAnswer, seat: c.seat, title: c.title, text: ev.result, convId: c.id, files: [...r.turnFiles], out: { writes: [...r.turnWrites], named: findPaths(ev.result || '', !WIN), since: r.turnAt ?? Infinity }, ...quotaOf(c.seat), ...ctxNote(c) };   // out: Write targets + files the reply names (the console's preview cards), see outFiles; no turnAt (turn began before a restart) = no named files
+    // Usage limit (quotawait.mjs): the conversation is resumed by the console once the limit has reset; the Telegram error says when.
+    if (isQuotaStop(ev) && !c.remote && !c.phone) {
+      const tries = (c.quotaTries || 0) + 1;
+      if (tries <= QUOTA_MAX_TRIES) { c.quotaWait = { until: resumeAt(ev, state.usage[c.seat]?.windows, Date.now()), tries }; saveState(); broadcast({ conv: summary(c) }); info.text = `${ev.result}\n\n⏸ resumes by itself at ${new Date(c.quotaWait.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; console.log(`[quota] conv=${c.id.slice(0, 8)} stopped on the limit, resume at ${new Date(c.quotaWait.until).toISOString()} (try ${tries})`); }
+      else { c.quotaTries = 0; info.text = `${ev.result}\n\n⏸ ${QUOTA_MAX_TRIES} resumes in a row hit the limit again; it needs a look`; console.log(`[quota] conv=${c.id.slice(0, 8)} gave up after ${QUOTA_MAX_TRIES} tries`); }
+    } else if (!ev.is_error && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; saveState(); broadcast({ conv: summary(c) }); }   // a turn ended normally (a routine, a background agent after the reset): the work went on, no resume; the next limit counts from 1
     if (ev.is_error) { r.done = null; tg.notify('error', info, PHONE).catch(notifyFailed); }
     else { r.done = { info, at: Date.now() }; settleDone(c); }   // the latest result wins; it is announced once ALL work of the conversation is over
     }
@@ -535,6 +542,26 @@ function settleDone(c) {
 }
 // Once a second: announce settled conversations, and refresh the page when the 20 s "recent events" window of a conversation runs out.
 setInterval(guard('tick', () => { for (const c of Object.values(state.conversations)) { if (staleTurns(c, R(c), Date.now(), CLAMP_MS)) { clearTurns(c); R(c).clampAt = 0; setStatus(c, 'idle'); console.log(`[turns] conv=${c.id.slice(0, 8)}: result seen, nothing since: pending-turn counter cleared`); } settleDone(c); if (effStatus(c) !== R(c).shown) broadcast({ conv: summary(c) }); } }), 1000).unref();
+// Usage-limit resume (quotawait.mjs): a conversation that stopped on the limit gets RESUME_TEXT once its time has come.
+// Not while it runs (a turn the CLI started by itself), never for an archived, remote or phone one; a send that fails is retried next minute.
+const quotaBusy = new Set();
+setInterval(guard('quota', () => {
+  const now = Date.now();
+  for (const c of Object.values(state.conversations)) {
+    const w = c.quotaWait; if (!w || now < w.until || quotaBusy.has(c.id)) continue;
+    if (c.archived || c.remote || c.phone) { c.quotaWait = undefined; saveState(); broadcast({ conv: summary(c) }); continue; }
+    if (R(c).status === 'working' || c.turns > 0 || R(c).perms.size) continue;
+    quotaBusy.add(c.id); c.quotaTries = w.tries; c.quotaWait = undefined; saveState();
+    console.log(`[quota] conv=${c.id.slice(0, 8)} resuming (try ${w.tries})`);
+    send({ conversationId: c.id, text: RESUME_TEXT, auto: true })
+      .catch((e) => {   // retried twice, a minute apart; then it needs a person (a write that failed may already have logged the message)
+        const fails = (w.fails || 0) + 1; c.quotaWait = fails < 3 ? { until: Date.now() + 60e3, tries: w.tries, fails } : undefined; saveState();
+        console.log(`[quota] conv=${c.id.slice(0, 8)} resume send failed (${fails}/3): ${e.message}`);
+        if (fails >= 3) tg.notify('error', { seat: c.seat, title: c.title, text: `⏸ the automatic resume after the usage limit failed 3 times: ${e.message}`, convId: c.id, files: [] }, PHONE).catch(notifyFailed);
+      })
+      .finally(() => { quotaBusy.delete(c.id); broadcast({ conv: summary(c) }); });
+  }
+}), 30000).unref();
 // A seat process can die between our check and the write (EPIPE): never throw from here, tell the caller (false) and the page (console_error).
 // A control request to the running claude (stream-json), answered by a control_response with the same request_id (handleLine).
 const ctlPending = new Map();
@@ -884,6 +911,7 @@ async function send(b) {
   const images = claimImages(c, b.images, b.imageBuffers, b.draftId);
   const files = await claimFiles(c, b.files, b.fileBuffers, b.draftId, rem);
   autoTitle(c, b.title || clipChars(b.text.trim().replace(/\s+/g, ' '), 60));   // never over a title the user set (rename)
+  if (!b.auto && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; }   // the user took over: no automatic resume
   if (!b.auto) answered(c);   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
   pushEvent(c, { type: 'console_user', text: b.text, ...(images.length ? { images } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.stored, label: f.label, size: f.size })) } : {}) });
   const r = R(c); if (!c.turns) { r.turnFiles.clear(); r.turnWrites.clear(); r.turnAsks = []; r.turnAt = Date.now() - 2000; } // a second message mid-turn keeps the files the running turn already wrote; turnAt (2 s mtime slack): reply-named files count from here
@@ -1225,6 +1253,7 @@ async function handler(req, res) {
         saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true });
       }
       if (url.pathname === '/api/dismiss') { answered(c); saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "waiting for your answer": cleared as if the user had answered, without sending a message
+      if (url.pathname === '/api/quotawait') { c.quotaWait = undefined; c.quotaTries = 0; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "resumes at": no automatic resume for this stop
       if (url.pathname === '/api/keep') { c.keep = !!b.keep; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Keep shown": the row stays when its seat is folded (all devices)
       if (url.pathname === '/api/archive') { c.archived = !!b.archived; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {

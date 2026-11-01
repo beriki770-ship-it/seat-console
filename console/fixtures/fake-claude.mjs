@@ -25,5 +25,11 @@ readline.createInterface({ input: process.stdin }).on('line', (l) => {
     waiting = (allow) => finish(`${allow ? 'allowed' : 'denied'}: ${reply}`);
     return;
   }
+  // "quotastop": the turn ends on the usage limit like the real CLI (429, usage_limit_reached), resetting one minute from now (UTC).
+  if (/quotastop/.test(text)) {
+    const d = new Date(Date.now() + 60e3), h = d.getUTCHours(), resets = `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}${h < 12 ? 'am' : 'pm'} (UTC)`;
+    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: "You've hit your session limit" }] }, error: 'rate_limit', api_error_status: 429 });
+    return setTimeout(() => out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', result: `You've hit your session limit · resets ${resets}`, total_cost_usd: 0 }), 200);
+  }
   setTimeout(() => finish(reply), /slow/.test(text) ? 6000 : 200);
 });
