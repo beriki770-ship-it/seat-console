@@ -177,7 +177,7 @@ html, body { overflow-x:clip; }
 .assistant ul { margin:.4em 0; padding-inline-start:1.4em; }
 .assistant a { color:var(--accent); }
 pre { background:var(--code); border:1px solid var(--line); border-radius:8px; padding:10px 12px; overflow:auto; font:13px/1.45 Consolas, monospace; margin:.5em 0; direction:ltr; text-align:left; white-space:pre-wrap; word-break:break-all; }
-code { background:var(--code); padding:1px 5px; border-radius:4px; font:13px Consolas, monospace; }
+code { background:var(--code); padding:1px 5px; border-radius:4px; font:13px Consolas, monospace; direction:ltr; unicode-bidi:isolate; }
 pre code { background:none; padding:0; }
 .tool { border:1px solid var(--line); border-radius:8px; font-size:13px; }
 .tool summary { padding:6px 10px; cursor:pointer; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -320,6 +320,10 @@ main { position:relative; }
 .code .copy:hover { opacity:1; }
 .code pre { direction:unset; unicode-bidi:isolate; text-align:start; padding-top:28px; }
 .code pre[dir=rtl] { direction:rtl; }
+.code pre[dir=ltr] { direction:ltr; }   /* code stays left-to-right on a right-to-left page too (direction:unset would inherit the page's rtl) */
+/* an empty dir=auto field would draw its placeholder left-to-right: on a right-to-left page the placeholder follows the page */
+[dir=rtl] :is(input, textarea)[dir=auto]:placeholder-shown { direction:rtl; }
+[dir=rtl] .seathead small { text-align:right; }   /* the e-mail (dir=ltr) and role lines still sit on the start edge */
 .assistant p, .assistant li, .msg.user { unicode-bidi:plaintext; }
 @media (max-width: 700px) {
   #pins { padding-inline:12px; }

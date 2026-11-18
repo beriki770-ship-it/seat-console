@@ -228,11 +228,11 @@ async function showConversation() {
 }
 
 // ---- context window meter: header chip + panel (breakdown, "until auto-compact", Refresh, Compact session). Numbers come from the server (c.ctx), the CLI's own output. ----
-const kfmt = (n) => num(Number(n) || 0, { notation: 'compact', maximumFractionDigits: n >= 1e6 ? 2 : 1 });
+const kfmt = (n) => num(Number(n) || 0, { notation: 'compact', maximumFractionDigits: n >= 1e6 ? 2 : 1 }).replace(/[\u200e\u200f\u061c]/g, '');   // Hebrew / Arabic number formats carry direction marks that would reorder "118K / 200K" inside the LTR meter
 const ctxText = (x) => x.window ? `${kfmt(x.used)} / ${kfmt(x.window)} (${pct(x.pct / 100)})` : kfmt(x.used);
 const ctxBtnHtml = (c) => {
   const x = c?.ctx; if (!x) return '';
-  return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="${t('ctx.title')}"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span>${x.compacting ? t('ctx.compacting') : ctxText(x)}</span></button>`;
+  return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="${t('ctx.title')}"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span dir="${x.compacting ? 'auto' : 'ltr'}">${x.compacting ? t('ctx.compacting') : ctxText(x)}</span></button>`;
 };
 const ctxBusy = (c) => c.remote || c.status === 'working' || c.status === 'waiting' || c.status === 'interrupted' || c.ctx?.compacting;
 function ctxPanelHtml(c) {
