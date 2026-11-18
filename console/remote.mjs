@@ -23,6 +23,10 @@ export const SSH = fs.existsSync('C:\\Windows\\System32\\OpenSSH\\ssh.exe') ? 'C
 // A control remote needs no paths (nothing to follow). node / claude = the remote's binaries (default: found on the remote PATH; `~/` allowed). port = the ssh port.
 export function loadRemotes(file, home, log = console.log) {
   let raw; try { raw = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) { if (e.code !== 'ENOENT') log(`[remote] ${file} not read: ${e.message}`); return []; }
+  return parseRemotes(raw, home, log);
+}
+// The rules alone (the Settings page checks a new entry with them before it is written).
+export function parseRemotes(raw, home, log = console.log) {
   const out = [];
   for (const r of Array.isArray(raw?.remotes) ? raw.remotes : []) {
     const paths = Array.isArray(r?.paths) ? r.paths : [], control = r?.control === true, port = r?.port ?? null;

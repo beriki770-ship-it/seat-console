@@ -1,5 +1,6 @@
 logs/
 state.json
+settings.json
 token.txt
 server.log
 server.err.log

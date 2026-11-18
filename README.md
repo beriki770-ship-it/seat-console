@@ -4,7 +4,7 @@ Seat Console is a small local web console for running several Claude Code CLI se
 
 It works with the Claude Code CLI that you installed and signed in to yourself. It does not modify the CLI or talk to any Claude API directly; it starts `claude -p` with stream-json input and output and shows the result.
 
-> **Disclaimer.** Seat Console is an independent, unofficial tool. It launches the unmodified Claude Code CLI that you installed and signed in to yourself. It never stores, refreshes or transmits your Claude credentials; the only use of a seat's sign-in outside the CLI is the usage meter and the [limit resets](#limit-resets), which send the seat's current access token to Anthropic's own API and nowhere else. Each account must be one you are entitled to use; use one account per job and do not use it to get around usage limits. Not affiliated with or endorsed by Anthropic. Review Anthropic's Consumer Terms, Commercial Terms and Usage Policy before use. Use at your own risk.
+> **Disclaimer.** Seat Console is an independent, unofficial tool. It launches the unmodified Claude Code CLI that you installed and signed in to yourself. It never stores, refreshes or transmits your Claude credentials; the only use of a seat's sign-in outside the CLI is the usage meter and (only if you turn them on) the [limit resets](#limit-resets), which send the seat's current access token to Anthropic's own API and nowhere else. Each account must be one you are entitled to use; use one account per job and do not use it to get around usage limits. Not affiliated with or endorsed by Anthropic. Review Anthropic's Consumer Terms, Commercial Terms and Usage Policy before use. Use at your own risk.
 
 ## Demo video
 
@@ -20,12 +20,13 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 - **Crash recovery.** A supervisor (scheduled task) restarts the server within seconds of any exit. After a PC crash, conversations that were mid-turn are marked `interrupted`. Nothing resumes by itself, because resuming spends quota: you resume them with `recover.ps1`, from the Telegram message, or with `/recover`.
 - **Telegram bot (optional).** Finished / failed / waiting-for-approval notifications, Allow / Deny buttons, reply to a notification to continue that conversation (text, photo or file), start a new task from the phone, `/list`, `/status`, `/digest`, `/evening`, `/recover`, `/routines`, `/multi`. Images and PDFs a turn produces are sent along with the done message.
 - **Routines.** Recurring prompts on a cron schedule. They never run unattended: at the due time you get a Telegram message with Run / Skip buttons, and the run starts on your tap (or with "Run now" in the web sidebar).
-- **Search and auto-archive.** One search box over the titles and chat text of every conversation, archived ones included. A conversation untouched for 3 days moves to the archive by itself unless you mark it ★ Keep; sending to an archived one brings it back. Long seat lists end in "Show N more".
+- **Settings page.** ⚙ Settings shows what is set up and lets you turn each optional feature on or off; see [Settings](#settings).
+- **Search and auto-archive.** One search box over the titles and chat text of every conversation, archived ones included. A conversation untouched for 3 days (Settings: any number, or never) moves to the archive by itself unless you mark it ★ Keep; sending to an archived one brings it back. Long seat lists end in "Show N more".
 - **Import a terminal session.** A Claude Code session you ran in a terminal or through the SDK becomes a console conversation (`POST /api/import`, see [Scripting](#scripting)); the next message resumes it.
 - **Multi-sided projects (optional).** One brief is split into tasks by a planner turn; you approve the plan once, then each task runs as its own conversation on the seat fixed for its discipline (design, backend, deploy, ...), in parallel, with dependencies, and the owner seat runs a final integration. The **Projects** page starts and follows them; Telegram has `/multi` and an approve button. See [`disciplines.json`](#disciplinesjson-optional).
 - **Usage limits stay per seat.** On Team and Enterprise plans each seat's limit is its own. The console never moves work to another seat to dodge a limit: a task or routine whose seat is at its limit waits for the reset (or you run it there anyway).
 - **Other agents (optional).** A seat can run the Codex CLI or the Antigravity CLI instead of Claude Code, with its own login, its own model menu and (Codex) its own usage meter. Off unless a seat says so. See [Other agents](#other-agents-codex-antigravity).
-- **Limit resets on the seat card.** If a seat's account holds free limit resets (Codex reset credits, Claude limit resets), the card lists them with their expiry. Reading them is automatic; one is spent only when you tap its **Use** button and confirm.
+- **Limit resets on the seat card.** If a seat's account holds free limit resets (Codex reset credits, Claude limit resets), the card lists them with their expiry. Off until you turn them on in [Settings](#settings) (Codex credits are on by default when a Codex seat exists); one is spent only when you tap its **Use** button and confirm.
 - **Daily digests** at 08:00 and 21:00: quota per seat, stuck conversations, what finished, errors in the server log, today's routines.
 - **Phone-friendly, installable (PWA).** Works over Tailscale with Basic auth; with `tailscale serve` you get HTTPS and can install it as an app.
 - **Handy extras.** Attachments of any file type, per-seat usage bars (5-hour and weekly window, with the reset day and time), context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
@@ -147,9 +148,28 @@ then `sudo apparmor_parser -r /etc/apparmor.d/bwrap`. (Undo: `sudo apparmor_pars
 
 ### Limit resets
 
-Some accounts get free limit resets: Codex reset credits, and Claude limit resets shown by the CLI's `/limit-reset`. The console reads them with the usage poll and lists them on the seat card, each with its expiry. A **Use** button spends exactly that one reset of that seat's own account, after a confirm; nothing is ever spent on its own, and a reset is never used for another seat.
+Some accounts get free limit resets: Codex reset credits, and Claude limit resets shown by the CLI's `/limit-reset`. Both are switches in [Settings](#settings): Claude limit resets are **off by default**, Codex reset credits are on when a Codex seat exists. When on, the console reads them with the usage poll and lists them on the seat card, each with its expiry. A **Use** button spends exactly that one reset of that seat's own account, after a confirm; nothing is ever spent on its own, and a reset is never used for another seat.
 
-The calls are the ones the official CLIs make: Codex's `codex app-server` (`account/rateLimits/read`, `account/rateLimitResetCredit/consume`), and for Claude the usage endpoint with the CLI's User-Agent (its version comes from `claude --version`) plus `POST /api/organizations/<org>/reset_rate_limits`. They are undocumented and may change or stop working at any time; then the card simply shows no resets.
+The calls are the ones the official CLIs make: Codex's `codex app-server` (`account/rateLimits/read`, `account/rateLimitResetCredit/consume`), and for Claude the usage endpoint with the CLI's User-Agent (its version comes from `claude --version`) plus `POST /api/organizations/<org>/reset_rate_limits`. They are undocumented and may change or stop working at any time; then the card simply shows no resets. With Claude limit resets off, the usage poll sends the plain usage request (no CLI User-Agent, no reset query) and no Claude reset is shown or spent.
+
+## Settings
+
+**⚙ Settings** (top of the sidebar) is one page with what the console can set up. On the first start (no `console/settings.json` yet) it opens by itself with a checklist; **Save** creates the file.
+
+- **Seats**: every seat with its sign-in state (only whether the login file exists is checked, never its content) and the exact command to sign it in; add a Claude seat; Codex and Antigravity show installed / signed in and an **Add as a seat** button (a second account of the same agent gets its own login folder under `~/.seat-console/accounts/<name>`); remove a seat that has no conversations.
+- **Telegram**: paste the bot token (stored in the secrets file, never shown again), then the one-time `/start <code>` to link your chat, a test message, and the morning / evening digest switch.
+- **Phone access**: the Tailscale state and phone address, the page login user, and a password change (needs the current password). The page token is never shown.
+- **Usage & limits**: usage meters, the 90 % warning, Claude limit resets (off by default; identifies as the Claude CLI to read them, undocumented endpoint), Codex reset credits, auto-archive days (0 = never), minutes before an idle process is stopped.
+- **Projects**: multi-sided projects on or off (off unless `disciplines.json` exists) and the discipline -> seat editor.
+- **Routines**: enable / disable, add or edit one (cron checked before it is saved). **Remotes**: list, add, test the ssh connection, remove. **Models**: an optional default model per seat, from that seat's own model list.
+
+Switches apply at once. Changes to `seats.json`, `remotes.json` and `disciplines.json` are read at start: the page then shows **Restart now**, which ends the server process so the supervisor (`run-server.ps1` / `run-server.sh`, systemd, launchd) starts it again; running conversations live in their own hosts and are picked up again. Without a supervisor the button only stops the console and you start it again yourself (`start-console.ps1` / `start-console.sh`).
+
+`settings.json` (all keys optional, defaults in `console/settings.mjs`):
+
+```json
+{ "usageMeters": true, "claudeResets": false, "codexResets": false, "multiProjects": false, "quotaWarning": true, "digests": true, "autoArchiveDays": 3, "idleReapMinutes": 5, "models": { "dev": "claude-sonnet-5-5" } }
+```
 
 ## Sign in each seat
 
@@ -188,12 +208,14 @@ The Attach button in the composer takes any file, up to 50 MB (the page holds it
 
 ### Files the console writes
 
-All of these are gitignored: `console\state.json`, `console\logs\` (one JSONL per conversation), `console\uploads\`, `console\search\` (the search index, a cache: deleting it only costs one rebuild), `console\token.txt` (CSRF token for every POST), `console\server.log`, `console\supervisor.log`. Two secret files live outside the repo, in `%USERPROFILE%\.claude\secrets\`:
+All of these are gitignored: `console\state.json`, `console\settings.json` (what Settings turned on), `console\logs\` (one JSONL per conversation), `console\uploads\`, `console\search\` (the search index, a cache: deleting it only costs one rebuild), `console\token.txt` (CSRF token for every POST), `console\server.log`, `console\supervisor.log`. Two secret files live outside the repo, in `%USERPROFILE%\.claude\secrets\`:
 
 - `seat-console-auth.json`: user name and a random password for remote (non-loopback) access. Created on first start.
 - `seat-console-telegram.json`: your bot token and linked chat id (see below).
 
 ## Telegram setup
+
+The Settings page does these steps for you (Telegram tab). By hand:
 
 1. In Telegram, open @BotFather, send `/newbot` and copy the token.
 2. Create `%USERPROFILE%\.claude\secrets\seat-console-telegram.json`:

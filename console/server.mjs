@@ -26,11 +26,12 @@ import { createSearch } from './searchidx.mjs';
 import { viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
 import { markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
-import { loadRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
+import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
+import { readSettings, writeJsonAtomic, validateSettings, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { findPaths } = createRequire(import.meta.url)('./public/paths.js');   // the browser's preview detector: the same paths become Telegram attachments
@@ -62,7 +63,10 @@ await new Promise((ok) => {
 });
 fs.mkdirSync(DATA, { recursive: true });
 // seats.json (copy seats.example.json): the seats plus `projectsDir`, the default cwd and the root file previews may read from.
-const CONFIG = JSON.parse(fs.readFileSync(path.join(SEATS_DIR, 'seats.json'), 'utf8').replace(/^﻿/, ''));
+// A TEST instance edits copies only: `--seats <file>` / `--remotes <file>` (and --disciplines / --routines below); without them its Settings page cannot write them.
+const SEATS_FILE = ISOLATED && arg('seats') ? path.resolve(arg('seats')) : path.join(SEATS_DIR, 'seats.json');
+const REMOTES_FILE = ISOLATED && arg('remotes') ? path.resolve(arg('remotes')) : path.join(SEATS_DIR, 'remotes.json');
+const CONFIG = JSON.parse(fs.readFileSync(SEATS_FILE, 'utf8').replace(/^﻿/, ''));
 const SEATS = CONFIG.seats;
 const WIN = process.platform === 'win32';
 const HOME = WIN ? process.env.USERPROFILE : os.homedir();
@@ -107,6 +111,14 @@ const UPLOADS = path.join(DATA, 'uploads');
 const DISCIPLINES_FILE = arg('disciplines') ? path.resolve(arg('disciplines')) : path.join(HERE, 'disciplines.json');   // multi-sided projects: discipline -> seat (copy disciplines.example.json)
 const ROUTINES_FILE = arg('routines') ? path.resolve(arg('routines')) : path.join(HERE, 'routines.json');   // --routines <file>: the test instance runs a temporary routine from its own file
 const AUTH_FILE = path.join(HOME, '.claude', 'secrets', 'seat-console-auth.json');
+// settings.json (Settings page): what is turned on. Missing = first run, the page opens Settings. Read on every use (SET()), so a save applies at once.
+const SETTINGS_FILE = path.join(DATA, 'settings.json');
+const settingsCtx = () => ({ seats: SEATS, disciplines: fs.existsSync(DISCIPLINES_FILE), autoArchiveDays: arg('auto-archive-days') ? +arg('auto-archive-days') : 3, idleReapMinutes: 5 });
+let settingsNow = readSettings(SETTINGS_FILE, settingsCtx());
+if (settingsNow.error) console.log('[settings] ' + settingsNow.error);
+const SET = () => settingsNow.settings;
+let restartNeeded = false;   // a config file the server reads only at start was changed (seats, remotes, disciplines): the page offers "Restart now"
+const canWrite = (argName) => !ISOLATED || !!arg(argName);   // a test instance never edits the real config files
 const MAX_PER_SEAT = 5;
 // Stream events the UI never shows: they would bloat the log and the browser.
 const NOISE = new Set(['hook_started', 'hook_response', 'commands_changed', 'post_turn_summary', 'task_summary']);
@@ -123,8 +135,9 @@ if (!fs.existsSync(TOKEN_FILE)) fs.writeFileSync(TOKEN_FILE, crypto.randomBytes(
 const TOKEN = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
 fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
 if (!fs.existsSync(AUTH_FILE)) fs.writeFileSync(AUTH_FILE, JSON.stringify({ user: 'seat', password: crypto.randomBytes(24).toString('base64url') }, null, 2));
-const AUTH = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
-const AUTH_HEADER = 'Basic ' + Buffer.from(`${AUTH.user}:${AUTH.password}`).toString('base64');
+let AUTH = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
+const basic = (a) => 'Basic ' + Buffer.from(`${a.user}:${a.password}`).toString('base64');
+let AUTH_HEADER = basic(AUTH);   // replaced live when the Settings page changes the password
 const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
 
 // ---- Tailscale: second listener + extra allowed names. Tailscale down -> loopback only. ----
@@ -157,7 +170,7 @@ state.telegramMsgs ??= {};  // telegram message_id -> conversation id, so a repl
 state.tgOffset ??= 0;       // next getUpdates offset: without it a restart re-reads (and re-runs) the last updates Telegram still holds
 for (const c of Object.values(state.conversations)) if (c.working && !c.turns) c.turns = 1; // state.json from before the pending-turn counter
 // ---- remotes (remotes.json): read before anything looks at a conversation, because a conversation can live on a remote (c.remote = its name) ----
-const REMOTES = loadRemotes(path.join(SEATS_DIR, 'remotes.json'), HOME);
+const REMOTES = loadRemotes(REMOTES_FILE, HOME);
 const CTL = new Map(REMOTES.filter((r) => r.control).map((r) => [r.name, r]));   // remotes with "control": true: the console may start conversations there (rhost.mjs)
 // A conversation on a remote that is no longer control: true (or no longer configured) is PARKED: moved out of state.conversations, so no route, Telegram button
 // or timer can reach it, and read-only stays read-only. It comes back unchanged when the remote is control: true again. Its host, if it still runs there, is left alone.
@@ -808,7 +821,7 @@ async function reattachOne(c) { try {
 const IDLE_REAP_MS = +arg('reap-ms') || 5 * 60000; // 5 min since 2026-10-15: idle claude processes hold ~0.5 GB each; was 15 min
 async function reapIdle() {
   for (const c of Object.values(state.conversations)) {
-    if (!R(c).proc || isBusy(c) || Date.now() - R(c).lastAt < IDLE_REAP_MS) continue;
+    if (!R(c).proc || isBusy(c) || Date.now() - R(c).lastAt < (+arg('reap-ms') || SET().idleReapMinutes * 60000)) continue;
     try { await stopIdle(c, `idle for ${Math.round((Date.now() - R(c).lastAt) / 60000)} min, process stopped`); } catch (e) { console.log('[idle] ' + e.message); }
   }
 }
@@ -921,7 +934,7 @@ async function send(b) {
   if (c && R(c).slash && Date.now() - R(c).slash.at < 600000) throw new Error('/' + R(c).slash.kind + ' is running on this conversation: send again when it has finished.');
   const created = !c;
   if (c?.archived) c.archived = false;   // writing to it again = in use: back to the live list
-  if (!c) { c = newConversation(seat, { cwd, model: b.model, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }
+  if (!c) { c = newConversation(seat, { cwd, model: b.model || (!rem && SET().models[seat]) || undefined, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }   // "default model" = the seat's default from Settings, if one is set
   // Anything below failing (spawn, bad image id, dead stdin) must not leave a ghost conversation behind that THIS call created.
   try {
   // cwd, model and effort are fixed per process: changing one restarts it on the same session (--resume keeps the conversation). Mode: setMode (live switch).
@@ -1006,7 +1019,7 @@ const quotaOf = (name) => { const q = fiveHour(name); return q ? { usage: q.util
 const tgUsage = async () => Object.fromEntries(Object.keys(SEATS).map((n) => [n, fiveHour(n)?.util]).filter(([, u]) => u != null));
 // 90 % warning, ONE per seat per window. It never names another seat: each seat has its own limit, work is never moved to dodge it.
 function quotaWatch(seat) {
-  const q = fiveHour(seat); if (!q || q.expired || !quotaWarnDue(state.quotaWarned, seat, q.util, q.resetsAt / 1000)) return;
+  const q = fiveHour(seat); if (!SET().quotaWarning || !q || q.expired || !quotaWarnDue(state.quotaWarned, seat, q.util, q.resetsAt / 1000)) return;
   saveState();
   tg.send(buildQuotaWarning({ seat, util: q.util, resetsAt: q.resetsAt })).catch(notifyFailed);
 }
@@ -1048,7 +1061,8 @@ function projectFolders() {
 // ---- multi-sided projects (multi.mjs): discipline -> its FIXED seat (console/disciplines.json); a seat at its limit makes its tasks wait, never another seat ----
 // No disciplines.json (or one naming an unknown seat): the console runs as usual, only multi-sided projects are off and say why.
 let DISC; try { DISC = loadDisciplines(DISCIPLINES_FILE, SEATS); } catch (e) { DISC = { map: {}, owner: Object.keys(SEATS)[0], off: e.code === 'ENOENT' ? 'copy console/disciplines.example.json to console/disciplines.json to turn multi-sided projects on' : e.message }; console.log('[multi] off: ' + DISC.off); }
-const multiOn = () => { if (DISC.off) throw new Error('multi-sided projects are off: ' + DISC.off); return multi; };
+const multiOff = () => (!SET().multiProjects ? 'turned off in Settings' : DISC.off);
+const multiOn = () => { if (multiOff()) throw new Error('multi-sided projects are off: ' + multiOff()); return multi; };
 // The Claude models a task may name: the main list of the page's model menu (keep in step with public/index.html select#model).
 const CLAUDE_MODELS = [{ id: 'claude-opus-5-5', name: 'Opus 5.5 (strongest)' }, { id: 'claude-fable-5-1', name: 'Fable 5.1' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5 (balanced)' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5 (fast, cheap)' }];
 let modelsSnap = {};
@@ -1094,7 +1108,7 @@ function digestMessage(now = Date.now(), kind = 'morning', slot = null) {
 let digestBusy = false, digestNextTry = 0;
 const DIGEST_RETRY_MS = 10 * 60e3;
 async function digestTick() {
-  const now = Date.now(), slot = digestBusy || now < digestNextTry ? null : dueSlot(state, now); if (!slot) return;
+  const now = Date.now(), slot = digestBusy || now < digestNextTry || !SET().digests ? null : dueSlot(state, now); if (!slot) return;
   digestBusy = true;
   try { const d = digestMessage(now, slot.kind, slot), m = await tg.send(d.text, d.rows); if (m) { state[slot.kind === 'evening' ? 'lastEveningFor' : 'lastDigestFor'] = slot.ymd; saveState(); console.log(`[digest] ${slot.kind} sent for ${slot.ymd}${slot.late ? ' (late)' : ''} message_id=${m.message_id}`); } else digestNextTry = now + DIGEST_RETRY_MS; }
   catch (e) { digestNextTry = now + DIGEST_RETRY_MS; console.log('[digest] failed: ' + (e?.message || e)); } finally { digestBusy = false; }
@@ -1178,10 +1192,126 @@ async function serveFile(req, res, url) {
   if (buf) return res.end(buf.subarray(start, end + 1));
   fs.createReadStream(real, { start, end }).on('error', () => res.destroy()).pipe(res);
 }
+
+// ---- Settings page (settings.mjs): what is turned on, what this machine has, and the config edits. Detection is cached 60 s and never reads a credential's content. ----
+const readJsonFile = (f, empty) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch (e) { if (e.code === 'ENOENT') return empty; throw new Error(`${path.basename(f)} cannot be read: ${e.message}`); } };
+const runOut = (bin, args, env) => new Promise((ok) => { const js = /\.m?js$/.test(bin);   // a .mjs CODEX_BIN (test fake) runs under this node
+  execFile(js ? process.execPath : bin, js ? [bin, ...args] : args, { encoding: 'utf8', timeout: 15000, windowsHide: true, shell: WIN && !js, env: { ...process.env, ...env } },   /* shell on Windows: npm's codex.cmd (fixed arguments only) */ (e, out) => ok(e ? null : String(out).trim() || 'ok')); });
+const CODEX_BIN = process.env.CODEX_BIN || 'codex';
+const seatDir = (n) => path.join(HOME, '.claude-seats', n);
+// Signed in = the seat's credentials file exists, or (macOS: the login sits in the Keychain) its .claude.json names an account. Only presence is checked.
+const claudeLogin = (n) => fs.existsSync(path.join(seatDir(n), '.credentials.json')) || (() => { try { return !!JSON.parse(fs.readFileSync(path.join(seatDir(n), '.claude.json'), 'utf8')).oauthAccount; } catch { return false; } })();
+const agyLogin = (env) => fs.existsSync(path.join(env.HOME || HOME, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'));
+const homeOf = (h) => h && path.resolve(String(h).replace(/^~(?=[\\/]|$)/, HOME));
+const loginCmd = (name, seat) => !seat.agent ? (WIN ? `powershell -ExecutionPolicy Bypass -File .\\seat.ps1 ${name} -Login` : `./seat.sh ${name} --login`)
+  : !WIN ? `console/agents/login.sh ${name}` : seat.agent === 'codex' ? `${seat.home ? `$env:CODEX_HOME="${homeOf(seat.home)}"; ` : ''}codex login --device-auth` : 'agy';
+let detectCache = null;
+async function detect() {
+  if (detectCache && Date.now() - detectCache.at < 60e3) return detectCache.v;
+  const cfg = readJsonFile(SEATS_FILE, { seats: {} }), seats = cfg.seats || {};
+  const codexVer = await runOut(CODEX_BIN, ['--version']);
+  const env = (s) => (!s.home ? {} : s.agent === 'codex' ? { CODEX_HOME: homeOf(s.home) } : { HOME: homeOf(s.home) });
+  const signedIn = async (s) => (s.agent === 'codex' ? !!codexVer && (await runOut(CODEX_BIN, ['login', 'status'], env(s))) !== null : s.agent === 'agy' ? agyLogin(env(s)) : false);
+  const list = await Promise.all(Object.entries(seats).map(async ([name, s]) => ({ name, email: s.email || '', role: s.role || '', agent: s.agent || null, home: s.home || null, active: hasKey(SEATS, name),
+    signedIn: s.agent ? await signedIn(s) : claudeLogin(name), login: loginCmd(name, s), conversations: Object.values(state.conversations).filter((c) => c.seat === name).length })));
+  const v = { seats: list, codex: { installed: codexVer, signedIn: !!codexVer && (await runOut(CODEX_BIN, ['login', 'status'])) !== null, login: 'codex login --device-auth' },
+    agy: { installed: fs.existsSync(AGY_BIN), signedIn: agyLogin({}), login: 'agy' },
+    disciplines: fs.existsSync(DISCIPLINES_FILE), supervisor: !!process.env.SEAT_CONSOLE_SUPERVISOR };
+  detectCache = { at: Date.now(), v }; return v;
+}
+let botName = null;   // { token, name }: the bot's @username from getMe, asked once per token
+async function telegramView() {
+  const cfg = tg.readCfg();
+  if (cfg && botName?.token !== cfg.botToken) {
+    botName = { token: cfg.botToken, name: null };
+    try { const r = await fetch(`https://api.telegram.org/bot${cfg.botToken}/getMe`, { signal: AbortSignal.timeout(10000) }); botName.name = (await r.json())?.result?.username || null; } catch {}
+  }
+  let code = null; try { code = fs.readFileSync(path.join(DATA, 'telegram-link-code.txt'), 'utf8').trim(); } catch {}
+  return { configured: !!cfg, linked: !!cfg?.chatId, bot: cfg ? botName.name : null, linkCode: cfg && !cfg.chatId ? code : null, polling: !ISOLATED };
+}
+async function settingsView() {
+  const problems = [settingsNow.error], safe = (fn, empty) => { try { return fn(); } catch (e) { problems.push(e.message); return empty; } };   // a broken config file is shown, never a broken page
+  const disc = safe(() => readJsonFile(DISCIPLINES_FILE, null), null), rr = safe(() => readJsonFile(ROUTINES_FILE, []), []), rlist = Array.isArray(rr) ? rr : rr?.routines || [];
+  const rem = safe(() => readJsonFile(REMOTES_FILE, { remotes: [] }), {})?.remotes;
+  return { settings: SET(), firstRun: settingsNow.firstRun, restartNeeded, detected: await detect(), telegram: await telegramView(),
+    access: { user: AUTH.user, phone: PHONE, tailscale: { ip: tsIp, name: tsName, warn: tsWarn }, test: ISOLATED },
+    disciplines: disc ? { owner: disc.owner, disciplines: disc.disciplines || {}, off: DISC.off || null } : null,
+    routines: routines.view().map((r) => ({ ...r, prompt: rlist.find((x) => x?.id === r.id)?.prompt ?? null })),
+    remotes: (Array.isArray(rem) ? rem : []).map((r) => ({ ...r, active: REMOTES.some((x) => x.name === r.name), down: remoteDown.has(r.name) })),
+    models: Object.fromEntries(Object.keys(SEATS).map((n) => [n, modelsSnap[n] || []])), error: problems.filter(Boolean).join(' · ') || null };
+}
+// The request must come from this console's own page (Referer or Origin): /api/file and /api/restart.
+const fromPage = (req) => { let o = null; try { o = new URL(req.headers.referer || req.headers.origin || '').origin; } catch {} return !!o && ALLOWED_ORIGINS.includes(o); };
+const changed = (r) => { restartNeeded = true; detectCache = null; return r; };
+async function settingsPost(p, b) {
+  const need = (a) => { if (!canWrite(a)) throw new Error(`test instance: start it with --${a} <a copy> to edit this file`); };
+  if (p === '/api/settings') {
+    const v = validateSettings(b.settings, SEATS), next = { ...SET(), ...v };
+    writeJsonAtomic(SETTINGS_FILE, next); settingsNow = { settings: next, firstRun: false, error: null };
+    console.log('[settings] saved: ' + Object.keys(v).join(', '));
+    return { ok: true, restartNeeded };
+  }
+  if (p === '/api/settings/add-seat') {
+    need('seats'); const name = String(b.name || ''), cfg = addSeat(readJsonFile(SEATS_FILE, { seats: {} }), { agent: b.agent === 'claude' ? '' : String(b.agent || ''), name, email: String(b.email || ''), role: String(b.role || '') });
+    writeJsonAtomic(SEATS_FILE, cfg); console.log(`[settings] seat ${name} added`);
+    return changed({ ok: true, restartNeeded: true, login: loginCmd(name, cfg.seats[name]), home: cfg.seats[name].home || null });
+  }
+  if (p === '/api/settings/remove-seat') {
+    need('seats'); const name = String(b.name || ''), disc = readJsonFile(DISCIPLINES_FILE, null), rts = readJsonFile(ROUTINES_FILE, []);
+    const n = Object.values(state.conversations).filter((c) => c.seat === name).length, blockers = [
+      ...(n ? [`${n} conversation${n > 1 ? 's' : ''} (delete them first; archived ones count too)`] : []),
+      ...(disc && (disc.owner === name || Object.values(disc.disciplines || {}).includes(name)) ? ['multi-sided projects (disciplines)'] : []),
+      ...((Array.isArray(rts) ? rts : rts.routines || []).some((r) => r.seat === name) ? ['a routine'] : []),
+      ...((readJsonFile(REMOTES_FILE, { remotes: [] }).remotes || []).some((r) => r.account === name) ? ['a remote uses its account'] : [])];
+    writeJsonAtomic(SEATS_FILE, removeSeat(readJsonFile(SEATS_FILE, { seats: {} }), name, blockers)); console.log(`[settings] seat ${name} removed`);
+    return changed({ ok: true, restartNeeded: true });
+  }
+  if (p === '/api/settings/disciplines') {
+    need('disciplines'); const old = readJsonFile(DISCIPLINES_FILE, {});
+    writeJsonAtomic(DISCIPLINES_FILE, { ...old, ...checkDisciplines({ owner: String(b.owner || ''), disciplines: b.disciplines }, SEATS) });
+    return changed({ ok: true, restartNeeded: true });
+  }
+  if (p === '/api/settings/routine') {   // add or edit; the scheduler re-reads routines.json on its next tick (no restart)
+    need('routines'); const raw = readJsonFile(ROUTINES_FILE, []), list = Array.isArray(raw) ? raw : raw.routines || [];
+    const next = saveRoutine(list, { id: String(b.id || ''), seat: String(b.seat || ''), cron: String(b.cron || ''), cwd: String(b.cwd || ''), prompt: typeof b.prompt === 'string' ? b.prompt : '', mode: String(b.mode || '') }, SEATS);
+    writeJsonAtomic(ROUTINES_FILE, Array.isArray(raw) ? next : { ...raw, routines: next });   // a wrapped file keeps its wrapper
+    return { ok: true, restartNeeded };
+  }
+  if (p === '/api/settings/remote') {
+    const raw = readJsonFile(REMOTES_FILE, { remotes: [] }), list = raw.remotes || [];
+    if (b.action === 'test') {   // one `ssh <target> echo ok` with the console's own ssh options (BatchMode: never a password prompt)
+      const r = parseRemotes({ remotes: list.filter((x) => x.name === b.name) }, HOME, () => {})[0]; if (!r) throw new Error('unknown or invalid remote');
+      const x = await rhost.sshRun(r, 'echo ok', { timeout: 20000, max: 4096 });
+      return { ok: x.code === 0, text: x.code === 0 ? 'ssh works' : `ssh failed (exit ${x.code}): ${String(x.err || '').slice(-300)}` };
+    }
+    need('remotes');
+    if (b.action === 'add') writeJsonAtomic(REMOTES_FILE, { ...raw, remotes: addRemote(list, { name: String(b.name || ''), target: String(b.target || ''), identity: String(b.identity || ''), control: !!b.control, account: b.account ? String(b.account) : '',
+      paths: String(b.paths || '').split(/[\s,]+/).filter(Boolean) }, SEATS, HOME) });
+    else if (b.action === 'remove') { if (!list.some((x) => x.name === b.name)) throw new Error('unknown remote'); writeJsonAtomic(REMOTES_FILE, { ...raw, remotes: list.filter((x) => x.name !== b.name) }); }
+    else throw new Error('unknown action');
+    return changed({ ok: true, restartNeeded: true });
+  }
+  if (p === '/api/settings/telegram') {
+    if (b.action === 'test') { const m = await tg.send('✅ Test message from the Seat Console settings page.'); if (!m) throw new Error(tg.readCfg() ? 'the chat is not linked yet' : 'no bot token yet'); return { ok: true }; }
+    if (ISOLATED) throw new Error('test instance: Telegram is off here');
+    const cfg = telegramToken(readJsonFile(TELEGRAM_FILE, {}), String(b.token || '').trim());
+    fs.mkdirSync(path.dirname(TELEGRAM_FILE), { recursive: true }); writeJsonAtomic(TELEGRAM_FILE, cfg, 0o600); console.log('[settings] telegram bot token saved');
+    return { ok: true };
+  }
+  if (p === '/api/settings/password') {
+    if (ISOLATED) throw new Error('test instance: the page login is the real one, change it there');
+    if (!same(String(b.current || ''), AUTH.password)) throw new Error('the current password is wrong');
+    const next = String(b.next || ''); if (next.length < 12 || next.length > 200 || /[:\s]/.test(next)) throw new Error('new password: 12-200 characters, no spaces or ":"');
+    writeJsonAtomic(AUTH_FILE, { ...AUTH, password: next }, 0o600); AUTH = { ...AUTH, password: next }; AUTH_HEADER = basic(AUTH);
+    console.log('[settings] page password changed'); return { ok: true };
+  }
+  return null;
+}
 const EVENT_PAGE = 500;
 let serveSeen = false;   // the [serve] header-names line is logged once per server start
 // Free limit resets a seat's own account holds: count + each one's title and expiry (ids are only echoed back on a tap).
-const resetsView = (seat) => { const r = state.resets?.[seat]; return r ? { available: r.available, nextExpiry: r.credits?.[0]?.expiresAt || null, title: r.credits?.[0]?.title || null, list: (r.credits || []).map((c) => ({ id: c.id, title: c.title, label: c.label || null, expiresAt: c.expiresAt, usableNow: c.usableNow !== false })), usable: SEATS[seat]?.agent === 'codex' || (!SEATS[seat]?.agent && !!r.credits?.some((c) => c.usableNow)) } : null; };
+const resetsOn = (seat) => (SEATS[seat]?.agent === 'codex' ? SET().codexResets : !SEATS[seat]?.agent && SET().claudeResets);   // Settings: no reset UI for a kind that is off
+const resetsView = (seat) => { const r = resetsOn(seat) && state.resets?.[seat]; return r ? { available: r.available, nextExpiry: r.credits?.[0]?.expiresAt || null, title: r.credits?.[0]?.title || null, list: (r.credits || []).map((c) => ({ id: c.id, title: c.title, label: c.label || null, expiresAt: c.expiresAt, usableNow: c.usableNow !== false })), usable: SEATS[seat]?.agent === 'codex' || (!SEATS[seat]?.agent && !!r.credits?.some((c) => c.usableNow)) } : null; };
 const seatsView = () => [...Object.keys(SEATS).map((name) => ({ name, email: SEATS[name].email, role: SEATS[name].role, agent: SEATS[name].agent || null, resets: resetsView(name), cwd: state.cwds[name] || DEFAULT_CWD,
   usage: state.usage[name] || null, conversations: Object.values(state.conversations).filter((c) => c.seat === name).sort((a, b) => b.updatedAt - a.updatedAt).map(summary) })),
   // remote groups after the seats: read-only runs (no "+ new"); the role line carries "unreachable since HH:MM" while ssh fails.
@@ -1211,9 +1341,7 @@ async function handler(req, res) {
     if (url.pathname === '/api/file' && (req.method === 'GET' || req.method === 'HEAD')) {
       if (site && site !== 'same-origin' && site !== 'none') return json(res, 403, { error: 'cross-site' });
       // Not just "not cross-site": the request must say it comes from this console's own page (Referer or Origin), so a bare script or an <img> from elsewhere gets nothing.
-      const from = req.headers.referer || origin || '';
-      let fromOrigin = null; try { fromOrigin = new URL(from).origin; } catch {}
-      if (!fromOrigin || !ALLOWED_ORIGINS.includes(fromOrigin)) return json(res, 403, { error: 'file previews are served to the console page only' });
+      if (!fromPage(req)) return json(res, 403, { error: 'file previews are served to the console page only' });
       return await serveFile(req, res, url);   // await: a throw inside it still ends in the 500 below
     }
     if (req.method === 'GET' && STATIC[url.pathname]) {
@@ -1231,7 +1359,8 @@ async function handler(req, res) {
       if (!hasKey(SEATS, seat) || !SEATS[seat].agent) return json(res, 200, { models: null });
       try { return json(res, 200, { models: await agentModels(seat) }); } catch (e) { return json(res, 200, { models: [], error: String(e.message || e) }); }
     }
-    if (req.method === 'GET' && url.pathname === '/api/multi') return json(res, 200, { projects: multi.view(), disciplines: DISC.map, owner: DISC.owner, off: DISC.off || null, folders: projectFolders() });
+    if (req.method === 'GET' && url.pathname === '/api/multi') return json(res, 200, { projects: multi.view(), disciplines: DISC.map, owner: DISC.owner, off: multiOff() || null, hidden: !SET().multiProjects, folders: projectFolders() });
+    if (req.method === 'GET' && url.pathname === '/api/settings') return json(res, 200, await settingsView());
     if (req.method === 'GET' && url.pathname === '/api/digest') return json(res, 200, digestMessage(Date.now(), url.searchParams.get('kind') === 'evening' ? 'evening' : 'morning'));   // the digest text + buttons, nothing is sent
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
       const c = viewOf(url.searchParams.get('id')); if (!c) return json(res, 404, { error: 'no conversation' });
@@ -1286,6 +1415,12 @@ async function handler(req, res) {
         return json(res, 200, { ok: true, file: true, id: `${dir}/${stored}`, name: fileLabel(stored.replace(/^[0-9a-f]{16}-/, '')), size: buf.length });
       }
       const b = await body(req);
+      if (url.pathname === '/api/restart') {   // Settings "Restart now": the supervisor (run-server.sh / .ps1) starts it again; conversations live in their hosts and are reattached
+        if (!fromPage(req)) return json(res, 403, { error: 'only from the console page' });
+        console.log('[settings] restart requested from the page'); json(res, 200, { ok: true, supervisor: !!process.env.SEAT_CONSOLE_SUPERVISOR });
+        setTimeout(() => process.exit(0), 300); return;
+      }
+      if (url.pathname.startsWith('/api/settings')) { try { const r = await settingsPost(url.pathname, b); if (r) return json(res, 200, r); } catch (e) { return json(res, 400, { error: String(e.message || e) }); } }
       if (url.pathname === '/api/send') {
         if (typeof b.text !== 'string' || !b.text.trim()) return json(res, 400, { error: 'empty text' });
         // "/compact …" and "/context" typed into the composer take the same idle-only path as the meter's buttons (their replies are not chat).
@@ -1325,6 +1460,7 @@ async function handler(req, res) {
       if (url.pathname === '/api/reset') {   // the user taps "Use" on a seat card: one free limit reset of THAT seat's own account (never another seat's)
         const seat = String(b.seat || ''), creditId = b.creditId ? String(b.creditId) : null;
         if (!hasKey(SEATS, seat) || (SEATS[seat].agent && SEATS[seat].agent !== 'codex')) return json(res, 400, { error: 'this seat has no usable resets' });
+        if (!resetsOn(seat)) return json(res, 400, { error: 'limit resets are turned off in Settings' });
         if (creditId && !state.resets?.[seat]?.credits?.some((c) => c.id === creditId)) return json(res, 400, { error: 'that reset is not on this seat' });
         if (SEATS[seat].agent && sharedLogin(seat)) return json(res, 409, { error: `${seat} shares its login with another seat: give each one its own "home" in seats.json first` });
         if (resetBusy.has(seat)) return json(res, 409, { error: 'a reset is already running for this seat' });
@@ -1502,8 +1638,11 @@ async function claimClaudeReset(seat, creditId) {
 async function seatUsage(seat) {
   const o = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8')).claudeAiOauth;
   if (o?.accessToken && o.expiresAt > Date.now()) {   // expired: only the seat's own CLI refreshes it; the console never writes credentials
-    // ?cedar_ember=1: the same answer plus the limit resets the account holds (read the way the CLI's /limit-reset reads them); skip_spend=1: no spend block
-    const r = await fetch('https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': await CLI_UA() }, signal: AbortSignal.timeout(15000) });
+    // Settings "Claude limit resets" on: ?cedar_ember=1 adds the limit resets the account holds (read the way the CLI's /limit-reset reads them, CLI User-Agent); skip_spend=1: no spend block.
+    // Off (the default): the plain usage request, no CLI User-Agent.
+    const r = SET().claudeResets
+      ? await fetch('https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': await CLI_UA() }, signal: AbortSignal.timeout(15000) })
+      : await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
     return r.ok ? await r.json() : undefined;   // { five_hour, seven_day, ... }
   }
   const rem = REMOTES.find((x) => x.account === seat && !remoteDown.has(x.name)); if (!rem || !SEATS[seat].email) return undefined;
@@ -1513,19 +1652,20 @@ async function seatUsage(seat) {
 }
 async function pollUsage() {
   for (const seat of Object.keys(SEATS)) {
-    if (SEATS[seat].agent === 'codex') {   // Codex: its windows + free limit resets from its own account (agents/codex-account.mjs)
-      try { const a = await readCodexAccount({ env: agentEnv(seat) }); state.usage[seat] = { windows: a.windows, at: Date.now() }; (state.resets ||= {})[seat] = { ...a.resets, at: Date.now() }; broadcast({ usage: { seat, ...state.usage[seat] } }); broadcast({ resets: { seat, ...resetsView(seat) } }); quotaWatch(seat); }
+    if (SEATS[seat].agent === 'codex') {   // Codex: its windows + free limit resets from its own account (agents/codex-account.mjs); each half only when Settings has it on
+      if (!SET().usageMeters && !SET().codexResets) continue;
+      try { const a = await readCodexAccount({ env: agentEnv(seat) }); if (SET().codexResets) { (state.resets ||= {})[seat] = { ...a.resets, at: Date.now() }; broadcast({ resets: { seat, ...resetsView(seat) } }); } if (SET().usageMeters) { state.usage[seat] = { windows: a.windows, at: Date.now() }; broadcast({ usage: { seat, ...state.usage[seat] } }); quotaWatch(seat); } }
       catch (e) { console.log(`[usage] ${seat}: ${e.message}`); }
       continue;
     }
-    if (SEATS[seat].agent) continue;   // another agent seat: no Claude account to poll
+    if (SEATS[seat].agent || !SET().usageMeters) continue;   // another agent seat: no Claude account to poll; meters off in Settings: no request at all
     try {
       const u = await seatUsage(seat), w = u?.five_hour; if (!w || typeof w.utilization !== 'number') continue;
       // resets_at null = no 5 h window open (nothing used since the last reset): 0 %, shown as reset
       const windows = { five_hour: { utilization: w.utilization / 100, resetsAt: w.resets_at ? Math.round(Date.parse(w.resets_at) / 1000) : Math.floor(Date.now() / 1000) } };
       // Limit resets the Claude account holds (cedar_ember.grants: id, label, resets_left, ends_at, usable_now). Only answered to a CLI User-Agent.
       const grants = (Array.isArray(u.cedar_ember?.grants) ? u.cedar_ember.grants : []).filter((g) => (g.resets_left ?? 1) > 0 && !g.paused);
-      (state.resets ||= {})[seat] = { available: grants.reduce((n, g) => n + (Number(g.resets_left ?? 1) || 0), 0),
+      if (SET().claudeResets) (state.resets ||= {})[seat] = { available: grants.reduce((n, g) => n + (Number(g.resets_left ?? 1) || 0), 0),
         credits: grants.map((g) => ({ id: g.id, title: /fable/i.test(g.id + ' ' + (g.label || '')) ? 'Fable reset' : g.type === 'full' ? 'Full reset' : (g.label || 'Limit reset'), label: g.label || null, expiresAt: g.ends_at ? Math.round(Date.parse(g.ends_at) / 1000) : null, usableNow: g.usable_now !== false })).sort((a, b) => (a.expiresAt || Infinity) - (b.expiresAt || Infinity)), at: Date.now() };
       broadcast({ resets: { seat, ...resetsView(seat) } });
       const wk = u.seven_day;   // the weekly window: every seat shows its exact reset day + time
@@ -1540,11 +1680,11 @@ if (!ISOLATED) { setInterval(() => pollUsage().catch(() => {}), 180e3).unref(); 
 setTimeout(() => retentionRun().catch((e) => console.log('[retention] failed: ' + e.message)), 30000).unref();
 setInterval(guard('retention', () => { if (viennaHour(Date.now()) === 4 && state.lastRetentionFor !== viennaYmd(Date.now())) retentionRun().catch((e) => console.log('[retention] failed: ' + e.message)); }), 60000).unref();
 // Idle processes are stopped after IDLE_REAP_MS (see ensureProc); checked at least once a minute.
-// Auto-archive: a conversation untouched for AUTO_ARCHIVE_DAYS moves to the archive, unless it is marked ★ Keep (⋯ menu)
+// Auto-archive: a conversation untouched for autoArchiveDays (Settings) moves to the archive, unless it is marked ★ Keep (⋯ menu)
 // or still has something going on. Nothing is deleted; search finds archived ones, and sending to one brings it back.
-const AUTO_ARCHIVE_DAYS = +arg('auto-archive-days') || 3;
 function autoArchive() {
-  const cut = Date.now() - AUTO_ARCHIVE_DAYS * 864e5;
+  if (!SET().autoArchiveDays) return;   // 0 = never
+  const cut = Date.now() - SET().autoArchiveDays * 864e5;
   for (const c of Object.values(state.conversations)) {
     if (c.archived || c.keep || (c.updatedAt || 0) > cut) continue;
     const r = R(c);

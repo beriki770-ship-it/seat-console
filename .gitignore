@@ -8,6 +8,8 @@
 /console/logs/
 /console/state.json
 /console/state.json.tmp
+/console/settings.json
+*.tmp
 /console/token.txt
 /console/uploads/
 /console/search/

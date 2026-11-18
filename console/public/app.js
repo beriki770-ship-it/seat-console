@@ -321,7 +321,7 @@ function scheduleSeats() {
 }
 async function pick(seat, id) {
   if (!id && seats.find((s) => s.name === seat && s.remote && !s.control)) seat = seats.find((s) => !s.remote).name;   // a read-only remote group has no new-conversation draft (no composer)
-  cur = { seat, id }; localStorage.setItem('seat', seat); closeProjects();
+  cur = { seat, id }; localStorage.setItem('seat', seat); closeProjects(); closeSettings();
   pending.length = 0; showThumbs();
   if (id) delete convo[id];                // events of a conversation that was not watched were not delivered: always load it fresh
   watch(true);                             // the stream carries full events only for the open conversation
@@ -360,6 +360,7 @@ async function init() {
   if (!seats.find((s) => s.name === cur.seat && (!s.remote || s.control))) cur.seat = seats[0].name;   // a read-only remote group has no "new conversation" draft
   await pick(cur.seat, null);
   openHash(); window.addEventListener('hashchange', openHash);
+  loadSettings().then(() => { if (setData?.firstRun && !onSettings()) openSettings('start'); });   // first start: Settings opens by itself (not awaited: detection may take seconds)
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
   loadMulti(); setInterval(() => { if (!document.hidden) loadMulti(); }, 60000);
   setInterval(() => { if (!document.hidden) showSeats(); }, 60000);   // keeps the "in 1:12" countdowns and expired windows current
@@ -491,7 +492,7 @@ const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
 const onProjects = () => document.body.classList.contains('projects');
 async function loadMulti() {
   try { multiData = await api('/api/multi'); } catch { return; }
-  multiLoaded = true; showMultiSide(); if (onProjects() && !$('projects').contains(document.activeElement)) { showProjects(); flashCard(); }   // a half-typed brief or filter is never wiped by a refresh
+  multiLoaded = true; $('multi').hidden = !!multiData.hidden; showMultiSide(); if (onProjects() && !$('projects').contains(document.activeElement)) { showProjects(); flashCard(); }   // a half-typed brief or filter is never wiped by a refresh
 }
 // Sidebar: one entry to the page + the projects still going, each a link to its card.
 function showMultiSide() {
@@ -534,7 +535,7 @@ function showProjects() {
   const f = $('mform'); if (keep) for (const k of ['name', 'dir', 'owner', 'brief']) if (keep[k]) f[k].value = keep[k];
 }
 function openProjects(id) {
-  document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
+  closeSettings(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
   focusId = id || null; if (multiLoaded) flashCard();   // a direct link before the first load: the card is flashed once the data is in (loadMulti)
 }
 function flashCard() {
@@ -659,6 +660,8 @@ $('mode').onchange = async () => {
 $('resume').onclick = async () => { const r = await api('/api/resume', { conversationId: cur.id }); if (r.error) $('log').appendChild(div('msg note err', esc(r.error))); };
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {
+  if (location.hash === '#settings') return openSettings();
+  closeSettings();
   if (location.hash === '#projects' || location.hash.startsWith('#multi-')) return openProjects(location.hash.startsWith('#multi-') ? location.hash.slice(7) : null);
   const c = allConvs().find((x) => x.id === location.hash.slice(1));
   if (c && c.id !== cur.id) pick(c.seat, c.id); else if (c) closeProjects();   // the conversation already behind the page: just uncover it
@@ -709,6 +712,187 @@ $('attach').onclick = () => $('file').click();
 $('file').onchange = () => { attach([...$('file').files]); $('file').value = ''; };
 $('thumbs').onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { pending.splice(+b.dataset.rm, 1); showThumbs(); } };
 $('text').addEventListener('paste', (e) => { const fs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/')); if (fs.length) { e.preventDefault(); attach(fs); } });
+// ---- Settings page (#settings, server: settings.mjs + /api/settings*): what is set up, what is turned on. First run (no settings.json) opens it with a checklist. ----
+let setData = null, setTab = 'start', draft = null, setNote = null;   // setNote: { tab, html } the last action's result (a login command, an error)
+const onSettings = () => document.body.classList.contains('settings');
+const STABS = [['start', 'Start'], ['seats', 'Seats'], ['telegram', 'Telegram'], ['access', 'Phone access'], ['usage', 'Usage & limits'], ['projects', 'Projects'], ['routines', 'Routines'], ['remotes', 'Remotes'], ['models', 'Models']];
+const yes = (ok, a, b) => `<span class="${ok ? 'sok' : 'sno'}">${ok ? '✓ ' + a : '✗ ' + b}</span>`;
+const cmd = (c) => `<code class="scmd" dir="ltr">${esc(c)}</code>`;
+const tog = (k, title, text) => `<label class="stog"><input type="checkbox" data-set="${k}"${draft[k] ? ' checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
+const seatOpts = (sel, blank) => (blank ? `<option value="">${blank}</option>` : '') + setData.detected.seats.filter((s) => s.active).map((s) => `<option${s.name === sel ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+const dirty = () => JSON.stringify(draft) !== JSON.stringify(setData.settings);
+async function loadSettings() {
+  const r = await api('/api/settings').catch(() => null); if (!r?.settings) return;   // a failed read keeps what the page had
+  const keep = draft && setData && dirty();   // an action elsewhere on the page never wipes toggles not saved yet
+  setData = r; if (!keep) draft = JSON.parse(JSON.stringify(r.settings)); if (onSettings()) showSettings();
+}
+function checklist() {
+  const d = setData.detected, sts = d.seats, inn = sts.filter((s) => s.signedIn).length, t = setData.telegram, a = setData.access;
+  const rows = [
+    ['seats', 'Seats', sts.length && inn === sts.length, `${sts.length} seat${sts.length === 1 ? '' : 's'}, ${inn} signed in`],
+    ['telegram', 'Telegram', t.linked, t.linked ? 'linked' : t.configured ? 'bot set, chat not linked yet' : 'not set up (optional)'],
+    ['access', 'Phone access', !!(a.tailscale.ip), a.test ? 'test instance: never on Tailscale' : a.tailscale.ip ? 'Tailscale on' : 'only this computer (Tailscale not found)'],
+    ['usage', 'Usage & limits', !setData.firstRun, setData.firstRun ? 'choose, then Save' : 'chosen'],
+    ['projects', 'Projects (optional)', setData.settings.multiProjects, setData.settings.multiProjects ? 'on' : 'off'],
+    ['routines', 'Routines (optional)', setData.routines.length > 0, `${setData.routines.length} routine${setData.routines.length === 1 ? '' : 's'}`],
+    ['remotes', 'Remote servers (optional)', setData.remotes.length > 0, `${setData.remotes.length} remote${setData.remotes.length === 1 ? '' : 's'}`],
+    ['models', 'Default models (optional)', Object.keys(setData.settings.models).length > 0, Object.keys(setData.settings.models).length ? 'set for ' + Object.keys(setData.settings.models).join(', ') : 'each seat uses its CLI default']];
+  return `<ol class="scheck">${rows.map(([tab, title, ok, text]) => `<li class="${ok ? 'done' : ''}"><span class="smark">${ok ? '✓' : ''}</span><span><b>${title}</b><small>${esc(text)}</small></span><button type="button" data-stab="${tab}">Open</button></li>`).join('')}</ol>`;
+}
+function seatRow(s) {
+  const kind = s.agent === 'codex' ? 'Codex' : s.agent === 'agy' ? 'Antigravity' : 'Claude';
+  return `<div class="srow"><div><b>${esc(s.name)}</b> <span class="badge">${kind}</span>${s.active ? '' : ' <span class="badge">after restart</span>'}<small>${esc([s.email, s.role].filter(Boolean).join(' · '))}${s.home ? ` · own login folder <span dir="ltr">${esc(s.home)}</span>` : ''}</small>`
+    + `<small>${yes(s.signedIn, 'signed in', 'not signed in')} · ${s.conversations} conversation${s.conversations === 1 ? '' : 's'}</small>${s.signedIn ? '' : `<small>Sign in once, in a terminal in the Seat Console folder: ${cmd(s.login)}</small>`}</div>`
+    + `<div class="racts"><button type="button" data-rmseat="${esc(s.name)}"${s.conversations ? ' disabled title="Delete its conversations first (archived ones count too)"' : ''}>Remove</button></div></div>`;
+}
+const agentRow = (key, name, d, hint) => `<div class="srow"><div><b>${name}</b><small>${d.installed ? yes(true, 'installed' + (typeof d.installed === 'string' && d.installed !== 'ok' ? ' (' + esc(d.installed) + ')' : ''), '') + ' · ' + yes(d.signedIn, 'signed in', 'not signed in') : yes(false, '', 'not installed')}</small>`
+  + `<small>${d.installed ? (d.signedIn ? 'Add it as a seat to give it work like a Claude seat. A second account gets its own login folder.' : `Sign in: ${cmd(d.login)}`) : hint}</small></div>`
+  + `<form class="sinline" data-form="addagent"><input type="hidden" name="agent" value="${key}"><input name="name" placeholder="seat name" required pattern="[a-z][a-z0-9\\-]{1,20}" value="${esc(key === 'agy' ? 'antigravity' : 'codex')}${setData.detected.seats.some((s) => s.agent === key) ? '2' : ''}" dir="ltr" spellcheck="false" aria-label="${name} seat name"><button type="submit"${d.installed ? '' : ' disabled'}>Add as a seat</button></form></div>`;
+const TABS = {
+  start: () => checklist() + `<p class="smuted">Everything here is optional except one signed-in seat. Nothing optional runs until you turn it on; the defaults are shown in each section.</p>`,
+  seats: () => {
+    const d = setData.detected;
+    return `<h3>Seats</h3>${d.seats.map(seatRow).join('') || '<small>No seats yet.</small>'}`
+      + `<h3>Add a Claude seat</h3><form class="sform" data-form="addseat"><input name="name" placeholder="name, e.g. dev" required pattern="[a-z][a-z0-9\\-]{1,20}" dir="ltr" spellcheck="false"><input name="email" type="email" placeholder="the account's e-mail (shown on the card)" dir="ltr"><input name="role" placeholder="its area, e.g. Application code" dir="auto"><small>One seat = one Claude account you are entitled to use. After adding: sign it in with the command shown, then restart.</small><div class="racts"><button type="submit" class="primary">Add seat</button></div></form>`
+      + `<h3>Other agents</h3>` + agentRow('codex', 'Codex (OpenAI)', d.codex, `Install the Codex CLI: ${cmd('npm install -g @openai/codex')}, then ${cmd('codex login --device-auth')}.`)
+      + agentRow('agy', 'Antigravity (Google)', d.agy, 'Install the Antigravity CLI (agy) to ~/.local/bin, or point AGY_BIN at it, then run it once to sign in.');
+  },
+  telegram: () => {
+    const t = setData.telegram;
+    return `<h3>Status</h3><div class="srow"><div><small>${yes(t.configured, 'bot set' + (t.bot ? ' (@' + esc(t.bot) + ')' : ''), 'no bot yet')} · ${yes(t.linked, 'chat linked', 'chat not linked')}</small><small>Telegram sends finished, failed and approval messages to your phone, and takes new tasks and replies from it.</small></div>`
+      + `${t.linked ? '<div class="racts"><button type="button" data-tgtest>Send test message</button></div>' : ''}</div>`
+      + `<h3>1. Bot token</h3><form class="sform" data-form="tgtoken"><small>In Telegram, open @BotFather, send /newbot, and copy the token it gives you. It is stored in the console's secrets file and never shown again.</small><input name="token" type="password" autocomplete="off" placeholder="${t.configured ? 'a token is saved; paste a new one to replace it' : '123456789:AA...'}" required dir="ltr" spellcheck="false"><div class="racts"><button type="submit" class="primary">Save token</button></div></form>`
+      + `<h3>2. Link your chat</h3><div class="srow"><div>${t.linked ? '<small>Linked. Only this chat can talk to the console.</small>' : !t.configured ? '<small>Save the token first.</small>' : !t.polling ? '<small>A test instance never talks to Telegram.</small>' : t.linkCode ? `<small>Open your bot${t.bot ? ' (@' + esc(t.bot) + ')' : ''} in Telegram and send:</small>${cmd('/start ' + t.linkCode)}<small>This page shows "chat linked" once it arrives (Refresh).</small>` : '<small>The one-time link code appears here a few seconds after the token is saved (Refresh).</small>'}</div><div class="racts"><button type="button" data-sreload>Refresh</button></div></div>`
+      + `<h3>Messages</h3>` + tog('digests', 'Morning and evening digest', 'At 08:00 and 21:00 Telegram gets a short summary of what each seat did, built from the console\'s own state (no model call).');
+  },
+  access: () => {
+    const a = setData.access, ts = a.tailscale;
+    if (a.test) return `<h3>Phone access</h3><div class="srow"><div><small>A test instance is never bound to Tailscale and keeps the real page login: nothing to set here.</small></div></div>`;
+    return `<h3>Phone access</h3><div class="srow"><div><small>${yes(!!ts.ip, 'Tailscale on' + (ts.name ? ' (' + esc(ts.name) + ')' : ''), 'Tailscale not found: the console answers on this computer only')}</small>`
+      + (ts.ip ? `<small>Open on your phone (same Tailscale account): <a href="${esc(a.phone)}" dir="ltr">${esc(a.phone)}</a></small>` : '<small>Install Tailscale on this computer and on the phone and sign both in to one account; the console finds it by itself within a minute (README: Phone access via Tailscale).</small>')
+      + `${ts.warn ? `<small class="sno">${esc(ts.warn)}</small>` : ''}</div></div>`
+      + `<h3>Page login</h3><div class="srow"><div><small>From anything but this computer the page asks for a login. User: <b dir="ltr">${esc(a.user)}</b>. The page token (token.txt) is never shown here.</small></div></div>`
+      + `<form class="sform" data-form="password"><input name="current" type="password" autocomplete="current-password" placeholder="current password" required><input name="next" type="password" autocomplete="new-password" placeholder="new password (12 characters or more)" required minlength="12"><input name="again" type="password" autocomplete="new-password" placeholder="new password again" required><div class="racts"><button type="submit" class="primary">Change password</button></div></form>`;
+  },
+  usage: () => `<h3>Usage</h3>` + tog('usageMeters', 'Usage meters', 'Every 3 minutes the console asks Anthropic for each Claude seat\'s 5-hour and weekly usage, with that seat\'s own sign-in (read-only), and shows it on the seat card.')
+    + tog('quotaWarning', '90 % warning', 'One Telegram message when a seat passes 90 % of its 5-hour window. It never suggests another seat.')
+    + `<h3>Limit resets</h3>` + tog('claudeResets', 'Claude limit resets', 'Reads the free limit resets a Claude account holds, from an undocumented endpoint that only answers the Claude CLI: the request identifies itself as the Claude CLI. Off: the plain usage request, no reset buttons.')
+    + tog('codexResets', 'Codex reset credits', 'Reads a Codex account\'s free reset credits through its own CLI (codex app-server) and shows a Use button. Nothing is ever spent without your tap.')
+    + `<h3>Housekeeping</h3><label class="snum"><span><b>Auto-archive after</b><small>A conversation untouched this many days moves to the archive (★ Keep excepted). 0 = never.</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> days</label>`
+    + `<label class="snum"><span><b>Stop idle processes after</b><small>An idle conversation's process is stopped to free memory; the next message starts it again.</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> min</label>`,
+  projects: () => {
+    const d = setData.disciplines || { owner: setData.detected.seats[0]?.name, disciplines: {} };
+    return `<h3>Multi-sided projects</h3>` + tog('multiProjects', 'Projects page', 'One brief is split into tasks by the owner seat; each task runs on the seat fixed for its discipline. Off hides the page; projects already running finish.')
+      + `<h3>Disciplines</h3><form class="sform" data-form="disc"><small><b>Each discipline has ONE fixed seat. A seat at its usage limit makes its tasks wait for the reset; they are never moved to another seat.</b></small>`
+      + `<label>Owner (writes the plan, runs the integration) <select name="owner">${seatOpts(d.owner)}</select></label><div id="discrows">${Object.entries(d.disciplines).map(([k, v]) => discRow(k, v)).join('') || discRow()}</div>`
+      + `<div class="racts"><button type="button" data-discadd>Add discipline</button><button type="submit" class="primary">Save disciplines</button></div>${setData.disciplines?.off ? `<small class="sno">Now off: ${esc(setData.disciplines.off)}</small>` : ''}</form>`;
+  },
+  routines: () => `<h3>Routines</h3><small class="smuted">At the due time the console only asks on Telegram; a run starts on your tap there or on Run now in the sidebar.</small>`
+    + (setData.routines.map((r) => `<div class="srow"><div><b>${esc(r.id)}</b> <span class="badge">${r.enabled ? 'on' : 'off'}</span><small>${esc(r.seat)} · <span dir="ltr">${esc(r.cron)}</span>${r.enabled && r.nextDue ? ' · next ' + when(r.nextDue) : ''}</small><small dir="ltr">${esc(r.cwd)}</small></div>`
+      + `<div class="racts"><button type="button" data-rtog="${esc(r.id)}" data-to="${r.enabled ? 'disable' : 'enable'}">${r.enabled ? 'Disable' : 'Enable'}</button><button type="button" data-redit="${esc(r.id)}">Edit</button></div></div>`).join('') || '<small>No routines yet.</small>')
+    + `<h3>Add or edit a routine</h3><form class="sform" data-form="routine"><input name="id" placeholder="id, e.g. weekly-review" required pattern="[a-z0-9][a-z0-9\\-]{0,40}" dir="ltr" spellcheck="false"><label>Seat <select name="seat">${seatOpts()}</select></label>`
+    + `<input name="cron" placeholder="cron: minute hour day month weekday, e.g. 0 9 * * 1 = Mondays 09:00" required dir="ltr" spellcheck="false"><input name="cwd" placeholder="folder (absolute path)" required dir="ltr" spellcheck="false">`
+    + `<label>Mode <select name="mode"><option>auto</option><option>ask</option><option>bypass</option></select></label><textarea name="prompt" rows="4" placeholder="What the seat should do" required dir="auto"></textarea><div class="racts"><button type="submit" class="primary">Save routine</button></div></form>`,
+  remotes: () => `<h3>Remote servers</h3><small class="smuted">A Linux machine reached over ssh with a key. Read-only: the console follows its run files. "May start conversations" also runs new conversations there (needs ${cmd('node console/rhost.mjs setup <name>')} once).</small>`
+    + (setData.remotes.map((r) => `<div class="srow"><div><b>${esc(r.name)}</b> <span class="badge">${r.control ? 'control' : 'read-only'}</span>${r.active ? '' : ' <span class="badge">after restart</span>'}${r.down ? ' <span class="badge sno">unreachable</span>' : ''}<small dir="ltr">${esc(r.target)}${r.account ? ' · account ' + esc(r.account) : ''}</small></div>`
+      + `<div class="racts"><button type="button" data-rtest="${esc(r.name)}">Test connection</button><button type="button" data-rrm="${esc(r.name)}">Remove</button></div></div>`).join('') || '<small>No remotes.</small>')
+    + `<h3>Add a remote</h3><form class="sform" data-form="remote"><input name="name" placeholder="name, e.g. build-box" required pattern="[a-z0-9\\-]{1,40}" dir="ltr" spellcheck="false"><input name="target" placeholder="ssh target: user@host" required dir="ltr" spellcheck="false"><input name="identity" value="~/.ssh/id_ed25519" required dir="ltr" spellcheck="false" aria-label="ssh key file">`
+    + `<label class="stog"><input type="checkbox" name="control"><span><b>May start conversations</b><small>Otherwise read-only: only ls and tail run there.</small></span></label><input name="paths" placeholder="run files to follow, e.g. ~/runs/*-run.jsonl (read-only remotes)" dir="ltr" spellcheck="false">`
+    + `<label>Its Claude login is the account of seat <select name="account">${seatOpts('', 'none')}</select></label><div class="racts"><button type="submit" class="primary">Add remote</button></div></form>`,
+  models: () => `<h3>Default model per seat</h3><small class="smuted">Used when a new conversation (also from Telegram, a routine or a project) is started with "default model". Each list is that seat's own.</small>`
+    + setData.detected.seats.filter((s) => s.active).map((s) => `<label class="snum"><span><b>${esc(s.name)}</b></span><select data-model="${esc(s.name)}"><option value="">CLI default</option>${(setData.models[s.name] || []).map((m) => `<option value="${esc(m.id)}"${draft.models[s.name] === m.id ? ' selected' : ''}>${esc(m.name || m.id)}</option>`).join('')}</select></label>`).join(''),
+};
+const discRow = (k = '', v = '') => `<div class="sdisc"><input name="dname" value="${esc(k)}" placeholder="discipline, e.g. frontend" dir="ltr" spellcheck="false" aria-label="discipline"><span>→</span><select name="dseat" aria-label="seat">${seatOpts(v)}</select><button type="button" data-discrm aria-label="Remove discipline">✕</button></div>`;
+function showSettings() {
+  if (!setData) return;
+  const box = $('settings'), y = box.scrollTop, sup = setData.detected.supervisor;
+  box.innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-sdrawer aria-label="Seats">☰</button><div><h2>⚙ Settings</h2><small>What is set up on this computer and what is turned on.</small></div><button type="button" data-sclose>Close</button></header>`
+    + (setData.firstRun && setTab === 'start' ? `<p class="sfirst"><b>Choose what to turn on</b><span>Go through the list. Optional features stay off until you turn them on; Save keeps your choices.</span></p>` : '')
+    + (setData.error ? `<p class="sbar err">${esc(setData.error)}</p>` : '')
+    + (setData.restartNeeded ? `<p class="sbar"><span>Saved. Seats, remotes and disciplines change after a restart.${sup ? '' : ' No supervisor is running: Restart stops the console and you start it again yourself.'}</span><button type="button" class="primary" data-restart>Restart now</button></p>` : '')
+    + `<nav class="stabs" role="tablist">${STABS.map(([k, t]) => `<button type="button" role="tab" data-stab="${k}" aria-selected="${k === setTab}">${t}</button>`).join('')}</nav>`
+    + `<div class="spanel">${setNote && setNote.tab === setTab ? `<p class="snote ${setNote.err ? 'err' : ''}">${setNote.html}</p>` : ''}${TABS[setTab]()}</div>`
+    + `<div class="ssave"${setData.firstRun || dirty() ? '' : ' hidden'}><span>${setData.firstRun ? 'Nothing is saved yet.' : 'Unsaved changes.'}</span><button type="button" data-ssave class="primary">Save</button></div>`;
+  box.scrollTop = y;
+  const tab = box.querySelector('.stabs [aria-selected=true]'), nav = tab.parentElement;   // phone: the open tab stays in view in the scrolling tab row
+  if (tab.offsetLeft < nav.scrollLeft || tab.offsetLeft + tab.offsetWidth > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = tab.offsetLeft - 24;
+}
+async function openSettings(tab) {
+  document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
+  if (tab) { setTab = tab; setNote = null; }
+  if (!setData) await loadSettings(); showSettings();
+}
+function closeSettings() {
+  if (!onSettings()) return; document.body.classList.remove('settings');
+  if (location.hash === '#settings') history.replaceState(null, '', location.pathname + location.search);
+}
+$('setbtn').onclick = () => { if (location.hash === '#settings') openSettings(); else location.hash = 'settings'; };
+const note = (html, err) => { setNote = { tab: setTab, html, err }; };
+async function settingsAct(path, body, okHtml) {
+  const r = await api(path, body).catch((x) => ({ error: String(x) }));
+  if (r.error) note(esc(r.error), true); else note(okHtml ? okHtml(r) : 'Done.');
+  await loadSettings(); if (!r.error) { seats = await api('/api/seats'); showSeats(); }
+  return r;
+}
+const loginNote = (name) => (r) => `Added ${esc(name)}. Sign it in once, in a terminal in the Seat Console folder: ${cmd(r.login)}${r.home ? ` (its own login folder: <span dir="ltr">${esc(r.home)}</span>)` : ''}. Then restart.`;
+$('settings').onchange = (e) => {
+  const k = e.target.dataset.set, m = e.target.dataset.model;
+  if (k) draft[k] = e.target.type === 'checkbox' ? e.target.checked : Math.max(0, Math.round(+e.target.value || 0));
+  else if (m != null) { if (e.target.value) draft.models[m] = e.target.value; else delete draft.models[m]; }
+  else return;
+  $('settings').querySelector('.ssave').hidden = !(setData.firstRun || dirty());
+};
+$('settings').onclick = async (e) => {
+  const t = e.target.closest('button'); if (!t) return; const ds = t.dataset;
+  if (ds.sclose != null) return closeSettings();
+  if (ds.sdrawer != null) return document.body.classList.add('drawer');
+  if (ds.stab) { setTab = ds.stab; setNote = null; showSettings(); $('settings').scrollTop = 0; return; }
+  if (ds.sreload != null) { await loadSettings(); return; }
+  if (ds.discadd != null) return $('discrows').insertAdjacentHTML('beforeend', discRow());
+  if (ds.discrm != null) return t.parentElement.remove();
+  if (ds.ssave != null) {
+    t.disabled = true; const r = await api('/api/settings', { settings: draft }).catch((x) => ({ error: String(x) })); t.disabled = false;
+    if (r.error) { note(esc(r.error), true); return showSettings(); }
+    note('Saved.'); draft = null; await loadSettings(); seats = await api('/api/seats'); showSeats(); loadMulti(); return;
+  }
+  if (ds.restart != null) {
+    if (!confirm(setData.detected.supervisor ? 'Restart the console now? Running conversations keep running and are picked up again.' : 'No supervisor is running: the console stops and you start it again yourself. Stop it now?')) return;
+    t.disabled = true; await api('/api/restart', {}).catch(() => {});
+    for (let i = 0, down = false; i < 120; i++) {   // wait until it went away and came back, then load the new page
+      await new Promise((r) => setTimeout(r, 1000));
+      const up = await fetch('/health').then((r) => r.ok).catch(() => false);
+      if (!up) down = true; else if (down) return location.reload();
+    }
+    return;
+  }
+  if (ds.rmseat) { if (!confirm(`Remove the seat ${ds.rmseat} from seats.json? Its login folder stays on disk.`)) return; await settingsAct('/api/settings/remove-seat', { name: ds.rmseat }, () => `Removed ${esc(ds.rmseat)}. Restart to apply.`); return showSettings(); }
+  if (ds.tgtest != null) { await settingsAct('/api/settings/telegram', { action: 'test' }, () => 'Test message sent.'); return showSettings(); }
+  if (ds.rtog) { const r = await api('/api/routine', { id: ds.rtog, action: ds.to }); if (r.error) note(esc(r.error), true); await loadSettings(); loadRoutines(); return showSettings(); }
+  if (ds.redit) {
+    const r = setData.routines.find((x) => x.id === ds.redit), f = $('settings').querySelector('[data-form=routine]');
+    for (const k of ['id', 'seat', 'cron', 'cwd', 'mode']) f[k].value = r[k] || ''; f.prompt.value = r.prompt ?? ''; if (r.prompt == null) f.prompt.placeholder = 'This routine reads its prompt from a file: a prompt typed here replaces it.';
+    f.scrollIntoView({ block: 'start' }); return;
+  }
+  if (ds.rtest) { t.disabled = true; const r = await api('/api/settings/remote', { action: 'test', name: ds.rtest }).catch((x) => ({ error: String(x) })); note(esc(r.error || r.text), !r.ok); return showSettings(); }
+  if (ds.rrm) { if (!confirm(`Remove the remote ${ds.rrm}? Nothing on the server is touched.`)) return; await settingsAct('/api/settings/remote', { action: 'remove', name: ds.rrm }, () => `Removed ${esc(ds.rrm)}. Restart to apply.`); return showSettings(); }
+};
+$('settings').onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, v = (k) => f[k]?.value ?? '', btn = f.querySelector('[type=submit]'); btn.disabled = true;
+  try {
+    if (f.dataset.form === 'addseat') await settingsAct('/api/settings/add-seat', { agent: 'claude', name: v('name'), email: v('email'), role: v('role') }, loginNote(v('name')));
+    if (f.dataset.form === 'addagent') await settingsAct('/api/settings/add-seat', { agent: v('agent'), name: v('name') }, loginNote(v('name')));
+    if (f.dataset.form === 'tgtoken') await settingsAct('/api/settings/telegram', { token: v('token') }, () => 'Token saved. Now link your chat (step 2).');
+    if (f.dataset.form === 'password') { if (v('next') !== v('again')) { note('The two new passwords differ.', true); return showSettings(); } await settingsAct('/api/settings/password', { current: v('current'), next: v('next') }, () => 'Password changed. Other devices ask for it at their next visit.'); }
+    if (f.dataset.form === 'routine') await settingsAct('/api/settings/routine', { id: v('id'), seat: v('seat'), cron: v('cron'), cwd: v('cwd'), mode: v('mode'), prompt: v('prompt') }, () => `Routine ${esc(v('id'))} saved.`).then(() => loadRoutines());
+    if (f.dataset.form === 'remote') await settingsAct('/api/settings/remote', { action: 'add', name: v('name'), target: v('target'), identity: v('identity'), control: f.control.checked, paths: v('paths'), account: v('account') }, () => `Added ${esc(v('name'))}. Test it, then restart.`);
+    if (f.dataset.form === 'disc') {
+      const disciplines = {}; for (const row of f.querySelectorAll('.sdisc')) { const k = row.querySelector('[name=dname]').value.trim(); if (k) disciplines[k] = row.querySelector('[name=dseat]').value; }
+      await settingsAct('/api/settings/disciplines', { owner: v('owner'), disciplines }, () => 'Disciplines saved. Restart to apply.');
+    }
+  } finally { btn.disabled = false; }
+  showSettings();
+};
+
 init();
 
 // Effort slider: stop 0 keeps the seat's default, stops 1-5 are the CLI's --effort levels, stop 6 is ultracode (see server.mjs).

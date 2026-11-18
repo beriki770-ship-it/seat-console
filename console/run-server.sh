@@ -21,6 +21,7 @@ listening() { "$NODE" -e 'require("net").connect(+process.argv[1], "127.0.0.1").
 
 # Sleeps in the background + wait: a plain `sleep 30` holds off the TERM trap until it ends (launchd/systemd would then SIGKILL us and orphan node).
 nap() { sleep "$1" & wait $!; }
+export SEAT_CONSOLE_SUPERVISOR=1   # the Settings page knows a restart comes back
 child=''
 trap 'sup "stopped by signal, stopping node pid=$child"; [ -n "$child" ] && kill "$child" 2>/dev/null; exit 0' TERM INT HUP
 sup "supervisor up pid=$$ node=$NODE"

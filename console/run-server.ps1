@@ -9,6 +9,7 @@ $node = if (Get-Command node -ErrorAction SilentlyContinue) { (Get-Command node)
 $sup  = Join-Path $dir 'supervisor.log'
 function Write-Sup([string]$msg) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -Append -Encoding utf8 -FilePath $sup }
 $starts = New-Object System.Collections.Generic.List[datetime]
+$env:SEAT_CONSOLE_SUPERVISOR = '1'   # the Settings page shows "Restart now" only with a supervisor to start it again
 Write-Sup "supervisor up pid=$PID node=$node"
 while ($true) {
     $starts.RemoveAll({ param($t) ((Get-Date) - $t).TotalSeconds -gt 60 }) | Out-Null
