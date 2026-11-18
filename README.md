@@ -4,7 +4,7 @@ Seat Console is a small local web console for running several Claude Code CLI se
 
 It works with the Claude Code CLI that you installed and signed in to yourself. It does not modify the CLI or talk to any Claude API directly; it starts `claude -p` with stream-json input and output and shows the result.
 
-> **Disclaimer.** Seat Console is an independent, unofficial tool. It launches the unmodified Claude Code CLI that you installed and signed in to yourself. It never reads, stores or transmits your Claude credentials. Each account must be one you are entitled to use; use one account per job and do not use it to get around usage limits. Not affiliated with or endorsed by Anthropic. Review Anthropic's Consumer Terms, Commercial Terms and Usage Policy before use. Use at your own risk.
+> **Disclaimer.** Seat Console is an independent, unofficial tool. It launches the unmodified Claude Code CLI that you installed and signed in to yourself. It never stores, refreshes or transmits your Claude credentials; the only use of a seat's sign-in outside the CLI is the usage meter and the [limit resets](#limit-resets), which send the seat's current access token to Anthropic's own API and nowhere else. Each account must be one you are entitled to use; use one account per job and do not use it to get around usage limits. Not affiliated with or endorsed by Anthropic. Review Anthropic's Consumer Terms, Commercial Terms and Usage Policy before use. Use at your own risk.
 
 ## Demo video
 
@@ -24,6 +24,8 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 - **Import a terminal session.** A Claude Code session you ran in a terminal or through the SDK becomes a console conversation (`POST /api/import`, see [Scripting](#scripting)); the next message resumes it.
 - **Multi-sided projects (optional).** One brief is split into tasks by a planner turn; you approve the plan once, then each task runs as its own conversation on the seat fixed for its discipline (design, backend, deploy, ...), in parallel, with dependencies, and the owner seat runs a final integration. The **Projects** page starts and follows them; Telegram has `/multi` and an approve button. See [`disciplines.json`](#disciplinesjson-optional).
 - **Usage limits stay per seat.** On Team and Enterprise plans each seat's limit is its own. The console never moves work to another seat to dodge a limit: a task or routine whose seat is at its limit waits for the reset (or you run it there anyway).
+- **Other agents (optional).** A seat can run the Codex CLI or the Antigravity CLI instead of Claude Code, with its own login, its own model menu and (Codex) its own usage meter. Off unless a seat says so. See [Other agents](#other-agents-codex-antigravity).
+- **Limit resets on the seat card.** If a seat's account holds free limit resets (Codex reset credits, Claude limit resets), the card lists them with their expiry. Reading them is automatic; one is spent only when you tap its **Use** button and confirm.
 - **Daily digests** at 08:00 and 21:00: quota per seat, stuck conversations, what finished, errors in the server log, today's routines.
 - **Phone-friendly, installable (PWA).** Works over Tailscale with Basic auth; with `tailscale serve` you get HTTPS and can install it as an app.
 - **Handy extras.** Attachments of any file type, per-seat usage bars (5-hour and weekly window, with the reset day and time), context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
@@ -108,6 +110,46 @@ copy console\disciplines.example.json console\disciplines.json
 ```
 
 Without the file (or with a seat name that is not in `seats.json`) the console runs as usual and only the Projects page says why it is off. The planner writes `PLAN.md` and `.multi/plan.json` in the project folder; a task counts as done when its seat has written `.multi/out/<task>.md`. The seat of a task always comes from this file: a seat at its usage limit makes its tasks wait for the reset, they are never moved to another seat.
+
+### Other agents (Codex, Antigravity)
+
+Opt-in: nothing changes unless a seat in `seats.json` has an `"agent"` field. Such a seat runs the [Codex CLI](https://github.com/openai/codex) (`"agent": "codex"`) or the Antigravity CLI (`"agent": "agy"`) through a small adapter in `console/agents/` that speaks the console's protocol, so it gets the same chat, tool rows, Stop, modes and Telegram notifications as a Claude seat. Each CLI is installed and signed in by you; the console never handles its login.
+
+```json
+"seats": {
+  "dev":   { "email": "dev-account@example.com", "role": "Application code" },
+  "gpt":   { "email": "codex-account@example.com", "role": "Second opinion on reviews", "agent": "codex", "home": "~/.codex-gpt" },
+  "agy":   { "email": "google-account@example.com", "role": "Research", "agent": "agy" }
+}
+```
+
+- `home` (optional): the account's own login folder, so you can run several accounts of the same AI side by side. Codex gets it as `CODEX_HOME`, Antigravity as `HOME` (Linux / macOS only; on Windows Antigravity always uses its default login). Without it the CLI's default login is used. Two seats of the same AI need two different `home` folders, otherwise the console refuses to spend resets for them.
+- Sign a seat in once (Linux / macOS): `console/agents/login.sh gpt`. Codex uses its device-code login (works over SSH), Antigravity its own sign-in screen.
+- `CODEX_BIN` / `AGY_BIN` point the console at the binaries if they are not `codex` on the PATH and `~/.local/bin/agy`. On Windows, set them to the full path of the executable.
+- Modes map to each CLI's own: `auto` = Codex `workspace-write` sandbox / Antigravity without prompts inside its sandbox, `ask` = read-only / plan mode, `bypass` = no sandbox.
+- The model menu of an agent seat is read from that CLI on that seat's login. Attachments reach these seats as text only. Codex seats show their 5-hour and weekly windows on the card; Antigravity has no meter yet.
+- A turn that stops on the CLI's usage limit waits for the reset and then continues on the same seat, like a Claude seat.
+- Multi-sided projects can give agent seats their own fixed disciplines in `disciplines.json`, for example `"review": "gpt"`, `"testing": "gpt"`, `"research": "agy"`. A task goes to them because of its discipline, never because a Claude seat is at its limit.
+- The adapters keep each conversation's thread id in `console/agent-state/` (or the `--data` folder), so the next message resumes the same thread.
+- **Each account keeps its own role.** The console never moves work to another account, Claude or not, to get around a usage limit. Use agent seats for the work you give them, not as overflow.
+
+Ubuntu 24.04 blocks unprivileged user namespaces, which Codex's bubblewrap sandbox needs; commands then fail inside the sandbox. Allow it for `/usr/bin/bwrap` only, in `/etc/apparmor.d/bwrap`:
+
+```
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+```
+
+then `sudo apparmor_parser -r /etc/apparmor.d/bwrap`. (Undo: `sudo apparmor_parser -R /etc/apparmor.d/bwrap && sudo rm /etc/apparmor.d/bwrap`.)
+
+### Limit resets
+
+Some accounts get free limit resets: Codex reset credits, and Claude limit resets shown by the CLI's `/limit-reset`. The console reads them with the usage poll and lists them on the seat card, each with its expiry. A **Use** button spends exactly that one reset of that seat's own account, after a confirm; nothing is ever spent on its own, and a reset is never used for another seat.
+
+The calls are the ones the official CLIs make: Codex's `codex app-server` (`account/rateLimits/read`, `account/rateLimitResetCredit/consume`), and for Claude the usage endpoint with the CLI's User-Agent (its version comes from `claude --version`) plus `POST /api/organizations/<org>/reset_rate_limits`. They are undocumented and may change or stop working at any time; then the card simply shows no resets.
 
 ## Sign in each seat
 

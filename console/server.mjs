@@ -30,6 +30,7 @@ import { loadRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
+import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { findPaths } = createRequire(import.meta.url)('./public/paths.js');   // the browser's preview detector: the same paths become Telegram attachments
@@ -623,11 +624,32 @@ async function initSeat(seat) {
   e.pending = runInit().catch(() => new Promise((r) => setTimeout(r, 2000)).then(runInit));
   try { await e.pending; e.sig = sigOf(); console.log(`[init] seat ${seat} prepared`); } finally { e.pending = null; }
 }
+// Other agents (opt-in, seats.json "agent": "codex" | "agy"): an adapter in agents/<name>.mjs speaks claude's stream-json to the console and drives its own CLI.
+// Several accounts per AI: an agent seat may name its own login folder ("home"), like each Claude seat has its own CLAUDE_CONFIG_DIR.
+// Codex reads it as CODEX_HOME, Antigravity keeps its login under HOME. No "home" = the CLI's default login.
+const agentEnv = (seat) => { const a = SEATS[seat]?.agent, h = SEATS[seat]?.home && path.resolve(String(SEATS[seat].home).replace(/^~(?=[\\/]|$)/, HOME));
+  return !h ? {} : a === 'codex' ? { CODEX_HOME: h } : a === 'agy' ? { HOME: h } : {}; };
+// Two seats of the same agent on ONE login would spend each other's resets: each needs its own "home".
+const sharedLogin = (seat) => { const a = SEATS[seat].agent, mine = JSON.stringify(agentEnv(seat)); return Object.keys(SEATS).some((n) => n !== seat && SEATS[n].agent === a && JSON.stringify(agentEnv(n)) === mine); };
+const resetBusy = new Set();
+const agentScript = (name) => { if (!/^[a-z0-9-]+$/.test(name) || !fs.existsSync(path.join(HERE, 'agents', name + '.mjs'))) throw new Error('unknown agent ' + name); return path.join(HERE, 'agents', name + '.mjs'); };
+const AGY_BIN = process.env.AGY_BIN || path.join(HOME, '.local', 'bin', 'agy');
+// The model menu of an agent seat, read from its CLI on that seat's own login (cached 10 min): [{ id, name, default }].
+const modelCache = new Map();
+async function agentModels(seat) {
+  const agent = SEATS[seat].agent, hit = modelCache.get(seat); if (hit && Date.now() - hit.at < 600e3) return hit.list;
+  let list = [];
+  if (agent === 'codex') list = await codexModels({ env: agentEnv(seat) });
+  else if (agent === 'agy') list = await new Promise((ok, no) => execFile(AGY_BIN, ['models'], { encoding: 'utf8', timeout: 30000, env: { ...process.env, ...agentEnv(seat) } }, (e, out) => e ? no(e)
+    : ok(out.split('\n').map((l) => l.split('\t')).filter((p) => p.length >= 2 && /^[\w.-]+$/.test(p[0].trim())).map(([id, name], i) => ({ id: id.trim(), name: name.trim(), default: i === 0 })))));
+  modelCache.set(seat, { at: Date.now(), list }); return list;
+}
 async function startProc(c) {
   const rem = ctlOf(c);   // a remote conversation: no seat dir to prepare, claude runs there under the remote's own login
-  if (!rem) await initSeat(c.seat);
+  const agent = !rem && SEATS[c.seat]?.agent;   // an agent seat: its own CLI and login, no Claude seat dir to prepare
+  if (!rem && !agent) await initSeat(c.seat);
   else if (R(c).remoteKillFailed) throw new Error(`remote ${rem.name} unreachable: the previous host there could not be stopped; send again when it answers`);
-  const configDir = rem ? `(remote ${rem.name}: its own login)` : path.join(HOME, '.claude-seats', c.seat);
+  const configDir = rem ? `(remote ${rem.name}: its own login)` : agent ? `(${agent}: its own login)` : path.join(HOME, '.claude-seats', c.seat);
   const ending = 'End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.';
   const role = rem ? `You are a Claude session on the remote machine '${rem.name}', driven from the user's Seat Console. ${ending}`
     : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${ending}`;
@@ -643,6 +665,7 @@ async function startProc(c) {
   const info = rem ? await rseq(c, () => rhost.spawnRemoteHost(rem, { id: c.id, args, cwd: c.cwd, token: crypto.randomBytes(24).toString('hex') })).then((i) => {
     remoteStatus(rem.name, null); fs.mkdirSync(path.dirname(hostBase(c)), { recursive: true }); fs.writeFileSync(hostPaths(hostBase(c)).info, JSON.stringify({ ...i, remote: rem.name })); return i;
   }, (e) => { if (e.down) remoteStatus(rem.name, e.message); throw e; })
+    : agent ? await spawnHost({ base: hostBase(c), script: HOST_JS, exe: process.execPath, args: [agentScript(agent), ...args], cwd: c.cwd, env: { ...cleanEnv(), AGENT_STATE: path.join(DATA, 'agent-state'), AGY_BIN, ...agentEnv(c.seat) }   /* AGY_BIN: absolute, because a seat "home" changes HOME */, token: crypto.randomBytes(24).toString('hex') })
     : await spawnHost({ base: hostBase(c), script: HOST_JS, exe: CLAUDE_CMD[0], args: [...CLAUDE_CMD.slice(1), ...args], cwd: c.cwd, env: { ...cleanEnv(), CLAUDE_CONFIG_DIR: configDir }, token: crypto.randomBytes(24).toString('hex') });
   c.spawnedAt = Date.now(); // host + claude were created before this instant: the creation-time fallback of the guarded kills (procid.mjs) needs it when the command-line lookup fails
   c.hostOff = 0; c.hostGen = (c.hostGen || 0) + 1; // a new host-out file starts at byte 0: offsets logged by the previous host no longer apply
@@ -1153,7 +1176,9 @@ async function serveFile(req, res, url) {
 }
 const EVENT_PAGE = 500;
 let serveSeen = false;   // the [serve] header-names line is logged once per server start
-const seatsView = () => [...Object.keys(SEATS).map((name) => ({ name, email: SEATS[name].email, role: SEATS[name].role, cwd: state.cwds[name] || DEFAULT_CWD,
+// Free limit resets a seat's own account holds: count + each one's title and expiry (ids are only echoed back on a tap).
+const resetsView = (seat) => { const r = state.resets?.[seat]; return r ? { available: r.available, nextExpiry: r.credits?.[0]?.expiresAt || null, title: r.credits?.[0]?.title || null, list: (r.credits || []).map((c) => ({ id: c.id, title: c.title, label: c.label || null, expiresAt: c.expiresAt, usableNow: c.usableNow !== false })), usable: SEATS[seat]?.agent === 'codex' || (!SEATS[seat]?.agent && !!r.credits?.some((c) => c.usableNow)) } : null; };
+const seatsView = () => [...Object.keys(SEATS).map((name) => ({ name, email: SEATS[name].email, role: SEATS[name].role, agent: SEATS[name].agent || null, resets: resetsView(name), cwd: state.cwds[name] || DEFAULT_CWD,
   usage: state.usage[name] || null, conversations: Object.values(state.conversations).filter((c) => c.seat === name).sort((a, b) => b.updatedAt - a.updatedAt).map(summary) })),
   // remote groups after the seats: read-only runs (no "+ new"); the role line carries "unreachable since HH:MM" while ssh fails.
   // control: true adds "+ new" (`control`) and lists the conversations started there next to the runs (viewSummary tells them apart).
@@ -1197,6 +1222,11 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ready: true });
     if (req.method === 'GET' && url.pathname === '/api/seats') return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify(seatsView()));
     if (req.method === 'GET' && url.pathname === '/api/routines') return json(res, 200, routines.view());
+    if (req.method === 'GET' && url.pathname === '/api/models') {   // the model menu of an agent seat: what THAT CLI offers on its own login (null = the page's Claude list)
+      const seat = url.searchParams.get('seat') || '';
+      if (!hasKey(SEATS, seat) || !SEATS[seat].agent) return json(res, 200, { models: null });
+      try { return json(res, 200, { models: await agentModels(seat) }); } catch (e) { return json(res, 200, { models: [], error: String(e.message || e) }); }
+    }
     if (req.method === 'GET' && url.pathname === '/api/multi') return json(res, 200, { projects: multi.view(), disciplines: DISC.map, owner: DISC.owner, off: DISC.off || null, folders: projectFolders() });
     if (req.method === 'GET' && url.pathname === '/api/digest') return json(res, 200, digestMessage(Date.now(), url.searchParams.get('kind') === 'evening' ? 'evening' : 'morning'));   // the digest text + buttons, nothing is sent
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
@@ -1287,6 +1317,33 @@ async function handler(req, res) {
         state.conversations[c.id] = c; R(c).status = 'stopped'; try { setTitle(c, String(b.title || first).replace(/\s+/g, ' ').trim().slice(0, 60)); } catch { c.title = 'Imported session'; }
         saveState(); broadcast({ conv: summary(c) });
         return json(res, 200, { ok: true, conversationId: c.id, events: out.length });
+      }
+      if (url.pathname === '/api/reset') {   // the user taps "Use" on a seat card: one free limit reset of THAT seat's own account (never another seat's)
+        const seat = String(b.seat || ''), creditId = b.creditId ? String(b.creditId) : null;
+        if (!hasKey(SEATS, seat) || (SEATS[seat].agent && SEATS[seat].agent !== 'codex')) return json(res, 400, { error: 'this seat has no usable resets' });
+        if (creditId && !state.resets?.[seat]?.credits?.some((c) => c.id === creditId)) return json(res, 400, { error: 'that reset is not on this seat' });
+        if (SEATS[seat].agent && sharedLogin(seat)) return json(res, 409, { error: `${seat} shares its login with another seat: give each one its own "home" in seats.json first` });
+        if (resetBusy.has(seat)) return json(res, 409, { error: 'a reset is already running for this seat' });
+        resetBusy.add(seat);   // one claim at a time per seat: a double tap or a second tab cannot spend two
+        try {
+        if (!SEATS[seat].agent) {   // a Claude seat: claim, then read its usage again so the meter and the count are fresh
+          const before = state.resets?.[seat]?.available ?? 0;
+          try {
+            const j = await claimClaudeReset(seat, creditId || undefined); console.log(`[reset] ${seat}: claude limit reset -> ${j.result}${j.reason ? ' (' + j.reason + ')' : ''}`);
+            await pollUsage();   // always re-read after a 2xx: the count on the card is the truth, whatever word `result` uses
+            const after = state.resets?.[seat]?.available ?? 0;
+            if (after >= before) return json(res, 409, { error: `the reset was not used (${j.result || 'no result'}${j.reason ? ' - ' + j.reason : ''})`, resets: resetsView(seat) });
+            return json(res, 200, { ok: true, resets: resetsView(seat), windows: state.usage[seat]?.windows });
+          } catch (e) { return json(res, 502, { error: String(e.message || e) }); }
+        }
+        try {
+          await consumeCodexReset(creditId || state.resets?.[seat]?.credits?.[0]?.id, { env: agentEnv(seat), key: seat });
+          console.log(`[reset] ${seat}: one limit reset used`);
+          const a = await readCodexAccount({ env: agentEnv(seat) }); state.usage[seat] = { windows: a.windows, at: Date.now() }; (state.resets ||= {})[seat] = { ...a.resets, at: Date.now() }; saveState();
+          broadcast({ usage: { seat, ...state.usage[seat] } }); broadcast({ resets: { seat, ...resetsView(seat) } });
+          return json(res, 200, { ok: true, resets: resetsView(seat), windows: a.windows });
+        } catch (e) { return json(res, 502, { error: String(e.message || e) }); }
+        } finally { resetBusy.delete(seat); }
       }
       if (url.pathname === '/api/multi') {   // multi-sided project: create (name, brief, dir, owner) | approve (id) | retry (id, task)
         try {
@@ -1411,10 +1468,28 @@ const REMOTE_USAGE_JS = `const o=require(require('os').homedir()+'/.claude/.cred
 Promise.all(['profile','usage'].map((p)=>fetch('https://api.anthropic.com/api/oauth/'+p,{headers:h}).then((r)=>r.json()))).then(([p,u])=>console.log(JSON.stringify({email:p.account&&p.account.email,five_hour:u.five_hour||null,seven_day:u.seven_day||null})))`;
 // Seat -> its usage windows (five_hour, seven_day). The PC token first; expired (a seat whose work all runs on a remote) -> the remote with "account": seat.
 // The remote's answer counts only if its account email is the seat's own: a remote whose default login is another account never lands on this meter.
+// The usage endpoint answers the limit-reset block (cedar_ember) only to the Claude CLI's own User-Agent. Its version is read once from `claude --version`.
+let cliUa = null;
+const CLI_UA = () => cliUa ||= new Promise((ok) => execFile(CLAUDE_EXE, ['--version'], { encoding: 'utf8', timeout: 15000, windowsHide: true, env: cleanEnv() },
+  (e, out) => ok(`claude-cli/${(!e && String(out).trim().split(/\s/)[0]) || '2.1.321'} (external, cli)`)));
+// Spend one Claude limit reset of THIS seat's account: the request the CLI's /limit-reset sends (undocumented, may change). Only on the user's tap + confirm.
+async function claimClaudeReset(seat, creditId) {
+  const dir = path.join(HOME, '.claude-seats', seat), o = JSON.parse(fs.readFileSync(path.join(dir, '.credentials.json'), 'utf8')).claudeAiOauth;
+  if (!(o?.accessToken && o.expiresAt > Date.now())) throw new Error(`${seat}: its login token has expired; open the seat once so its CLI refreshes it`);
+  const org = JSON.parse(fs.readFileSync(path.join(dir, '.claude.json'), 'utf8')).oauthAccount?.organizationUuid; if (!org) throw new Error(`${seat}: no organization id`);
+  const grant = state.resets?.[seat]?.credits?.find((c) => c.usableNow && c.id && (!creditId || c.id === creditId)); if (!grant) throw new Error('that reset is not available');
+  const r = await fetch(`https://api.anthropic.com/api/organizations/${org}/reset_rate_limits`, { method: 'POST', signal: AbortSignal.timeout(25000),
+    headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': await CLI_UA(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ program: 'cedar_ember', grant_id: grant.id, request_id: crypto.createHash('sha256').update(`${seat}:${grant.id}`).digest('hex').slice(0, 32) }) });   // same seat + grant = same request id: a repeat is not a second claim
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`reset refused (${r.status}): ${j?.error?.message || j?.reason || 'no detail'}`);
+  return j;   // { result, reason, resets_left, cleared, weekly_resets_at }
+}
 async function seatUsage(seat) {
   const o = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8')).claudeAiOauth;
   if (o?.accessToken && o.expiresAt > Date.now()) {   // expired: only the seat's own CLI refreshes it; the console never writes credentials
-    const r = await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
+    // ?cedar_ember=1: the same answer plus the limit resets the account holds (read the way the CLI's /limit-reset reads them); skip_spend=1: no spend block
+    const r = await fetch('https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20', 'User-Agent': await CLI_UA() }, signal: AbortSignal.timeout(15000) });
     return r.ok ? await r.json() : undefined;   // { five_hour, seven_day, ... }
   }
   const rem = REMOTES.find((x) => x.account === seat && !remoteDown.has(x.name)); if (!rem || !SEATS[seat].email) return undefined;
@@ -1424,10 +1499,21 @@ async function seatUsage(seat) {
 }
 async function pollUsage() {
   for (const seat of Object.keys(SEATS)) {
+    if (SEATS[seat].agent === 'codex') {   // Codex: its windows + free limit resets from its own account (agents/codex-account.mjs)
+      try { const a = await readCodexAccount({ env: agentEnv(seat) }); state.usage[seat] = { windows: a.windows, at: Date.now() }; (state.resets ||= {})[seat] = { ...a.resets, at: Date.now() }; broadcast({ usage: { seat, ...state.usage[seat] } }); broadcast({ resets: { seat, ...resetsView(seat) } }); quotaWatch(seat); }
+      catch (e) { console.log(`[usage] ${seat}: ${e.message}`); }
+      continue;
+    }
+    if (SEATS[seat].agent) continue;   // another agent seat: no Claude account to poll
     try {
       const u = await seatUsage(seat), w = u?.five_hour; if (!w || typeof w.utilization !== 'number') continue;
       // resets_at null = no 5 h window open (nothing used since the last reset): 0 %, shown as reset
       const windows = { five_hour: { utilization: w.utilization / 100, resetsAt: w.resets_at ? Math.round(Date.parse(w.resets_at) / 1000) : Math.floor(Date.now() / 1000) } };
+      // Limit resets the Claude account holds (cedar_ember.grants: id, label, resets_left, ends_at, usable_now). Only answered to a CLI User-Agent.
+      const grants = (Array.isArray(u.cedar_ember?.grants) ? u.cedar_ember.grants : []).filter((g) => (g.resets_left ?? 1) > 0 && !g.paused);
+      (state.resets ||= {})[seat] = { available: grants.reduce((n, g) => n + (Number(g.resets_left ?? 1) || 0), 0),
+        credits: grants.map((g) => ({ id: g.id, title: /fable/i.test(g.id + ' ' + (g.label || '')) ? 'Fable reset' : g.type === 'full' ? 'Full reset' : (g.label || 'Limit reset'), label: g.label || null, expiresAt: g.ends_at ? Math.round(Date.parse(g.ends_at) / 1000) : null, usableNow: g.usable_now !== false })).sort((a, b) => (a.expiresAt || Infinity) - (b.expiresAt || Infinity)), at: Date.now() };
+      broadcast({ resets: { seat, ...resetsView(seat) } });
       const wk = u.seven_day;   // the weekly window: every seat shows its exact reset day + time
       if (wk && typeof wk.utilization === 'number' && wk.resets_at) windows.seven_day = { utilization: wk.utilization / 100, resetsAt: Math.round(Date.parse(wk.resets_at) / 1000) };
       state.usage[seat] = { windows, at: Date.now() };

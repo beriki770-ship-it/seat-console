@@ -40,6 +40,11 @@ small { display:block; color:var(--mute); font-size:12px; line-height:1.35; }
 .badge { font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:1px 6px; border-radius:10px; background:var(--user); color:var(--mute); }
 .badge.bypass { background:var(--warn); color:#fff; }
 
+/* ---- free limit resets on a seat card ---- */
+.resets { display:flex; align-items:center; gap:6px; flex-wrap:wrap; color:var(--mute); margin-top:2px; }
+.resets button { padding:2px 8px; font-size:12px; }
+.reset1 { display:inline-flex; align-items:center; gap:4px; margin-inline-end:8px; }
+
 /* ---- Projects: sidebar entry + the page (body.projects takes over main) ---- */
 #multi { margin:0 0 10px; padding-bottom:10px; border-bottom:1px solid var(--line); }
 #multi h2 { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:0 8px 8px; font-weight:600; }

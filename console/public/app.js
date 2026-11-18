@@ -146,6 +146,19 @@ $('log').addEventListener('toggle', async (e) => {
   } catch {} finally { delete d.dataset.loading; }
 }, true);
 
+// Model menu per seat: Claude seats keep the page's own list; an agent seat's list comes from its CLI (/api/models).
+const CLAUDE_MODELS = $('model').innerHTML, agentModelCache = {};
+async function setModels(s, c) {
+  const sel = $('model'), want = c ? c.model || '' : '';
+  if (!s?.agent) { if (sel.dataset.agent) { sel.innerHTML = CLAUDE_MODELS; delete sel.dataset.agent; delete sel.dataset.seat; } if (c) sel.value = want; return; }
+  if (sel.dataset.agent !== s.agent) { sel.innerHTML = '<option value="">default model</option>'; sel.dataset.agent = s.agent; }
+  sel.dataset.seat = s.name;
+  const list = agentModelCache[s.name] || await api('/api/models?seat=' + encodeURIComponent(s.name)).then((r) => (r.error ? r.models || [] : (agentModelCache[s.name] = r.models || []))).catch(() => []);   // a failed read is retried next time
+  if (sel.dataset.agent !== s.agent || sel.dataset.seat !== s.name) return;   // the user moved on to another seat meanwhile
+  const def = list.find((m) => m.default);
+  sel.innerHTML = '<option value="">default model' + (def ? ' (' + esc(def.name) + ')' : '') + '</option>' + list.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+  sel.value = want;
+}
 async function showConversation() {
   const log = $('log'), myId = cur.id; log.innerHTML = ''; run = null;
   for (const k in toolRows) delete toolRows[k]; for (const k in permCards) delete permCards[k];
@@ -178,7 +191,8 @@ async function showConversation() {
   closeCtx();
   $('cwd').value = c ? c.cwd : s.cwd;
   // An existing conversation's model and effort come from the conversation: left on whatever the last one used, the next message would silently restart it with those.
-  if (c) { $('model').value = c.model || ''; $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || 'default'; }
+  setModels(s, c);   // an agent seat (Codex, Antigravity) shows ITS models; a Claude seat the Claude list
+  if (c) { $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || 'default'; }
   if (c) $('mode').value = c.mode || 'auto';   // a remote run has no mode; changeable on an existing conversation too: the next message restarts it in the new mode (server send())
   $('banner').hidden = !(c && (c.status === 'interrupted' || c.status === 'stopped'));
   $('banner').firstElementChild.textContent = c && c.status === 'interrupted' ? 'Interrupted: the server restarted while this turn was running. Resume continues the same session.' : 'Stopped. Sending a message resumes this conversation.';
@@ -246,18 +260,27 @@ const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dayOf = (ms) => { const d = new Date(ms), t = new Date(); t.setHours(0, 0, 0, 0); const n = Math.round((new Date(d).setHours(0, 0, 0, 0) - t) / 864e5);
   return n === 0 ? '' : n === 1 ? 'tomorrow ' : `${DAYS[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1} `; };
 const resetText = (ms) => ms <= Date.now() ? 'reset' : 'resets ' + dayOf(ms) + clock(ms) + until(ms);
+// Free limit resets of the seat's own account: each with its expiry and a "Use" button that spends it after a confirm.
+const resetsBox = (s) => {
+  const r = s.resets, n = Number(r?.available) || 0; if (!n) return '';
+  const day = (t) => t ? esc(new Date(t * 1000).toLocaleDateString()) : '';
+  const rows = (r.list?.length ? r.list : [{ id: '', title: r.title || 'Reset', expiresAt: r.nextExpiry, usableNow: true }]).map((c) => `<span class="reset1" title="${esc(c.label || c.title)}">${esc(c.title)}${c.expiresAt ? ' · until ' + day(c.expiresAt) : ''}${r.usable && c.usableNow ? ` <button type="button" data-usereset="${esc(s.name)}" data-credit="${esc(c.id)}" data-ctitle="${esc(c.title)}">Use</button>` : ''}</span>`).join('');
+  return `<small class="resets">🔄 ${n} reset${n > 1 ? 's' : ''}: ${rows}</small>`;
+};
 const meter = (u) => !u ? '' : Object.entries(u.windows).filter(([k, v]) => k === 'five_hour' || v.resetsAt * 1000 > Date.now()).map(([k, v]) => {
   const gone = v.resetsAt * 1000 <= Date.now(), pct = gone ? 0 : Math.round(v.utilization * 100);
   const old = u.at && Date.now() - u.at > 30 * 60000 ? ` · read ${clock(u.at)}` : '';   // a stale reading says when it was taken
   return `<small class="meter" title="resets ${esc(new Date(v.resetsAt * 1000).toLocaleString())}">${esc(k.replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, pct)}%"></i></span> ${pct}% <span class="reset" dir="auto">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
 }).join('');
-// Composer warning at 80 % or more of the 5 h window ("ops at 85%"). It never names another seat: each seat's limit is its own.
+// Composer warning at 80 % or more of the 5 h window: this seat's own state ("ops at 85% · resets 14:00", plus its own free resets if any).
+// It never names another seat: each seat's limit is its own, work is not moved to dodge it.
 function showQuota() {
   const util = (s) => { const w = s.usage?.windows?.five_hour; return w ? (w.resetsAt * 1000 <= Date.now() ? 0 : w.utilization) : null; };
   const me = seats.find((s) => s.name === cur.seat), u = me && util(me), box = $('quota');
   if (u == null || u < 0.8) { box.hidden = true; return; }
   const iso = (n) => '\u2068' + n + '\u2069';   // FSI/PDI: a Latin seat name inside a right-to-left sentence keeps its place
-  box.textContent = `${iso(me.name)} at ${Math.round(u * 100)}%`;
+  const at = me.usage.windows.five_hour.resetsAt * 1000, rs = me.resets?.available;
+  box.textContent = `${iso(me.name)} at ${Math.round(u * 100)}% · ${resetText(at)}` + (rs ? ` · ${rs} free reset${rs > 1 ? 's' : ''} available` : '');
   box.hidden = false;
 }
 const showArch = (() => { try { return JSON.parse(localStorage.getItem('showArch') || '{}'); } catch { return {}; } })();
@@ -280,7 +303,7 @@ function showSeats() {
   $('seats').innerHTML = seats.map((s) => {
     const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = !!fold[s.name];
     const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.keep || c.pending || c.needsAnswer || c.quotaWait))) : (showMore[s.name] ? live : live.slice(0, 12)), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0, more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
-    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${f ? 'Show' : 'Fold'} this seat's conversations">${f ? '▸' : '▾'}</button>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}</div>
+    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${f ? 'Show' : 'Fold'} this seat's conversations">${f ? '▸' : '▾'}</button>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>
     ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="New conversation">+ new</button>`}</div>`
     + shown.map((c) => convRow(c, s.name)).join('')
     + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${hidden} more conversation${hidden > 1 ? 's' : ''}</button>` : '')
@@ -355,6 +378,7 @@ function onEvent(m) {
     return;
   }
   if (d.multi) { loadMulti(); return; }
+  if (d.resets) { const s = seats.find((x) => x.name === d.resets.seat); if (s) { s.resets = d.resets; scheduleSeats(); } return; }
   if (d.usage) { const hit = seats.filter((x) => x.name === d.usage.seat || x.account === d.usage.seat); for (const s of hit) s.usage = { windows: d.usage.windows, at: d.usage.at }; if (hit.length) scheduleSeats(); return; }   // a remote group with that account mirrors the seat's meter
   if (d.hello) {   // before d.conv: a hello carries `conv` as a plain id string, not a summary object
     if (d.conv !== cur.id) return;
@@ -539,6 +563,13 @@ $('projects').onsubmit = async (e) => {
   $('mform').reset(); document.activeElement?.blur(); await loadMulti(); openProjects(r.id);
 };
 $('seats').onclick = async (e) => {
+  const ur = e.target.closest('[data-usereset]');
+  if (ur) {   // spends one free reset of THIS seat's account, only after the confirm
+    const s = seats.find((x) => x.name === ur.dataset.usereset), what = ur.dataset.ctitle || 'reset';
+    if (!confirm(`Use the ${what} on ${s.name}? ${/fable/i.test(what) ? 'It refills the 5-hour limit and the Fable allowance (not the whole week).' : 'Its 5-hour and weekly windows start from zero.'} This cannot be undone.`)) return;
+    ur.disabled = true; const r = await api('/api/reset', { seat: s.name, creditId: ur.dataset.credit || undefined }); ur.disabled = false;
+    if (r.error) return alert(r.error); s.resets = r.resets; if (r.windows) s.usage = { windows: r.windows, at: Date.now() }; return showSeats();
+  }
   const mo = e.target.closest('[data-more]'); if (mo) { menuFor = menuFor === mo.dataset.more ? null : mo.dataset.more; return showSeats(); }
   const dm = e.target.closest('[data-dismiss]'); if (dm) { menuFor = null; const r = await api('/api/dismiss', { conversationId: dm.dataset.dismiss }); if (r.error) alert(r.error); return; }
   const uw = e.target.closest('[data-unwait]'); if (uw) { const r = await api('/api/quotawait', { conversationId: uw.dataset.unwait }); if (r.error) alert(r.error); return; }
