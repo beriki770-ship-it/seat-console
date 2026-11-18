@@ -1,18 +1,123 @@
+**English** · [עברית](README.he.md) · [Español](README.es.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md)
+
 # Seat Console
 
-Seat Console is a small local web console for running several Claude Code CLI sessions side by side, one per Claude account ("seat"), from one browser tab or your phone. If you work with more than one account, the usual setup is a pile of terminal windows: you lose track of which one is waiting for an approval, and a crash or a closed window takes the running session with it. Seat Console keeps every conversation in a detached background process, so restarting the console (or the console crashing) does not stop a running turn, and after a real PC crash it shows you what was cut off and resumes it when you tap.
+**One web console for all your coding-agent accounts.** Run Claude Code, Codex and Antigravity CLI sessions side by side, one per account, from a browser tab or your phone. Self-hosted, no npm dependencies.
 
-It works with the Claude Code CLI that you installed and signed in to yourself. It does not modify the CLI or talk to any Claude API directly; it starts `claude -p` with stream-json input and output and shows the result.
+[![offline tests](https://github.com/beriki770-ship-it/seat-console/actions/workflows/tests.yml/badge.svg)](https://github.com/beriki770-ship-it/seat-console/actions/workflows/tests.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![15 languages](https://img.shields.io/badge/languages-15-informational)](console/public/locales)
+[![Node.js 22+](https://img.shields.io/badge/node-22%2B-informational)](#requirements)
+
+![Seat Console: seats with usage meters, a multi-sided project, Settings, and the page in Japanese and Hebrew](docs/media/seat-console-tour.gif)
+
+<sub>Demo instance with a fake CLI and made-up data. A 3-minute walkthrough video is [here](docs/media/seat-console-demo.mp4).</sub>
+
+## Why
+
+- **You run more than one agent account.** A pile of terminal windows hides which session is waiting for an approval, and closing one kills the run. Here every account is a seat in one sidebar, and each conversation lives in its own background process that survives a console restart or crash.
+- **Usage limits are per account.** Each seat shows its 5-hour and weekly window with the reset time, warns at 90 %, and a turn that hits the limit waits for the reset and continues on the same seat.
+- **You are not always at the desk.** Approve tool calls, answer questions, send files and start tasks from your phone, over Tailscale or a Telegram bot.
+- **Some jobs need several specialists.** A multi-sided project splits one brief into tasks, each on the seat fixed for its discipline (design, backend, video, deploy), in parallel, with one approval from you.
+
+## Features
+
+| | |
+|---|---|
+| **Seats** | One sidebar for every account; Claude Code, Codex and Antigravity seats; per-seat model menu |
+| **Restart-proof** | Each conversation runs in a detached host; the server reattaches after a restart and offers to resume after a PC crash |
+| **Approvals** | `auto`, `ask` (Allow / Deny cards) and `bypass` modes per conversation |
+| **Usage meters** | 5-hour and weekly windows per seat, reset times, a 90 % warning, wait-for-reset instead of failover |
+| **Phone** | Installable PWA over Tailscale, Telegram bot with buttons, replies, photos and files |
+| **Projects** | One brief, many seats, dependencies, a final integration; long task conversations hand over to a fresh one to save quota |
+| **Routines** | Cron prompts that ask first and run on your tap |
+| **Settings page** | First-run checklist; every optional feature is a switch |
+| **15 languages** | Page and bot, Hebrew and Arabic right-to-left |
+| **Small** | Plain Node.js, no npm install, no build step, offline tests on Windows, Linux and macOS |
+
+## Quick start
+
+**Try it in a minute, no account needed.** This starts a separate test instance with a fake CLI that echoes what you send (Node.js 22+):
+
+```sh
+git clone https://github.com/beriki770-ship-it/seat-console.git && cd seat-console
+cp seats.example.json seats.json && sed -i.bak "s#C:/Users/you/projects#$HOME#" seats.json
+node console/server.mjs --port 4852 --data /tmp/seat-console-try --claude console/fixtures/fake-claude.mjs
+```
+
+Open <http://127.0.0.1:4852> and send a message to a seat. On Windows (PowerShell):
+
+```powershell
+git clone https://github.com/beriki770-ship-it/seat-console.git; cd seat-console
+(Get-Content seats.example.json) -replace 'C:/Users/you/projects', ($HOME -replace '\\', '/') | Set-Content seats.json
+node console\server.mjs --port 4852 --data "$env:TEMP\seat-console-try" --claude console\fixtures\fake-claude.mjs
+```
+
+The first message to a seat creates its config folder under `~/.claude-seats/<seat>` (links to your `~/.claude`), as real use does.
+
+**Real use.** Edit `seats.json` (one entry per account), sign each seat in once with its own CLI login, then start the console on port 4850:
+
+```sh
+sh seat.sh dev --login          # Windows: powershell -ExecutionPolicy Bypass -File .\seat.ps1 dev -Login
+sh console/start-console.sh     # Windows: powershell -ExecutionPolicy Bypass -File .\console\start-console.ps1
+```
+
+On the first start the Settings page opens with a checklist (seats, Telegram, phone access, optional features). Details: [Install](#install), [Configure](#configure), [Linux / macOS](#linux--macos).
+
+## Screenshots
+
+| Multi-sided project | Settings |
+|---|---|
+| ![A project split into four tasks on four seats](docs/media/projects.png) | ![Settings, Projects tab](docs/media/settings-projects.png) |
+| **Japanese** | **Hebrew, right-to-left** |
+| ![The Projects page in Japanese](docs/media/i18n-japanese.png) | ![Settings in Hebrew](docs/media/i18n-hebrew.png) |
+
+| **On the phone** | **A conversation** |
+|---|---|
+| <img src="docs/media/phone.png" width="260" alt="The seat list on a phone: meters, conversations, status"> | ![A finished turn with the context meter at the top](docs/media/chat.png) |
+
+## How it compares
+
+Other open-source tools in this space, as their own READMEs describe them:
+
+- [Claude Squad](https://github.com/smtg-ai/claude-squad) is a terminal app that runs several agents (Claude Code, Codex, Gemini, Aider) in separate git workspaces on one machine. Seat Console is a browser and phone UI, organised by account rather than by workspace, and does not create git worktrees.
+- [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) plans agent work on a kanban board with per-task workspaces, diffs and PRs (its README now announces that it is sunsetting). Seat Console has no board or diff review; it focuses on running and following conversations, approvals and limits.
+- [Claude Code Router](https://github.com/musistudio/claude-code-router) is a local gateway that routes agent requests across models and providers, with fallback models and credential pools. Seat Console does the opposite on purpose: each account keeps its own work, and nothing is rerouted when a limit is hit.
+
+## FAQ
+
+**Will it move work to another account when one hits its limit?**
+No, never. Each seat (and each discipline in a project) is fixed to one account. A task or routine whose seat is at its limit waits for the reset, or you run it there anyway. Use each account for the work it is meant for, not as overflow, and only accounts you are entitled to use.
+
+**Does it touch my credentials?**
+It runs the unmodified CLI you installed and signed in to yourself; the login stays in the seat's own config folder. The usage meter and the optional limit resets send the seat's current access token to Anthropic's own API and nowhere else.
+
+**The usage meter and limit resets use undocumented endpoints. Is that stable?**
+No. They are the calls the official CLIs make (Claude's usage endpoint, Codex's `app-server`), they are not documented, and they may change or stop working at any time. Then the meter shows the last value from a turn and the card shows no resets. Claude limit resets are off by default.
+
+**Which platforms?**
+Windows 11 is used every day. Linux passes the offline tests and the fake-CLI smoke test; macOS passes the offline tests in CI but has not run on real hardware. See [Platforms](#platforms).
+
+**Do I need Telegram or Tailscale?**
+No. Both are optional; without them it is a local web page on `127.0.0.1:4850`.
+
+**Is this an official Anthropic, OpenAI or Google tool?**
+No. See the disclaimer below.
 
 > **Disclaimer.** Seat Console is an independent, unofficial tool. It launches the unmodified Claude Code CLI that you installed and signed in to yourself. It never stores, refreshes or transmits your Claude credentials; the only use of a seat's sign-in outside the CLI is the usage meter and (only if you turn them on) the [limit resets](#limit-resets), which send the seat's current access token to Anthropic's own API and nowhere else. Each account must be one you are entitled to use; use one account per job and do not use it to get around usage limits. Not affiliated with or endorsed by Anthropic. Review Anthropic's Consumer Terms, Commercial Terms and Usage Policy before use. Use at your own risk.
 
-## Demo video
+## Contributing
 
-[![Seat Console demo, 3 minutes](docs/media/seat-console-demo.jpg)](docs/media/seat-console-demo.mp4)
+Pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first (no npm dependencies, offline tests must pass). Good first issues:
 
-A 3-minute walkthrough: one console for every agent, crash recovery, approvals and files on the phone.
+- **Translations.** The 14 non-English locales in [`console/public/locales/`](console/public/locales) were machine-assisted. If you read one of them natively, fix what sounds wrong; `node console/test-i18n.mjs` checks keys, placeholders and plural forms.
+- **macOS and Linux reports.** Run it on your machine and open an issue with your OS, Node version and what worked or broke.
 
-## Features
+---
+
+# Documentation
+
+## All features
 
 - **Chat UI over several accounts.** The sidebar lists your seats, each with its conversations (title, status, cost). Every conversation is one long-lived `claude -p` process running under that seat's own `CLAUDE_CONFIG_DIR`, so it uses that seat's sign-in. Up to 5 live conversations per seat.
 - **Permission modes per conversation:** `auto`, `ask` (approval cards in the chat: Allow once / Deny) and `bypass` (shown with a red badge).
@@ -38,7 +143,7 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 Stated honestly, as tested:
 
 - **Windows 11** is the tested platform (see [Platforms](#platforms) for Linux and macOS).
-- **Node.js 24** (tested with 24.16). Older versions are untested.
+- **Node.js 22 or newer.** Windows is tested with 24.16; on Linux the offline tests and the fake-CLI smoke test also pass on 22.
 - **Windows PowerShell 5.1** (built into Windows).
 - **Python 3** on `PATH` as `python` (a tiny helper copies MCP and trust settings into each seat's config).
 - **Claude Code CLI**, installed by you (native installer at `%USERPROFILE%\.local\bin\claude.exe`, or the npm global package) and **signed in by you**, once per seat. Seat Console never asks for or handles your credentials; the CLI keeps them in the seat's own config folder.
