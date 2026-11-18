@@ -32,7 +32,8 @@ export function blockedUntil(windows, now = Date.now()) {
 }
 
 // plan.json -> tasks. Any "seat" the planner wrote is ignored: the seat comes from the discipline map.
-export function validatePlan(raw, map) {
+// models: { seat: [{ id, name }] } -- a task's "model" is kept only when its own seat offers it (else the seat's default).
+export function validatePlan(raw, map, models = {}) {
   const list = Array.isArray(raw) ? raw : raw?.tasks;
   if (!Array.isArray(list) || !list.length) throw new Error('plan has no tasks');
   const ids = new Set();
@@ -42,7 +43,7 @@ export function validatePlan(raw, map) {
     const discipline = String(t.discipline || '').toLowerCase();
     if (!Object.hasOwn(map, discipline)) throw new Error(`task ${id}: unknown discipline "${t.discipline}" (allowed: ${Object.keys(map).join(', ')})`);
     if (typeof t.brief !== 'string' || !t.brief.trim()) throw new Error(`task ${id}: empty brief`);
-    return { id, title: String(t.title || id).slice(0, 120), discipline, seat: seatFor(map, discipline), deps: Array.isArray(t.deps) ? t.deps.map(String) : [], brief: t.brief.trim(), status: 'pending', conv: null };
+    return { id, title: String(t.title || id).slice(0, 120), discipline, seat: seatFor(map, discipline), deps: Array.isArray(t.deps) ? t.deps.map(String) : [], brief: t.brief.trim(), model: (models[seatFor(map, discipline)] || []).some((m) => m.id === t.model) ? t.model : null, status: 'pending', conv: null };
   });
   for (const t of tasks) for (const d of t.deps) if (!ids.has(d)) throw new Error(`task ${t.id}: unknown dependency ${d}`);
   const seen = new Set(), walk = (t, stack) => {   // cycle check
@@ -55,7 +56,7 @@ export function validatePlan(raw, map) {
   return tasks;
 }
 
-export const planPrompt = (p, map) => `You are the PLANNER of a multi-sided project. Do NOT build anything in this turn.
+export const planPrompt = (p, map, models = {}) => `You are the PLANNER of a multi-sided project. Do NOT build anything in this turn.
 
 Project: ${p.name}
 Project folder: ${p.dir}
@@ -66,9 +67,13 @@ ${p.brief}
 Split the work into tasks. Every task gets exactly one discipline from this list (each discipline runs on its own fixed seat, in parallel):
 ${Object.entries(map).map(([d, s]) => `- ${d} (seat ${s})`).join('\n')}
 
+Models each seat can run (pick per task, field "model", the id before the colon):
+${[...new Set(Object.values(map))].map((s) => `- ${s}: ${(models[s] || []).map((m) => `${m.id}: ${m.name}`).join(' | ') || 'its default only'}`).join('\n')}
+Choose the MOST SUITABLE model for each task, not always the biggest: the strongest model for hard design, architecture, tricky logic or long integration; a mid model for routine building; the fast/cheap one for simple copy, renames or checks. Leave "model" out to use the seat's default.
+
 Write two files:
 1. ${path.join(p.dir, 'PLAN.md')}: the plan for the user, short: goal, the tasks (id, discipline, what it produces, depends on), how the parts fit together, how the end result is verified.
-2. ${path.join(p.dir, '.multi', 'plan.json')}: {"tasks":[{"id":"kebab-id","title":"...","discipline":"<one of the list>","deps":["ids this task needs finished first"],"brief":"..."}]}
+2. ${path.join(p.dir, '.multi', 'plan.json')}: {"tasks":[{"id":"kebab-id","title":"...","discipline":"<one of the list>","deps":["ids this task needs finished first"],"model":"<optional: a model id of that seat>","brief":"..."}]}
    Each "brief" must be SELF-CONTAINED: the seat that runs it sees only that brief and the files in the project folder. Name exact files/folders it owns, the interfaces it must match, and what "done" means.
    Keep tasks few and big (one per discipline is often enough); add a dependency only when a task really needs another's output.
 
@@ -136,12 +141,12 @@ export function createMulti({ state, save, broadcast, deps }) {
     return p;
   }
 
-  async function dispatch(p, key, seat, text, conversationId, title, onDone) {
+  async function dispatch(p, key, seat, text, conversationId, title, onDone, model) {
     const until = blockedUntil(deps.windows(seat), now());
     const t = key === 'plan' || key === 'integrate' ? p : p.tasks.find((x) => x.id === key);
     if (until) { if (t.waitUntil !== until) { t.waitUntil = until; persist(p); } return; }   // seat at its limit: WAIT. Never another seat.
     try {
-      const c = await deps.send(conversationId ? { conversationId, text } : { seat, cwd: p.dir, text, title });
+      const c = await deps.send(conversationId ? { conversationId, text } : { seat, cwd: p.dir, text, title, ...(model ? { model } : {}) });
       c.multi = { pid: p.id, task: key };
       t.waitUntil = 0; t.sendError = undefined; onDone(c); persist(p);
     } catch (e) {
@@ -162,14 +167,14 @@ export function createMulti({ state, save, broadcast, deps }) {
     for (const p of Object.values(state.multi)) {
       if (p.status === 'cancelled') continue;
       if (p.status === 'planning' && !p.planSent) {
-        await dispatch(p, 'plan', p.owner, p.planConv ? planFixPrompt(p.error) : planPrompt(p, deps.map), p.planConv, `[${p.name}] plan`, (c) => { p.planConv = c.id; p.planSent = true; });
+        await dispatch(p, 'plan', p.owner, p.planConv ? planFixPrompt(p.error) : planPrompt(p, deps.map, deps.models?.() || {}), p.planConv, `[${p.name}] plan`, (c) => { p.planConv = c.id; p.planSent = true; });
       } else if (p.status === 'running') {
         const done = new Set(p.tasks.filter((t) => t.status === 'done').map((t) => t.id));
         if (done.size === p.tasks.length) { p.status = 'integrating'; p.integrateSent = false; persist(p); deps.notify?.(p, 'integrating'); }
         for (const t of p.tasks) {
           if (t.status !== 'pending' || !t.deps.every((d) => done.has(d))) continue;
           let seat; try { seat = seatFor(deps.map, t.discipline); } catch (e) { t.status = 'error'; t.error = e.message; persist(p); continue; }   // disciplines.json lost it: this task stops, the others go on
-          await dispatch(p, t.id, seat, t.conv ? retryPrompt(t) : taskPrompt(p, t), t.conv, `[${p.name}] ${t.title}`, (c) => { t.conv = c.id; t.status = 'running'; });
+          await dispatch(p, t.id, seat, t.conv ? retryPrompt(t) : taskPrompt(p, t), t.conv, `[${p.name}] ${t.title}`, (c) => { t.conv = c.id; t.status = 'running'; }, t.model);   // the model the planner chose for this task (from its own seat's list)
         }
       }
       if (p.status === 'integrating' && !p.integrateSent) {
@@ -186,7 +191,7 @@ export function createMulti({ state, save, broadcast, deps }) {
       if (p.status !== 'planning' && p.status !== 'plan-error') return;
       if (error) { p.status = 'plan-error'; p.error = error; return persist(p); }
       try {
-        p.tasks = validatePlan(JSON.parse(fs.readFileSync(path.join(p.dir, '.multi', 'plan.json'), 'utf8')), deps.map);
+        p.tasks = validatePlan(JSON.parse(fs.readFileSync(path.join(p.dir, '.multi', 'plan.json'), 'utf8')), deps.map, deps.models?.() || {});
         p.status = 'plan-ready'; p.error = undefined; persist(p); deps.notify?.(p, 'plan-ready');
       } catch (e) { p.status = 'plan-error'; p.error = needsAnswer ? 'the planner asked a question: answer it in the plan conversation' : String(e.message || e); persist(p); }
       return;
@@ -207,7 +212,7 @@ export function createMulti({ state, save, broadcast, deps }) {
   function approve(id) {
     const p = state.multi[id]; if (!p) throw new Error('unknown project');
     if (p.status !== 'plan-ready') throw new Error('nothing to approve (status ' + p.status + ')');
-    p.tasks = validatePlan(JSON.parse(fs.readFileSync(path.join(p.dir, '.multi', 'plan.json'), 'utf8')), deps.map);   // the plan as it is NOW (the user may have changed it with the planner)
+    p.tasks = validatePlan(JSON.parse(fs.readFileSync(path.join(p.dir, '.multi', 'plan.json'), 'utf8')), deps.map, deps.models?.() || {});   // the plan as it is NOW (the user may have changed it with the planner)
     p.status = 'running'; persist(p); tick();
     return p;
   }

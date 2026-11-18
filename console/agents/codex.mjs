@@ -49,16 +49,38 @@ function reportLimits(thread) {
   if (unifiedWindows.five_hour || unifiedWindows.seven_day) out({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows } });
 }
 
+// Images from the console arrive as base64 blocks; they are written to files the CLI can open.
+const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+function saveImages(blocks, dir) {
+  const imgs = (Array.isArray(blocks) ? blocks : []).filter((b) => b.type === 'image' && b.source?.type === 'base64' && EXT[b.source.media_type]);
+  if (!imgs.length) return [];
+  fs.mkdirSync(dir, { recursive: true });
+  return imgs.map((b, i) => { const p = path.join(dir, `${Date.now()}-${i + 1}.${EXT[b.source.media_type]}`); fs.writeFileSync(p, Buffer.from(b.source.data, 'base64')); return p; });
+}
+// New images in the CLI's own (hidden) folder are copied into the conversation's folder (generated-images/) after each turn and named in the reply,
+// so the console shows them as image cards.
+function collectImages(dir, since) {
+  let names; try { names = fs.readdirSync(dir); } catch { return []; }
+  const outDir = path.join(process.cwd(), 'generated-images'), got = [];
+  for (const n of names) {
+    const src = path.join(dir, n); let st; try { st = fs.statSync(src); } catch { continue; }
+    if (!st.isFile() || st.mtimeMs < since || !/\.(png|jpe?g|webp|gif)$/i.test(n)) continue;
+    try { fs.mkdirSync(outDir, { recursive: true }); const dst = path.join(outDir, n); fs.copyFileSync(src, dst); got.push(dst); } catch {}
+  }
+  return got;
+}
+
 const queue = []; let child = null, closing = false;
 function next() {
   if (child) return;
   if (!queue.length) { if (closing) process.exit(0); return; }
-  const text = queue.shift(), thread = readThread();
+  const { text, images } = queue.shift(), thread = readThread();
   const sandbox = mode === 'bypass' ? ['--dangerously-bypass-approvals-and-sandbox'] : ['-s', mode === 'ask' ? 'read-only' : 'workspace-write'];
   // The seat's role line goes in front of the first message of a thread (codex exec has no system-prompt flag).
   const prompt = !thread && role ? `${role}\n\n${text}` : text;
-  const args = ['exec', '--json', '--skip-git-repo-check', ...sandbox, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort === 'max' ? 'xhigh' : effort}`] : []), ...(thread ? ['resume', thread] : []), '--', prompt];   // '--': a message that starts with '-' is text, never a flag; Codex has no 'max' effort
+  const args = ['exec', '--json', '--skip-git-repo-check', ...sandbox, ...(model ? ['-m', model] : []), ...(effort ? ['-c', `model_reasoning_effort=${effort === 'max' ? 'xhigh' : effort}`] : []), ...(thread ? ['resume', thread] : []), ...images.flatMap((p) => ['-i', p]), '--', prompt];   // -i: Codex sees the images themselves; '--': a message that starts with '-' is text, never a flag; Codex has no 'max' effort
   let last = '', usage = null, failed = null, stderr = '';
+  const turnAt = Date.now() - 2000;
   child = spawn(CODEX_CMD[0], [...CODEX_CMD.slice(1), ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
   readline.createInterface({ input: child.stdout }).on('line', (l) => {
@@ -80,6 +102,8 @@ function next() {
   });
   child.on('close', (code, signal) => {
     child = null; reportLimits(readThread());
+    const th = readThread(), imgs = th ? collectImages(path.join(CODEX_HOME, 'generated_images', th), turnAt) : [];   // Codex's own folder for generated images
+    if (imgs.length) { const line = imgs.map((p) => `Image: ${p}`).join('\n'); last = last ? `${last}\n\n${line}` : line; say(line); }
     const err = failed || (usage ? null : signal ? `codex stopped (${signal})` : `codex exited ${code}: ${stderr.trim().split('\n').slice(-3).join(' ') || 'no output'}`);
     const limit = !!err && /usage limit|rate.?limit|hit your|quota|429/i.test(err);   // a limit stop: quotawait.mjs resumes this same conversation after the reset
     out({ type: 'result', subtype: err ? 'error_during_execution' : 'success', is_error: !!err, result: err || last, total_cost_usd: 0, ...(limit ? { api_error: 'usage_limit_reached' } : {}),
@@ -99,7 +123,6 @@ readline.createInterface({ input: process.stdin }).on('line', (l) => {
   }
   if (m.type !== 'user') return;
   const c = m.message?.content, text = typeof c === 'string' ? c : (c || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-  const images = Array.isArray(c) ? c.filter((b) => b.type === 'image').length : 0;
-  queue.push(text + (images ? `\n\n(${images} image(s) were attached in the console; this Codex seat does not receive images yet.)` : '')); next();
+  queue.push({ text, images: saveImages(c, path.join(os.tmpdir(), 'seat-console-images', SID.replace(/[^\w-]/g, ''))) }); next();
 }).on('close', () => { closing = true; if (!child && !queue.length) process.exit(0); });   // like claude -p: queued work finishes, then it exits (Stop kills via the signals below)
 for (const s of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(s, () => { child?.kill('SIGTERM'); process.exit(0); });

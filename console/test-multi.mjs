@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createMulti, validatePlan, seatFor, blockedUntil, loadDisciplines, MARGIN_MS } from './multi.mjs';
+import { createMulti, validatePlan, planPrompt, seatFor, blockedUntil, loadDisciplines, MARGIN_MS } from './multi.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The shipped example loads against the example seats.
@@ -34,6 +34,13 @@ assert.throws(() => validatePlan({ tasks: [{ id: 'a', discipline: 'copy', brief:
 assert.throws(() => validatePlan({ tasks: [{ id: 'a', discipline: 'copy', brief: 'x', deps: ['zz'] }] }, map), /unknown dependency/);
 assert.throws(() => validatePlan({ tasks: [{ id: 'A B', discipline: 'copy', brief: 'x' }] }, map), /bad id/);
 assert.throws(() => validatePlan({ tasks: [] }, map), /no tasks/);
+// a task's model is kept only when its own seat offers it; without a list, or a model of another seat, it falls back to the seat's default (null)
+const MODELS = { studio: [{ id: 'claude-opus-5-5', name: 'Opus' }, { id: 'claude-haiku-5-5', name: 'Haiku' }], dev: [{ id: 'gpt-x', name: 'GPT X' }] };
+const mp = { tasks: [{ id: 'a', discipline: 'design', brief: 'x', model: 'claude-haiku-5-5' }, { id: 'b', discipline: 'backend', brief: 'x', model: 'claude-opus-5-5' }, { id: 'c', discipline: 'video', brief: 'x', model: 'gpt-x' }] };
+assert.deepEqual(validatePlan(mp, map, MODELS).map((t) => t.model), ['claude-haiku-5-5', null, null]);
+assert.deepEqual(validatePlan(mp, map).map((t) => t.model), [null, null, null]);
+const pp = planPrompt({ name: 'P', dir: 'x', brief: 'b' }, map, MODELS);
+assert.ok(pp.includes('- studio: claude-opus-5-5: Opus | claude-haiku-5-5: Haiku') && pp.includes('- dev: gpt-x: GPT X') && pp.includes('- render: its default only') && pp.includes('"model"'));
 
 // ---- blockedUntil ----
 const T0 = Date.UTC(2026, 10, 18, 12), sec = (ms) => ms / 1000;

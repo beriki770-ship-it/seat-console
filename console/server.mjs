@@ -1049,9 +1049,13 @@ function projectFolders() {
 // No disciplines.json (or one naming an unknown seat): the console runs as usual, only multi-sided projects are off and say why.
 let DISC; try { DISC = loadDisciplines(DISCIPLINES_FILE, SEATS); } catch (e) { DISC = { map: {}, owner: Object.keys(SEATS)[0], off: e.code === 'ENOENT' ? 'copy console/disciplines.example.json to console/disciplines.json to turn multi-sided projects on' : e.message }; console.log('[multi] off: ' + DISC.off); }
 const multiOn = () => { if (DISC.off) throw new Error('multi-sided projects are off: ' + DISC.off); return multi; };
+// The Claude models a task may name: the main list of the page's model menu (keep in step with public/index.html select#model).
+const CLAUDE_MODELS = [{ id: 'claude-opus-5-5', name: 'Opus 5.5 (strongest)' }, { id: 'claude-fable-5-1', name: 'Fable 5.1' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5 (balanced)' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5 (fast, cheap)' }];
+let modelsSnap = {};
 const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({ multi: true }), deps: {
   map: DISC.map, owner: DISC.owner, seats: SEATS, root: DEFAULT_CWD, windows: (seat) => state.usage[seat]?.windows, log: console.log,
   send: (b) => send({ ...b, auto: true }),
+  models: () => modelsSnap,   // per seat, what the planner may pick from for each task (refreshModels below)
   idle: (id) => { const c = convOf(id); return !!c && !c.working && !c.turns && R(c).status !== 'working' && !R(c).perms.size; },
   notify: (p, kind) => {
     const head = { 'plan-ready': '🧩 Plan ready', integrating: '🧩 All tasks done, integration running', done: '✅ Multi-sided project done', 'integrate-error': '⚠️ Integration failed' }[kind] || kind;
@@ -1440,6 +1444,16 @@ if (!ISOLATED) tg.start();   // a test instance never polls Telegram
 if (crashLoopStart && !ISOLATED && crashWarnDue(state, Date.now())) { saveState(); tg.send('⚠️ Seat Console is restarting after an uncaught error (twice within a minute). See server.err.log.').catch(notifyFailed); }
 routines.start();
 setInterval(guard('multi', () => multi.tick()), 30000).unref();   // after reattachAll: never sends into a conversation still being reattached
+// Model lists for the planner: Claude seats share the main list, agent seats ask their own CLI (cached 10 min in agentModels).
+async function refreshModels() {
+  const snap = {};
+  for (const seat of Object.keys(SEATS)) {
+    if (!SEATS[seat].agent) snap[seat] = CLAUDE_MODELS;
+    else { try { snap[seat] = (await agentModels(seat)).map(({ id, name }) => ({ id, name })); } catch { snap[seat] = []; } }
+  }
+  modelsSnap = snap;
+}
+refreshModels().catch(() => {}); setInterval(() => refreshModels().catch(() => {}), 10 * 60e3).unref();
 startRemotes();   // after `ready`: an unreachable remote never holds up the start
 reattachRemotes();   // same: conversations whose host runs on a remote are reconnected in the background
 // After a crash the interrupted conversations are offered on Telegram (one message, buttons) and never resumed without a tap: resuming spends quota.

@@ -109,7 +109,7 @@ copy console\disciplines.example.json console\disciplines.json
 { "owner": "dev", "disciplines": { "design": "studio", "frontend": "studio", "backend": "dev", "deploy": "ops" } }
 ```
 
-Without the file (or with a seat name that is not in `seats.json`) the console runs as usual and only the Projects page says why it is off. The planner writes `PLAN.md` and `.multi/plan.json` in the project folder; a task counts as done when its seat has written `.multi/out/<task>.md`. The seat of a task always comes from this file: a seat at its usage limit makes its tasks wait for the reset, they are never moved to another seat.
+Without the file (or with a seat name that is not in `seats.json`) the console runs as usual and only the Projects page says why it is off. The planner writes `PLAN.md` and `.multi/plan.json` in the project folder and may pick a model per task from the list its seat offers (a model the seat does not have is dropped, the seat's default runs); a task counts as done when its seat has written `.multi/out/<task>.md`. The seat of a task always comes from this file: a seat at its usage limit makes its tasks wait for the reset, they are never moved to another seat.
 
 ### Other agents (Codex, Antigravity)
 
@@ -127,7 +127,7 @@ Opt-in: nothing changes unless a seat in `seats.json` has an `"agent"` field. Su
 - Sign a seat in once (Linux / macOS): `console/agents/login.sh gpt`. Codex uses its device-code login (works over SSH), Antigravity its own sign-in screen.
 - `CODEX_BIN` / `AGY_BIN` point the console at the binaries if they are not `codex` on the PATH and `~/.local/bin/agy`. On Windows, set them to the full path of the executable.
 - Modes map to each CLI's own: `auto` = Codex `workspace-write` sandbox / Antigravity without prompts inside its sandbox, `ask` = read-only / plan mode, `bypass` = no sandbox.
-- The model menu of an agent seat is read from that CLI on that seat's login. Attachments reach these seats as text only. Codex seats show their 5-hour and weekly windows on the card; Antigravity has no meter yet.
+- The model menu of an agent seat is read from that CLI on that seat's login. Attached images reach Codex as `-i <file>` and Antigravity as files in `<folder>/.console-attachments/` it is told to open; images they generate are copied into `<folder>/generated-images/` and named in the reply, so the console shows them. Codex seats show their 5-hour and weekly windows on the card; Antigravity has no meter yet.
 - A turn that stops on the CLI's usage limit waits for the reset and then continues on the same seat, like a Claude seat.
 - Multi-sided projects can give agent seats their own fixed disciplines in `disciplines.json`, for example `"review": "gpt"`, `"testing": "gpt"`, `"research": "agy"`. A task goes to them because of its discipline, never because a Claude seat is at its limit.
 - The adapters keep each conversation's thread id in `console/agent-state/` (or the `--data` folder), so the next message resumes the same thread.

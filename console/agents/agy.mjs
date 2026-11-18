@@ -28,15 +28,38 @@ const toolResult = (id, content, isError) => out({ type: 'user', message: { role
 
 out({ type: 'system', subtype: 'init', cwd: process.cwd(), model: model || 'antigravity', agent: 'agy' });
 
+// Images from the console arrive as base64 blocks; they are written to files the CLI can open.
+const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+function saveImages(blocks, dir) {
+  const imgs = (Array.isArray(blocks) ? blocks : []).filter((b) => b.type === 'image' && b.source?.type === 'base64' && EXT[b.source.media_type]);
+  if (!imgs.length) return [];
+  fs.mkdirSync(dir, { recursive: true });
+  return imgs.map((b, i) => { const p = path.join(dir, `${Date.now()}-${i + 1}.${EXT[b.source.media_type]}`); fs.writeFileSync(p, Buffer.from(b.source.data, 'base64')); return p; });
+}
+// New images in the CLI's own (hidden) folder are copied into the conversation's folder (generated-images/) after each turn and named in the reply,
+// so the console shows them as image cards.
+function collectImages(dir, since) {
+  let names; try { names = fs.readdirSync(dir); } catch { return []; }
+  const outDir = path.join(process.cwd(), 'generated-images'), got = [];
+  for (const n of names) {
+    const src = path.join(dir, n); let st; try { st = fs.statSync(src); } catch { continue; }
+    if (!st.isFile() || st.mtimeMs < since || !/\.(png|jpe?g|webp|gif)$/i.test(n)) continue;
+    try { fs.mkdirSync(outDir, { recursive: true }); const dst = path.join(outDir, n); fs.copyFileSync(src, dst); got.push(dst); } catch {}
+  }
+  return got;
+}
+
 const queue = []; let child = null, closing = false;
 function next() {
   if (child) return;
   if (!queue.length) { if (closing) process.exit(0); return; }
-  const text = queue.shift(), conv = readConv();
-  const prompt = !conv && role ? `${role}\n\n${text}` : text;   // the seat's role line rides on the first message (agy -p has no system-prompt flag)
+  const { text, images } = queue.shift(), conv = readConv();
+  const withImages = images.length ? `${text}\n\nAttached image(s), open them with view_file before answering:\n${images.join('\n')}` : text;
+  const prompt = !conv && role ? `${role}\n\n${withImages}` : withImages;   // the seat's role line rides on the first message (agy -p has no system-prompt flag)
   const perm = mode === 'ask' ? ['--mode', 'plan'] : mode === 'bypass' ? ['--dangerously-skip-permissions'] : ['--dangerously-skip-permissions', '--sandbox'];
   const args = [`-p=${prompt}`, '--output-format', 'stream-json', ...perm, ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(conv ? ['--conversation', conv] : [])];
   let last = '', done = null, stderr = '', convId = conv;
+  const turnAt = Date.now() - 2000;
   const started = new Set();
   child = spawn(AGY_CMD[0], [...AGY_CMD.slice(1), ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
@@ -56,6 +79,8 @@ function next() {
   });
   child.on('close', (code, signal) => {
     child = null;
+    const imgs = convId ? collectImages(path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain', convId), turnAt) : [];   // agy's own folder for generated images
+    if (imgs.length) { const line = imgs.map((p) => `Image: ${p}`).join('\n'); say(line); if (done) done.response = `${(done.response || last).trim()}\n\n${line}`; else last = last ? `${last}\n\n${line}` : line; }
     const ok = done && done.status === 'SUCCESS';
     const err = ok ? null : done?.error || (signal ? `antigravity stopped (${signal})` : `agy exited ${code}: ${stderr.trim().split('\n').slice(-3).join(' ') || 'no output'}`);
     const u = done?.usage || {};
@@ -77,7 +102,6 @@ readline.createInterface({ input: process.stdin }).on('line', (l) => {
   }
   if (m.type !== 'user') return;
   const c = m.message?.content, text = typeof c === 'string' ? c : (c || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-  const images = Array.isArray(c) ? c.filter((b) => b.type === 'image').length : 0;
-  queue.push(text + (images ? `\n\n(${images} image(s) were attached in the console; this seat does not receive images yet.)` : '')); next();
+  queue.push({ text, images: saveImages(c, path.join(process.cwd(), '.console-attachments')) }); next();   // inside the workspace: agy's view_file reads files of the project folder
 }).on('close', () => { closing = true; if (!child && !queue.length) process.exit(0); });
 for (const s of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(s, () => { child?.kill('SIGTERM'); process.exit(0); });

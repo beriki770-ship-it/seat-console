@@ -1,5 +1,6 @@
 // Run: node console/test-agents.mjs. The Codex / Antigravity adapters (agents/*.mjs) against fake CLIs (fixtures/fake-*.mjs via CODEX_BIN / AGY_BIN):
 // the console lines they emit (init, tool_use + tool_result, exactly one result per message), the thread / conversation id saved and reused,
+// images both ways (an attached image -> codex -i / agy view_file; a generated image -> <cwd>/generated-images, named in the reply),
 // the role line on the first message only, Codex limits as a rate_limit_event, and the Codex account calls (limits, resets, models).
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), FX = path.join(HERE, 'fixtures');
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'agents-'));
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'agents-')));   // real path: process.cwd() reports it so on macOS (/private/var) and Windows (no 8.3 names)
 
 // Sends each message after the previous result (as the console does), then closes stdin; resolves with every line the adapter printed.
 function drive(agent, msgs, env) {
@@ -48,6 +49,15 @@ assert.deepEqual(c[1].slice(-4), ['resume', 'th-1', '--', 'second task'], 'secon
 // (a message that starts with '-' stays text after '--'; the console's 'max' effort becomes Codex's 'xhigh')
 fs.rmSync(clog); out = await drive('codex', ['-v please'], { ...cenv, EFFORT: 'max' });
 c = calls(clog)[0]; assert.deepEqual(c.slice(-4), ['resume', 'th-1', '--', '-v please']); assert.ok(c.includes('model_reasoning_effort=xhigh'), 'max -> xhigh');
+// images: an attached image goes to codex as -i <file>; one it generated is copied into <cwd>/generated-images and named in the result
+const IMG = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: Buffer.from('attached').toString('base64') } };
+fs.rmSync(clog); out = await drive('codex', [[{ type: 'text', text: 'look' }, IMG]], { ...cenv, FAKE_IMG: '1' });
+c = calls(clog)[0]; const ii = c.indexOf('-i');
+assert.ok(ii > 0 && c[ii + 1].endsWith('.png') && fs.readFileSync(c[ii + 1], 'utf8') === 'attached', 'attached image -> -i <file>');
+assert.deepEqual(c.slice(-2), ['--', 'look']);
+let gen = path.join(tmp, 'generated-images', 'ig_1.png');
+assert.ok(fs.existsSync(gen)); res = out.filter((e) => e.type === 'result'); assert.equal(res.length, 1); assert.ok(res[0].result.endsWith(`Image: ${gen}`), res[0].result);
+fs.rmSync(path.dirname(c[ii + 1]), { recursive: true, force: true });
 // the CLI dies without output: still exactly one result, an error
 out = await drive('codex', ['x'], { ...cenv, FAKE_FAIL: 'boom' });
 res = out.filter((e) => e.type === 'result'); assert.equal(res.length, 1); assert.equal(res[0].is_error, true); assert.match(res[0].result, /codex exited 1: boom/); assert.equal(res[0].api_error, undefined);
@@ -79,6 +89,14 @@ assert.equal(JSON.parse(fs.readFileSync(path.join(tmp, 'state', 'agy-conv-1.json
 c = calls(alog);
 assert.equal(c[0][0], '-p=ROLE LINE\n\nhello'); assert.ok(!c[0].includes('--conversation') && c[0].includes('--sandbox'));
 assert.equal(c[1][0], '-p=again'); assert.deepEqual(c[1].slice(-2), ['--conversation', 'cv-1']);
+
+// images: an attached one is saved in <cwd>/.console-attachments and named for view_file; a generated one (agy's brain folder under HOME) is copied out
+const ahome = path.join(tmp, 'agy-home');
+fs.rmSync(alog); out = await drive('agy', [[{ type: 'text', text: 'see' }, IMG]], { ...aenv, HOME: ahome, USERPROFILE: ahome, FAKE_IMG: '1' });
+const pr = calls(alog)[0][0], att = pr.split('\n').pop();
+assert.match(pr, /^-p=see\n\nAttached image\(s\), open them with view_file/); assert.equal(path.dirname(att), path.join(tmp, '.console-attachments')); assert.equal(fs.readFileSync(att, 'utf8'), 'attached');
+gen = path.join(tmp, 'generated-images', 'cat.png');
+res = out.filter((e) => e.type === 'result'); assert.equal(res.length, 1); assert.ok(fs.existsSync(gen)); assert.ok(res[0].result.endsWith(`Image: ${gen}`), res[0].result);
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('test-agents: all passed');

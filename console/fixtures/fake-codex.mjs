@@ -19,6 +19,7 @@ if (a[0] === 'app-server') {
   const r = a.indexOf('resume'), thread = r >= 0 ? a[r + 1] : 'th-1', p = (o) => process.stdout.write(JSON.stringify(o) + '\n');
   const dir = path.join(process.env.CODEX_HOME, 'sessions', '2026', '11', '18'); fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, `rollout-${thread}.jsonl`), JSON.stringify({ payload: { rate_limits: { primary: { used_percent: 42, resets_at: 2000000000 }, secondary: { used_percent: 7, resets_at: 2000500000 } } } }) + '\n');
+  if (process.env.FAKE_IMG) { const g = path.join(process.env.CODEX_HOME, 'generated_images', thread); fs.mkdirSync(g, { recursive: true }); fs.writeFileSync(path.join(g, 'ig_1.png'), 'png'); }   // FAKE_IMG: the turn "generates" an image
   p({ type: 'thread.started', thread_id: thread });
   p({ type: 'item.started', item: { id: 'i1', type: 'command_execution', command: 'ls' } });
   p({ type: 'item.completed', item: { id: 'i1', type: 'command_execution', aggregated_output: 'a.txt', exit_code: 0 } });
