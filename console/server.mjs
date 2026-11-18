@@ -1072,6 +1072,8 @@ const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({
   map: DISC.map, owner: DISC.owner, seats: SEATS, root: DEFAULT_CWD, windows: (seat) => state.usage[seat]?.windows, log: console.log,
   send: (b) => send({ ...b, auto: true }),
   models: () => modelsSnap,   // per seat, what the planner may pick from for each task (refreshModels below)
+  ctxPct: (id) => { const c = convOf(id); return c ? ctxView(c)?.pct ?? null : null; },   // token economy: how full a task's context window is
+  freshAtPct: () => SET().projectsFreshAtPct ?? 40,
   idle: (id) => { const c = convOf(id); return !!c && !c.working && !c.turns && R(c).status !== 'working' && !R(c).perms.size; },
   notify: (p, kind) => {
     const head = { 'plan-ready': '🧩 ' + t('bot.multi.planReady'), integrating: '🧩 ' + t('bot.multi.integrating'), done: '✅ ' + t('bot.multi.done'), 'integrate-error': '⚠️ ' + t('bot.multi.integrateError') }[kind] || kind;

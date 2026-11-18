@@ -384,6 +384,8 @@
   "set.proj.title": "Proyectos multiparte",
   "set.proj.page": "Página de proyectos",
   "set.proj.pageHint": "El puesto responsable divide un encargo en tareas; cada tarea se ejecuta en el puesto fijado para su disciplina. Desactivado oculta la página; los proyectos en curso terminan.",
+  "set.proj.fresh": "Conversación nueva al",
+  "set.proj.freshHint": "Ahorra cuota: cuando la conversación de una tarea llena esta parte de su ventana de contexto y se detiene sin terminar, la tarea sigue en una conversación nueva y corta en el mismo puesto (desde su archivo de progreso). 0 = nunca.",
   "set.proj.disciplines": "Disciplinas",
   "set.proj.rule": "Cada disciplina tiene UN puesto fijo. Si un puesto llega a su límite de uso, sus tareas esperan la renovación; nunca se mueven a otro puesto.",
   "set.proj.owner": "Responsable (escribe el plan, hace la integración)",

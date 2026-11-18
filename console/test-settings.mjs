@@ -12,13 +12,13 @@ let n = 0; const t = (name, fn) => { fn(); n++; console.log('ok ' + name); };
 
 t('defaults: optional features off, codex resets only with a codex seat, projects only with disciplines.json', () => {
   const d = defaults({ seats });
-  assert.equal(d.claudeResets, false); assert.equal(d.codexResets, false); assert.equal(d.multiProjects, false); assert.equal(d.usageMeters, true); assert.equal(d.autoArchiveDays, 3);
+  assert.equal(d.claudeResets, false); assert.equal(d.codexResets, false); assert.equal(d.multiProjects, false); assert.equal(d.usageMeters, true); assert.equal(d.autoArchiveDays, 3); assert.equal(d.projectsFreshAtPct, 40);
   assert.equal(defaults({ seats: { ...seats, gpt: { agent: 'codex' } }, disciplines: true }).codexResets, true);
   assert.equal(defaults({ seats, disciplines: true }).multiProjects, true);
 });
 t('validation: types, ranges, unknown keys, models of known seats only', () => {
   assert.deepEqual(validateSettings({ claudeResets: true, autoArchiveDays: 0, models: { dev: 'claude-sonnet-5-5', ops: '' } }, seats), { claudeResets: true, autoArchiveDays: 0, models: { dev: 'claude-sonnet-5-5' } });
-  for (const bad of [{ claudeResets: 'yes' }, { autoArchiveDays: -1 }, { autoArchiveDays: 1.5 }, { idleReapMinutes: 0 }, { nope: true }, { models: { ghost: 'x' } }, { models: { dev: 'a b' } }, null, []])
+  for (const bad of [{ claudeResets: 'yes' }, { projectsFreshAtPct: 96 }, { projectsFreshAtPct: 2.5 }, { autoArchiveDays: -1 }, { autoArchiveDays: 1.5 }, { idleReapMinutes: 0 }, { nope: true }, { models: { ghost: 'x' } }, { models: { dev: 'a b' } }, null, []])
     assert.throws(() => validateSettings(bad, seats), undefined, JSON.stringify(bad));
 });
 t('language: empty (the browser decides) or one of the shipped languages', () => {

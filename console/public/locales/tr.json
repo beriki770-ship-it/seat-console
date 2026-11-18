@@ -375,6 +375,8 @@
   "set.proj.title": "Çok taraflı projeler",
   "set.proj.page": "Projeler sayfası",
   "set.proj.pageHint": "Sahip Seat bir brifi görevlere böler; her görev, disiplinine atanmış Seat'te çalışır. Kapalı: sayfa gizlenir; çalışan projeler tamamlanır.",
+  "set.proj.fresh": "Yeni konuşma eşiği",
+  "set.proj.freshHint": "Kotadan tasarruf: Bir görevin konuşması bağlam penceresinin bu kadarını doldurup bitmeden durursa, görev aynı seat'te yeni ve kısa bir konuşmada devam eder (ilerleme dosyasından). 0 = asla.",
   "set.proj.disciplines": "Disiplinler",
   "set.proj.rule": "Her disiplinin TEK bir sabit Seat'i vardır. Kullanım limitindeki bir Seat'in görevleri sıfırlamayı bekler; asla başka bir Seat'e taşınmaz.",
   "set.proj.owner": "Sahip (planı yazar, entegrasyonu çalıştırır)",

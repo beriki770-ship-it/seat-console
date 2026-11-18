@@ -375,6 +375,8 @@
   "set.proj.title": "Multi-sided projects",
   "set.proj.page": "Projects page",
   "set.proj.pageHint": "One brief is split into tasks by the owner seat; each task runs on the seat fixed for its discipline. Off hides the page; projects already running finish.",
+  "set.proj.fresh": "Fresh conversation at",
+  "set.proj.freshHint": "Saves quota: when a task's conversation fills this much of its context window and stops unfinished, the task continues in a new short conversation on the same seat (from its progress file). 0 = never.",
   "set.proj.disciplines": "Disciplines",
   "set.proj.rule": "Each discipline has ONE fixed seat. A seat at its usage limit makes its tasks wait for the reset; they are never moved to another seat.",
   "set.proj.owner": "Owner (writes the plan, runs the integration)",

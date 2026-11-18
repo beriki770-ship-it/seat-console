@@ -384,6 +384,8 @@
   "set.proj.title": "Projetos multilaterais",
   "set.proj.page": "Página de projetos",
   "set.proj.pageHint": "O assento responsável divide um briefing em tarefas; cada tarefa roda no assento fixo da sua disciplina. Desligado oculta a página; projetos já em andamento terminam.",
+  "set.proj.fresh": "Conversa nova a partir de",
+  "set.proj.freshHint": "Economiza cota: quando a conversa de uma tarefa ocupa esta parte da janela de contexto e para sem terminar, a tarefa continua em uma conversa nova e curta no mesmo assento (a partir do arquivo de progresso). 0 = nunca.",
   "set.proj.disciplines": "Disciplinas",
   "set.proj.rule": "Cada disciplina tem UM assento fixo. Um assento no limite de uso faz suas tarefas aguardarem a renovação; elas nunca vão para outro assento.",
   "set.proj.owner": "Responsável (escreve o plano, faz a integração)",

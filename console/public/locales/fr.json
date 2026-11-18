@@ -384,6 +384,8 @@
   "set.proj.title": "Projets multi-sièges",
   "set.proj.page": "Page Projets",
   "set.proj.pageHint": "Le siège responsable découpe un brief en tâches ; chaque tâche tourne sur le siège attribué à sa discipline. Désactivé masque la page ; les projets déjà en cours se terminent.",
+  "set.proj.fresh": "Nouvelle conversation à",
+  "set.proj.freshHint": "Économise le quota : quand la conversation d’une tâche remplit cette part de sa fenêtre de contexte et s’arrête avant la fin, la tâche continue dans une nouvelle conversation courte sur le même siège (à partir de son fichier de progression). 0 = jamais.",
   "set.proj.disciplines": "Disciplines",
   "set.proj.rule": "Chaque discipline a UN siège fixe. Un siège à sa limite d’utilisation fait attendre ses tâches jusqu’à la réinitialisation ; elles ne sont jamais déplacées vers un autre siège.",
   "set.proj.owner": "Responsable (écrit le plan, mène l’intégration)",

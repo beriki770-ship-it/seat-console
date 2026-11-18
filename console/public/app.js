@@ -809,6 +809,7 @@ const TABS = {
   projects: () => {
     const d = setData.disciplines || { owner: setData.detected.seats[0]?.name, disciplines: {} };
     return `<h3>${t('set.proj.title')}</h3>` + tog('multiProjects', t('set.proj.page'), t('set.proj.pageHint'))
+      + `<label class="snum"><span><b>${t('set.proj.fresh')}</b><small>${t('set.proj.freshHint')}</small></span><input type="number" min="0" max="95" data-set="projectsFreshAtPct" value="${draft.projectsFreshAtPct ?? 40}"> %</label>`
       + `<h3>${t('set.proj.disciplines')}</h3><form class="sform" data-form="disc"><small><b>${t('set.proj.rule')}</b></small>`
       + `<label>${t('set.proj.owner')} <select name="owner">${seatOpts(d.owner)}</select></label><div id="discrows">${Object.entries(d.disciplines).map(([k, v]) => discRow(k, v)).join('') || discRow()}</div>`
       + `<div class="racts"><button type="button" data-discadd>${t('set.proj.add')}</button><button type="submit" class="primary">${t('set.proj.save')}</button></div>${setData.disciplines?.off ? `<small class="sno">${t('set.proj.nowOff')} <bdi>${esc(setData.disciplines.off)}</bdi></small>` : ''}</form>`;

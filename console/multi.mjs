@@ -89,7 +89,11 @@ ${p.brief}
 
 YOUR TASK: ${t.id}: ${t.title} (discipline: ${t.discipline})
 ${t.brief}
-${t.deps.length ? `\nInputs: these tasks are done, read their notes first: ${t.deps.map((d) => path.join('.multi', 'out', d + '.md')).join(', ')}\n` : ''}
+${t.deps.length ? `\nInputs: these tasks are done, read their notes first: ${t.deps.map((d) => path.join('.multi', 'out', d + '.md')).join(', ')}\n` : ''}${t.fresh ? `\nThis task already ran in an earlier conversation that grew too long and was closed to save quota. Do NOT start over: read ${path.join('.multi', 'out', t.id + '.progress.md')} and what is already on disk, then continue from there.\n` : ''}
+Token budget (the usage limit is shared, keep this conversation SHORT):
+- Hand heavy reading, searching and long command output to subagents and take back only their short conclusion; never paste big files or logs into this conversation.
+- Work in few, large steps; no exploratory chatter, no re-reading files you already know.
+- After each milestone, overwrite ${path.join(p.dir, '.multi', 'out', t.id + '.progress.md')} with 5-10 lines: done so far, next step, open questions. The console may move this task to a fresh conversation when this one grows; that file is how it continues.
 Rules:
 - Do only this task. Do not change files another task owns (see PLAN.md).
 - Do not edit .multi/tasks.json (the console owns it).
@@ -104,7 +108,8 @@ Project folder: ${p.dir}
 Read PLAN.md and every note in .multi/out/. Fit the parts together, fix the seams, then verify the result the way PLAN.md says (run it, test it, look at it). Do not redo a task's work unless it is broken.
 Write .multi/out/_integration.md: what you changed, how it was verified (commands + results), what is still open. End your reply with STATUS / CHANGED / VERIFIED-BY / NOTES.`;
 
-// deps: { send({seat, conversationId, cwd, text, title}) -> conversation, windows(seat), map, owner, seats, root, notify(project, kind), log, now() }
+// deps: { send({seat, conversationId, cwd, text, title}) -> conversation, windows(seat), map, owner, seats, root, notify(project, kind), log, now(),
+//         ctxPct(convId) -> % of its context window or null, freshAtPct() -> threshold (0 = never) }
 export function createMulti({ state, save, broadcast, deps }) {
   state.multi ||= {};
   const now = () => (deps.now ? deps.now() : Date.now());
@@ -206,7 +211,20 @@ export function createMulti({ state, save, broadcast, deps }) {
     const t = p.tasks.find((x) => x.id === key); if (!t || t.status === 'done') return;
     t.status = error ? 'error' : fs.existsSync(outFile(p, t.id)) ? 'done' : needsAnswer ? 'needs-answer' : 'stuck';
     t.error = error || undefined;
-    persist(p); if (t.status === 'done') tick();
+    // Token economy: a task that stopped unfinished in a conversation already past the threshold continues in a FRESH conversation on the
+    // same seat (the long one would re-read its whole history from the cache on every turn). Not for errors or questions to the user; capped.
+    if (t.status === 'stuck' && freshIfLong(t) && (t.freshCount || 0) <= FRESH_MAX) t.status = 'pending';
+    persist(p); if (t.status === 'done' || t.status === 'pending') tick();
+  }
+
+  // The task's conversation is past deps.freshAtPct() % of its context window: drop it (kept in prevConvs) so the next dispatch starts a new one.
+  const FRESH_MAX = 5;
+  function freshIfLong(t) {
+    const pct = t.conv && deps.ctxPct?.(t.conv), at = deps.freshAtPct?.() ?? 40;
+    if (pct == null || !(at > 0) || pct < at) return false;
+    (t.prevConvs ||= []).push(t.conv); t.conv = null; t.fresh = true; t.freshCount = (t.freshCount || 0) + 1;
+    deps.log?.(`[multi] task ${t.id}: conversation at ${Math.round(pct)}% of its context, continues in a fresh one (#${t.freshCount})`);
+    return true;
   }
 
   function approve(id) {
@@ -226,7 +244,7 @@ export function createMulti({ state, save, broadcast, deps }) {
       if (p.status !== 'running') throw new Error('the project is not running (' + p.status + ')');
       const t = p.tasks.find((x) => x.id === taskId); if (!t) throw new Error('unknown task');
       if (!['error', 'stuck', 'needs-answer'].includes(t.status) && !(t.status === 'running' && t.conv && deps.idle?.(t.conv))) throw new Error('task is ' + t.status);
-      t.status = 'pending'; t.error = undefined;
+      t.status = 'pending'; t.error = undefined; freshIfLong(t);   // Retry/Continue into a long conversation starts a fresh one instead
     }
     persist(p); tick();
     return p;

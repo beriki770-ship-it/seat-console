@@ -384,6 +384,8 @@
   "set.proj.title": "Progetti multi-postazione",
   "set.proj.page": "Pagina Progetti",
   "set.proj.pageHint": "La postazione responsabile divide un brief in compiti; ogni compito gira sulla postazione assegnata alla sua disciplina. Off nasconde la pagina; i progetti già in corso terminano.",
+  "set.proj.fresh": "Nuova conversazione al",
+  "set.proj.freshHint": "Risparmia quota: quando la conversazione di un’attività riempie questa parte della sua finestra di contesto e si ferma prima della fine, l’attività continua in una nuova conversazione breve sulla stessa postazione (dal suo file di avanzamento). 0 = mai.",
   "set.proj.disciplines": "Discipline",
   "set.proj.rule": "Ogni disciplina ha UNA postazione fissa. Una postazione al limite di utilizzo fa aspettare i suoi compiti fino al reset; non vengono mai spostati su un’altra postazione.",
   "set.proj.owner": "Responsabile (scrive il piano, esegue l’integrazione)",

@@ -375,6 +375,8 @@
   "set.proj.title": "Mehrseitige Projekte",
   "set.proj.page": "Projektseite",
   "set.proj.pageHint": "Der verantwortliche Seat teilt ein Briefing in Aufgaben auf; jede Aufgabe läuft auf dem Seat, der ihrer Disziplin fest zugeordnet ist. Aus blendet die Seite aus; laufende Projekte werden fertig.",
+  "set.proj.fresh": "Neue Unterhaltung ab",
+  "set.proj.freshHint": "Spart Kontingent: Füllt die Unterhaltung einer Aufgabe so viel ihres Kontextfensters und bricht sie unfertig ab, läuft die Aufgabe in einer neuen, kurzen Unterhaltung auf demselben Seat weiter (aus ihrer Fortschrittsdatei). 0 = nie.",
   "set.proj.disciplines": "Disziplinen",
   "set.proj.rule": "Jede Disziplin hat EINEN festen Seat. Ist ein Seat am Nutzungslimit, warten seine Aufgaben auf den Reset; sie werden nie auf einen anderen Seat verschoben.",
   "set.proj.owner": "Verantwortlich (schreibt den Plan, führt die Integration aus)",

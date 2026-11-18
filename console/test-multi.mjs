@@ -147,5 +147,27 @@ const before = sends.length, q = m.create({ name: 'Second', brief: 'b' }); await
 assert.equal(sends.length, before); assert.equal(q.status, 'planning'); assert.ok(q.waitUntil > now);
 assert.ok(!m.view()[0].brief && !m.view()[0].tasks.some((t) => t.brief), 'view stays small');
 
+// ---- token economy: a task that stops unfinished in a long conversation continues in a FRESH one on the same seat ----
+{
+  const ctx = {}; const st2 = {}; const sends2 = []; const convs2 = {}; let k = 0;
+  const m2 = createMulti({ state: st2, save: () => {}, broadcast: () => {}, deps: {
+    map, owner, seats: SEATS, root, now: () => T0, windows: () => undefined, notify: () => {}, log: () => {}, ctxPct: (id) => ctx[id] ?? null, freshAtPct: () => 40,
+    send: async (b) => { const c = b.conversationId ? convs2[b.conversationId] : (convs2['f' + ++k] = { id: 'f' + k, seat: b.seat }); sends2.push({ ...b, seat: c.seat }); return c; } } });
+  const q2 = m2.create({ name: 'Fresh', brief: 'b' }); await m2.tick();
+  fs.writeFileSync(path.join(q2.dir, '.multi', 'plan.json'), JSON.stringify({ tasks: [{ id: 'big', discipline: 'backend', brief: 'x' }] }));
+  m2.settled(convs2[q2.planConv], {}); m2.approve(q2.id); await m2.tick();
+  const big = q2.tasks[0], first = big.conv;
+  assert.match(sends2.at(-1).text, /Token budget/); assert.match(sends2.at(-1).text, /big\.progress\.md/);
+  ctx[first] = 20; m2.settled(convs2[first], {}); assert.equal(big.status, 'stuck', 'short conversation: stays, the user decides');
+  ctx[first] = 55; m2.retry(q2.id, 'big'); await m2.tick();
+  assert.notEqual(big.conv, first, 'retry into a long conversation starts a fresh one'); assert.equal(convs2[big.conv].seat, 'dev', 'same seat');
+  assert.match(sends2.at(-1).text, /earlier conversation that grew too long/); assert.ok(!sends2.at(-1).conversationId);
+  const second = big.conv; ctx[second] = 70; m2.settled(convs2[second], {}); await m2.tick();
+  assert.notEqual(big.conv, second, 'stopped unfinished past the threshold: continues by itself in a fresh conversation'); assert.equal(big.status, 'running');
+  assert.deepEqual(big.prevConvs, [first, second]);
+  ctx[big.conv] = 90; m2.settled(convs2[big.conv], { needsAnswer: true }); assert.equal(big.status, 'needs-answer', 'a question to the user never moves on by itself');
+  m2.cancel(q2.id);
+}
+
 fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(path.dirname(discFile), { recursive: true, force: true });
 console.log('test-multi: all passed');

@@ -366,6 +366,8 @@
   "set.proj.title": "Proyek multi-pihak",
   "set.proj.page": "Halaman proyek",
   "set.proj.pageHint": "Satu brief dipecah menjadi tugas oleh seat pemilik; setiap tugas berjalan di seat yang ditetapkan untuk disiplinnya. Mati menyembunyikan halaman; proyek yang sudah berjalan tetap diselesaikan.",
+  "set.proj.fresh": "Percakapan baru pada",
+  "set.proj.freshHint": "Menghemat kuota: saat percakapan sebuah tugas mengisi sebanyak ini dari jendela konteksnya dan berhenti sebelum selesai, tugas dilanjutkan di percakapan baru yang singkat pada seat yang sama (dari file progresnya). 0 = tidak pernah.",
   "set.proj.disciplines": "Disiplin",
   "set.proj.rule": "Setiap disiplin punya SATU seat tetap. Seat yang mencapai batas pemakaian membuat tugasnya menunggu reset; tugas tidak pernah dipindah ke seat lain.",
   "set.proj.owner": "Pemilik (menulis rencana, menjalankan integrasi)",

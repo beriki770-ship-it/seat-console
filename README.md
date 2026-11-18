@@ -113,6 +113,8 @@ copy console\disciplines.example.json console\disciplines.json
 
 Without the file (or with a seat name that is not in `seats.json`) the console runs as usual and only the Projects page says why it is off. The planner writes `PLAN.md` and `.multi/plan.json` in the project folder and may pick a model per task from the list its seat offers (a model the seat does not have is dropped, the seat's default runs); a task counts as done when its seat has written `.multi/out/<task>.md`. The seat of a task always comes from this file: a seat at its usage limit makes its tasks wait for the reset, they are never moved to another seat.
 
+Task prompts ask each seat to keep its conversation short (heavy reading goes to subagents, big output is never pasted back) and to keep `.multi/out/<task>.progress.md` current. When a task stops unfinished in a conversation past the Settings threshold, or you press Retry on one, it continues in a fresh conversation on the same seat that starts from that progress file (at most 5 times per task). Errors and questions to you never move on by themselves.
+
 ### Other agents (Codex, Antigravity)
 
 Opt-in: nothing changes unless a seat in `seats.json` has an `"agent"` field. Such a seat runs the [Codex CLI](https://github.com/openai/codex) (`"agent": "codex"`) or the Antigravity CLI (`"agent": "agy"`) through a small adapter in `console/agents/` that speaks the console's protocol, so it gets the same chat, tool rows, Stop, modes and Telegram notifications as a Claude seat. Each CLI is installed and signed in by you; the console never handles its login.
@@ -161,7 +163,7 @@ The calls are the ones the official CLIs make: Codex's `codex app-server` (`acco
 - **Telegram**: paste the bot token (stored in the secrets file, never shown again), then the one-time `/start <code>` to link your chat, a test message, and the morning / evening digest switch.
 - **Phone access**: the Tailscale state and phone address, the page login user, and a password change (needs the current password). The page token is never shown.
 - **Usage & limits**: usage meters, the 90 % warning, Claude limit resets (off by default; identifies as the Claude CLI to read them, undocumented endpoint), Codex reset credits, auto-archive days (0 = never), minutes before an idle process is stopped.
-- **Projects**: multi-sided projects on or off (off unless `disciplines.json` exists) and the discipline -> seat editor.
+- **Projects**: multi-sided projects on or off (off unless `disciplines.json` exists), the discipline -> seat editor, and **Fresh conversation at** (default 40 %, 0 = never): a task that stops unfinished in a conversation that already fills that much of its context window continues in a new, short conversation on the same seat, from the progress file it keeps.
 - **Routines**: enable / disable, add or edit one (cron checked before it is saved). **Remotes**: list, add, test the ssh connection, remove. **Models**: an optional default model per seat, from that seat's own model list.
 
 Switches apply at once. Changes to `seats.json`, `remotes.json` and `disciplines.json` are read at start: the page then shows **Restart now**, which ends the server process so the supervisor (`run-server.ps1` / `run-server.sh`, systemd, launchd) starts it again; running conversations live in their own hosts and are picked up again. Without a supervisor the button only stops the console and you start it again yourself (`start-console.ps1` / `start-console.sh`).
@@ -169,7 +171,7 @@ Switches apply at once. Changes to `seats.json`, `remotes.json` and `disciplines
 `settings.json` (all keys optional, defaults in `console/settings.mjs`):
 
 ```json
-{ "usageMeters": true, "claudeResets": false, "codexResets": false, "multiProjects": false, "quotaWarning": true, "digests": true, "autoArchiveDays": 3, "idleReapMinutes": 5, "models": { "dev": "claude-sonnet-5-5" } }
+{ "usageMeters": true, "claudeResets": false, "codexResets": false, "multiProjects": false, "quotaWarning": true, "digests": true, "autoArchiveDays": 3, "idleReapMinutes": 5, "projectsFreshAtPct": 40, "models": { "dev": "claude-sonnet-5-5" } }
 ```
 
 ## Sign in each seat
