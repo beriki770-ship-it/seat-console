@@ -241,33 +241,37 @@ $('ctxpanel').addEventListener('click', async (e) => {
 const p2 = (n) => String(n).padStart(2, '0');
 const clock = (ms) => { const d = new Date(ms); return p2(d.getHours()) + ':' + p2(d.getMinutes()); };
 const until = (ms) => { const m = Math.ceil((ms - Date.now()) / 60000); return m > 0 && m < 180 ? ` · in ${Math.floor(m / 60)}:${p2(m % 60)}` : ''; };
-const resetText = (ms) => ms <= Date.now() ? 'reset' : 'resets ' + clock(ms) + until(ms);
+// The day too when the reset is not today (the weekly window): "resets tomorrow 12:00", "resets Fri 14.11 12:00".
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const dayOf = (ms) => { const d = new Date(ms), t = new Date(); t.setHours(0, 0, 0, 0); const n = Math.round((new Date(d).setHours(0, 0, 0, 0) - t) / 864e5);
+  return n === 0 ? '' : n === 1 ? 'tomorrow ' : `${DAYS[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1} `; };
+const resetText = (ms) => ms <= Date.now() ? 'reset' : 'resets ' + dayOf(ms) + clock(ms) + until(ms);
 const meter = (u) => !u ? '' : Object.entries(u.windows).filter(([k, v]) => k === 'five_hour' || v.resetsAt * 1000 > Date.now()).map(([k, v]) => {
   const gone = v.resetsAt * 1000 <= Date.now(), pct = gone ? 0 : Math.round(v.utilization * 100);
   const old = u.at && Date.now() - u.at > 30 * 60000 ? ` · read ${clock(u.at)}` : '';   // a stale reading says when it was taken
   return `<small class="meter" title="resets ${esc(new Date(v.resetsAt * 1000).toLocaleString())}">${esc(k.replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, pct)}%"></i></span> ${pct}% <span class="reset" dir="auto">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
 }).join('');
-// Composer warning: at 80 % or more of the 5 h window, name the seat with the most quota left ("ops at 85%, info free (12%)").
+// Composer warning at 80 % or more of the 5 h window ("ops at 85%"). It never names another seat: each seat's limit is its own.
 function showQuota() {
   const util = (s) => { const w = s.usage?.windows?.five_hour; return w ? (w.resetsAt * 1000 <= Date.now() ? 0 : w.utilization) : null; };
   const me = seats.find((s) => s.name === cur.seat), u = me && util(me), box = $('quota');
   if (u == null || u < 0.8) { box.hidden = true; return; }
-  const alt = seats.filter((s) => s !== me && util(s) != null).sort((a, b) => util(a) - util(b))[0];
   const iso = (n) => '\u2068' + n + '\u2069';   // FSI/PDI: a Latin seat name inside a right-to-left sentence keeps its place
-  box.textContent = `${iso(me.name)} at ${Math.round(u * 100)}%` + (alt ? `, ${iso(alt.name)} free (${Math.round(util(alt) * 100)}%)` : '');
+  box.textContent = `${iso(me.name)} at ${Math.round(u * 100)}%`;
   box.hidden = false;
 }
 const showArch = (() => { try { return JSON.parse(localStorage.getItem('showArch') || '{}'); } catch { return {}; } })();
 // Folded seats: only the open conversation and the ones waiting on the user stay visible, the rest is one "N more" line. Kept per browser.
 const fold = (() => { try { return JSON.parse(localStorage.getItem('fold') || '{}'); } catch { return {}; } })();
 const saveFold = () => { try { localStorage.setItem('fold', JSON.stringify(fold)); } catch {} };
+const showMore = {};   // per seat: list every live conversation, not only the newest 12
 let menuFor = null;   // conversation id whose ⋯ menu is open
 const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}" data-id="${c.id}" data-seat="${seat}">
-      <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${c.keep ? '<span class="kept" title="Stays visible when the seat is folded">★</span> ' : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="Context window ${esc(ctxText(c.ctx))}">${Math.round(c.ctx.pct)}%</span>` : ''}
+      <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${c.keep ? '<span class="kept" title="Kept: never auto-archived, stays visible when the seat is folded">★</span> ' : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="Context window ${esc(ctxText(c.ctx))}">${Math.round(c.ctx.pct)}%</span>` : ''}
       <span class="cost" title="API-price estimate, not billed (subscription)">~$${(c.cost || 0).toFixed(2)}</span>
       <small>${c.mode === 'bypass' ? '<span class="badge bypass">bypass</span> ' : ''}${label[c.status] || c.status}${c.background ? ' · ' + c.background : ''}${c.pending ? ' · ' + c.pending + ' waiting' : ''}</small>${c.quotaWait ? `<span class="qwait" title="Stopped on the usage limit. The console sends it a continue message at this time.">⏸ resumes ${clock(c.quotaWait)}<span class="dismiss" data-unwait="${c.id}" role="button" title="Do not resume automatically">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ waiting for your answer<span class="dismiss" data-dismiss="${c.id}" role="button" title="Close this question without answering">✕</span></span>` : ''}</button>
       ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="Conversation menu">⋯</button>`}</div>`
-  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">Rename</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">Close question</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${c.keep ? 'Fold this conversation with the rest of its seat' : 'Keep this conversation visible when its seat is folded'}">${c.keep ? 'Unkeep' : 'Keep shown'}</button><button data-archive="${c.id}" data-to="${!c.archived}">${c.archived ? 'Unarchive' : 'Archive'}</button><button class="danger" data-del="${c.id}">Delete</button></div>` : '');
+  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">Rename</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">Close question</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${c.keep ? 'Let it auto-archive after 3 idle days and fold with its seat' : 'Never auto-archive it, and keep it visible when its seat is folded'}">${c.keep ? 'Unkeep' : 'Keep (no auto-archive)'}</button><button data-archive="${c.id}" data-to="${!c.archived}">${c.archived ? 'Unarchive' : 'Archive'}</button><button class="danger" data-del="${c.id}">Delete</button></div>` : '');
 
 function showSeats() {
   showQuota(); menuMark();
@@ -275,11 +279,12 @@ function showSeats() {
   $('foldall').textContent = allFolded ? 'Expand all' : 'Fold all'; $('foldall').dataset.to = String(!allFolded);
   $('seats').innerHTML = seats.map((s) => {
     const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = !!fold[s.name];
-    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.keep || c.pending || c.needsAnswer || c.quotaWait))) : live.slice(0, 12), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0;   // the open conversation stays even when archived
+    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.keep || c.pending || c.needsAnswer || c.quotaWait))) : (showMore[s.name] ? live : live.slice(0, 12)), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0, more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
     return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${f ? 'Show' : 'Fold'} this seat's conversations">${f ? '▸' : '▾'}</button>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}</div>
     ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="New conversation">+ new</button>`}</div>`
     + shown.map((c) => convRow(c, s.name)).join('')
     + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${hidden} more conversation${hidden > 1 ? 's' : ''}</button>` : '')
+    + (more > 0 || (!f && showMore[s.name] && live.length > 12) ? `<button class="archtoggle" data-showmore="${esc(s.name)}">${showMore[s.name] ? 'Show fewer' : `Show ${more} more`}</button>` : '')
     + (!f && arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${showArch[s.name] ? 'Hide' : 'Show'} archived (${arch.length})</button>` : '')
     + (!f && showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
   }).join('');
@@ -293,7 +298,7 @@ function scheduleSeats() {
 }
 async function pick(seat, id) {
   if (!id && seats.find((s) => s.name === seat && s.remote && !s.control)) seat = seats.find((s) => !s.remote).name;   // a read-only remote group has no new-conversation draft (no composer)
-  cur = { seat, id }; localStorage.setItem('seat', seat);
+  cur = { seat, id }; localStorage.setItem('seat', seat); closeProjects();
   pending.length = 0; showThumbs();
   if (id) delete convo[id];                // events of a conversation that was not watched were not delivered: always load it fresh
   watch(true);                             // the stream carries full events only for the open conversation
@@ -333,6 +338,7 @@ async function init() {
   await pick(cur.seat, null);
   openHash(); window.addEventListener('hashchange', openHash);
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
+  loadMulti(); setInterval(() => { if (!document.hidden) loadMulti(); }, 60000);
   setInterval(() => { if (!document.hidden) showSeats(); }, 60000);   // keeps the "in 1:12" countdowns and expired windows current
   setInterval(() => { if (Date.now() - beat > 50000) watch(false); }, 10000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) resync(); });
@@ -348,6 +354,7 @@ function onEvent(m) {
     if (cur.id === d.removed) pick(cur.seat, null);
     return;
   }
+  if (d.multi) { loadMulti(); return; }
   if (d.usage) { const hit = seats.filter((x) => x.name === d.usage.seat || x.account === d.usage.seat); for (const s of hit) s.usage = { windows: d.usage.windows, at: d.usage.at }; if (hit.length) scheduleSeats(); return; }   // a remote group with that account mirrors the seat's meter
   if (d.hello) {   // before d.conv: a hello carries `conv` as a plain id string, not a summary object
     if (d.conv !== cur.id) return;
@@ -424,7 +431,7 @@ $('head').addEventListener('click', (e) => { if (e.target.closest('#renamebtn'))
 
 // Refetch the seat list and the open conversation from the server (the source of truth).
 async function resync() {
-  seats = await api('/api/seats'); loadRoutines();
+  seats = await api('/api/seats'); loadRoutines(); loadMulti();
   for (const k in convo) delete convo[k];
   showSeats(); await showConversation();
 }
@@ -452,6 +459,85 @@ $('routines').onclick = async (e) => {
   await loadRoutines();
   if (r.conversationId) location.hash = r.conversationId;
 };
+// ---- Projects page (#projects) + multi-sided projects (multi.mjs): a brief -> plan on the owner seat -> one tap approves -> each task on the seat fixed for its discipline ----
+let multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
+const MSTATUS = { cancelled: 'cancelled', planning: 'planning', 'plan-ready': 'plan ready, approve', 'plan-error': 'plan failed', running: 'running', integrating: 'integrating', 'integrate-error': 'integration failed', done: 'done',
+  pending: 'waiting', 'needs-answer': 'needs your answer', stuck: 'stopped without .multi/out file', error: 'error' };
+const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
+const onProjects = () => document.body.classList.contains('projects');
+async function loadMulti() {
+  try { multiData = await api('/api/multi'); } catch { return; }
+  multiLoaded = true; showMultiSide(); if (onProjects() && !$('projects').contains(document.activeElement)) { showProjects(); flashCard(); }   // a half-typed brief or filter is never wiped by a refresh
+}
+// Sidebar: one entry to the page + the projects still going, each a link to its card.
+function showMultiSide() {
+  const act = multiData.projects.filter(ACTIVE), ask = act.filter((p) => p.status === 'plan-ready' || p.status.endsWith('error') || p.tasks.some((t) => ['error', 'stuck', 'needs-answer'].includes(t.status))).length;
+  $('multi').innerHTML = `<h2>🧩 Projects</h2><button type="button" data-mopen class="${onProjects() ? 'primary' : ''}">Open projects${ask ? ` · ${ask} need you` : ''}</button>`
+    + act.map((p) => `<a class="mline" href="#multi-${esc(p.id)}"><span dir="auto">${esc(p.name)}</span><small>${esc(MSTATUS[p.status] || p.status)}${p.tasks.length ? ` · ${p.tasks.filter((t) => t.status === 'done').length}/${p.tasks.length}` : ''}</small></a>`).join('');
+}
+function card(p) {
+  const wait = (x, seat) => x.waitUntil ? ` · waits for ${esc(seat)} limit reset ${when(x.waitUntil)}` : '';
+  const retry = (task, label = 'Retry') => `<button data-mretry="${esc(p.id)}" data-task="${esc(task)}">${label}</button>`;
+  const tasks = p.tasks.map((t) => `<div class="mtask st-${esc(t.status)}"><div><span>${esc(t.title)}</span><small>${esc(t.discipline)} → ${esc(t.seat)} · ${esc(MSTATUS[t.status] || t.status)}${t.status === 'pending' ? wait(t, t.seat) : ''}${t.deps.length ? ' · after ' + esc(t.deps.join(', ')) : ''}${t.conv ? ` · <a href="#${esc(t.conv)}">open</a>` : ''}</small>`
+    + `${t.error || t.sendError ? `<small class="err">${esc(t.error || t.sendError)}</small>` : ''}</div>${['error', 'stuck', 'needs-answer', 'running'].includes(t.status) && p.status === 'running' ? `<div class="racts">${retry(t.id, t.status === 'running' ? 'Continue' : 'Retry')}</div>` : ''}</div>`).join('');
+  const acts = (p.status === 'plan-ready' ? `<button class="primary" data-mapprove="${esc(p.id)}">Approve plan and dispatch</button>` : '')
+    + (p.status === 'plan-error' ? retry('plan', 'Ask the planner again') : '') + (p.status === 'integrate-error' ? retry('integrate', 'Retry integration') : '')
+    + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">Cancel project</button>` : '');
+  const done = p.tasks.filter((t) => t.status === 'done').length;
+  return `<div class="mproj" id="multi-${esc(p.id)}"><b dir="auto">${esc(p.name)}</b><small>${esc(MSTATUS[p.status] || p.status)}${p.tasks.length ? ` · ${done}/${p.tasks.length} tasks` : ''} · owner ${esc(p.owner)} · started ${when(p.createdAt)}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr">${esc(p.dir)}</small>`
+    + `<small>${p.planConv ? `<a href="#${esc(p.planConv)}">plan conversation</a>` : ''}${p.integrateConv ? ` · <a href="#${esc(p.integrateConv)}">integration</a>` : ''}</small>`
+    + `${p.error ? `<small class="err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="racts">${acts}</div>` : ''}${tasks}</div>`;
+}
+function folderList() {
+  const q = folderQ.trim().toLowerCase(), all = multiData.folders || [], hits = q ? all.filter((f) => f.name.toLowerCase().includes(q)) : all;
+  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><span dir="ltr">${esc(f.name)}</span><small>${f.mtime ? 'touched ' + when(f.mtime) : ''}</small></div><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">Start</button></div>`).join('')
+    + (hits.length > 40 ? `<small>${hits.length - 40} more: type to filter</small>` : '') + (!hits.length ? '<small>No folder matches.</small>' : '');
+}
+function showProjects() {
+  const old = $('mform'), keep = old && { name: old.name.value, dir: old.dir.value, owner: old.owner.value, brief: old.brief.value };   // a re-render never loses a half-typed project
+  const seatsOpt = [...new Set([multiData.owner, ...Object.values(multiData.disciplines)])];
+  const act = multiData.projects.filter(ACTIVE), done = multiData.projects.filter((p) => !ACTIVE(p));
+  $('projects').innerHTML = `<header class="phead"><h2>🧩 Projects</h2><small>One brief, split into tasks; each task runs on the seat fixed for its discipline. A seat at its limit waits, it is never swapped.</small></header>`
+    + `<div class="pgrid"><div class="pcol">`
+    + (multiData.off ? `<p class="err">Multi-sided projects are off: ${esc(multiData.off)}</p>` : '')
+    + `<form id="mform"${multiData.off ? ' hidden' : ''}><h3>Start a project</h3><input name="name" placeholder="Project name" required dir="auto"><input name="dir" placeholder="Folder (empty = new under projects/)" dir="ltr" spellcheck="false">`
+    + `<label>Planner + integration on <select name="owner">${seatsOpt.map((s) => `<option${s === multiData.owner ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></label>`
+    + `<textarea name="brief" rows="7" placeholder="Brief: what the whole project must deliver" required dir="auto"></textarea>`
+    + `<small>${Object.entries(multiData.disciplines).map(([d, s]) => `${esc(d)}→${esc(s)}`).join(' · ')}</small><div class="racts"><button type="submit" class="primary">Plan it</button></div></form>`
+    + `<h3>Your project folders</h3><input id="mfq" type="search" placeholder="Filter folders" value="${esc(folderQ)}" dir="ltr" spellcheck="false"><div id="mfolders">${folderList()}</div></div>`
+    + `<div class="pcol"><h3>Running (${act.length})</h3>${act.map(card).join('') || '<small>Nothing running. Pick a folder or write a brief.</small>'}`
+    + (done.length ? `<h3>Finished</h3>${done.map(card).join('')}` : '') + `</div></div>`;
+  const f = $('mform'); if (keep) for (const k of ['name', 'dir', 'owner', 'brief']) if (keep[k]) f[k].value = keep[k];
+}
+function openProjects(id) {
+  document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
+  focusId = id || null; if (multiLoaded) flashCard();   // a direct link before the first load: the card is flashed once the data is in (loadMulti)
+}
+function flashCard() {
+  const el = focusId && document.getElementById('multi-' + focusId); if (!el) return; focusId = null;
+  el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1800);
+}
+function closeProjects() {
+  if (!onProjects()) return; document.body.classList.remove('projects'); showMultiSide();
+  if (location.hash === '#projects' || location.hash.startsWith('#multi-')) history.replaceState(null, '', location.pathname + location.search);   // the same project link works again
+}
+$('multi').onclick = (e) => { if (e.target.closest('[data-mopen]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; } };
+$('projects').oninput = (e) => { if (e.target.id === 'mfq') { folderQ = e.target.value; $('mfolders').innerHTML = folderList(); } };
+$('projects').onclick = async (e) => {
+  const st = e.target.closest('[data-mstart]');
+  if (st) { const f = $('mform'); f.dir.value = st.dataset.mstart; if (!f.name.value) f.name.value = st.dataset.mname; f.scrollIntoView({ block: 'start' }); f.brief.focus(); return; }
+  const ap = e.target.closest('[data-mapprove]'), rt = e.target.closest('[data-mretry]'), cp = e.target.closest('[data-mcancelp]');
+  if (ap && !confirm('Start every task now, each on the seat fixed for its discipline?')) return;
+  if (cp && !confirm('Cancel this project? Nothing new starts; running conversations keep running until you stop them.')) return;
+  const r = cp ? await api('/api/multi', { action: 'cancel', id: cp.dataset.mcancelp }) : ap ? await api('/api/multi', { action: 'approve', id: ap.dataset.mapprove }) : rt ? await api('/api/multi', { action: 'retry', id: rt.dataset.mretry, task: rt.dataset.task }) : null;
+  if (r?.error) alert(r.error); if (r) { document.activeElement?.blur(); await loadMulti(); }   // loadMulti re-renders (showProjects keeps the form's values)
+};
+$('projects').onsubmit = async (e) => {
+  e.preventDefault(); const f = e.target, btn = f.querySelector('[type=submit]'); btn.disabled = true;
+  const r = await api('/api/multi', { action: 'create', name: f.name.value, dir: f.dir.value, owner: f.owner.value, brief: f.brief.value }).catch((x) => ({ error: String(x) }));
+  btn.disabled = false; if (r.error) return alert(r.error);
+  $('mform').reset(); document.activeElement?.blur(); await loadMulti(); openProjects(r.id);
+};
 $('seats').onclick = async (e) => {
   const mo = e.target.closest('[data-more]'); if (mo) { menuFor = menuFor === mo.dataset.more ? null : mo.dataset.more; return showSeats(); }
   const dm = e.target.closest('[data-dismiss]'); if (dm) { menuFor = null; const r = await api('/api/dismiss', { conversationId: dm.dataset.dismiss }); if (r.error) alert(r.error); return; }
@@ -465,6 +551,7 @@ $('seats').onclick = async (e) => {
     const r = await api('/api/delete', { conversationId: de.dataset.del }); if (r.error) alert(r.error); return;
   }
   const fo = e.target.closest('[data-fold]'); if (fo) { fold[fo.dataset.fold] = !fold[fo.dataset.fold]; saveFold(); return showSeats(); }
+  const sm = e.target.closest('[data-showmore]'); if (sm) { showMore[sm.dataset.showmore] = !showMore[sm.dataset.showmore]; return showSeats(); }
   const at = e.target.closest('[data-archtoggle]'); if (at) { showArch[at.dataset.archtoggle] = !showArch[at.dataset.archtoggle]; try { localStorage.setItem('showArch', JSON.stringify(showArch)); } catch {} return showSeats(); }
   const rn = e.target.closest('[data-rename]'); if (rn) { menuFor = null; if (rn.dataset.rename !== cur.id) await pick(rn.dataset.seat, rn.dataset.rename); else showSeats(); return startRename(); }
   const n = e.target.closest('[data-new]'); if (n) return pick(n.dataset.new, null);
@@ -541,8 +628,9 @@ $('mode').onchange = async () => {
 $('resume').onclick = async () => { const r = await api('/api/resume', { conversationId: cur.id }); if (r.error) $('log').appendChild(div('msg note err', esc(r.error))); };
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {
+  if (location.hash === '#projects' || location.hash.startsWith('#multi-')) return openProjects(location.hash.startsWith('#multi-') ? location.hash.slice(7) : null);
   const c = allConvs().find((x) => x.id === location.hash.slice(1));
-  if (c && c.id !== cur.id) pick(c.seat, c.id);
+  if (c && c.id !== cur.id) pick(c.seat, c.id); else if (c) closeProjects();   // the conversation already behind the page: just uncover it
 }
 
 // Hand a finished result to another seat: a NEW conversation there, text prefilled (not sent), folder copied from this one.
@@ -599,3 +687,22 @@ $('effort').addEventListener('input', () => { $('effortOut').textContent = EFFOR
 // Installable app (PWA): the service worker only runs on https or 127.0.0.1; on plain http over Tailscale this is skipped silently.
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 $('foldall').onclick = () => { const to = $('foldall').dataset.to === 'true'; for (const s of seats) fold[s.name] = to; saveFold(); showSeats(); };
+
+// Search: titles + chat text of every conversation, archived ones included (server: /api/search, searchidx.mjs).
+let qTimer = 0, qSeq = 0;
+const runSearch = async () => {
+  const q = $('q').value.trim(), on = !!q, seq = ++qSeq;
+  $('results').hidden = !on; $('seats').hidden = on; $('routines').hidden = on;
+  if (!on) return;
+  let r; try { r = await (await fetch('/api/search?q=' + encodeURIComponent(q))).json(); } catch { r = { hits: [], error: true }; }
+  if (seq !== qSeq) return;   // a newer query was typed meanwhile
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  const re = new RegExp('(' + words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+  const mark = (t) => String(t).split(re).map((p, k) => k % 2 ? `<mark>${esc(p)}</mark>` : esc(p)).join('');
+  $('results').innerHTML = (r.partial ? '<p class="qnote">Index is still being built: some older conversations may be missing for a few minutes.</p>' : '')
+    + (r.hits?.length ? r.hits.map((h) => `<button class="conv qhit ${h.id === cur.id ? 'on' : ''}" data-id="${h.id}" data-seat="${esc(h.seat)}"><span class="dot ${h.status === 'stopped' ? '' : h.status}"></span><span class="t" dir="auto">${h.keep ? '★ ' : ''}${mark(h.title)}</span><span class="qseat">${esc(h.seat)}${h.archived ? ' · archived' : ''}</span>${h.snippet ? `<small dir="auto">${mark(h.snippet)}</small>` : ''}</button>`).join('')
+      : `<p class="qnote">${r.error ? 'Search failed.' : 'Nothing found.'}</p>`);
+};
+$('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('q').value = ''; runSearch(); } });
+$('results').onclick = (e) => { const b = e.target.closest('[data-id]'); if (b) pick(b.dataset.seat, b.dataset.id); };

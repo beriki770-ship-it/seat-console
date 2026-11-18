@@ -1,0 +1,13 @@
+{
+  "_comment": "Copy to disciplines.json and edit. Multi-sided projects: each task's discipline -> its FIXED seat (a seat name from seats.json). A seat at its usage limit makes its tasks WAIT for the reset; they are never moved to another seat. 'owner' = the seat that writes the plan and runs the final integration turn.",
+  "owner": "dev",
+  "disciplines": {
+    "design": "studio",
+    "frontend": "studio",
+    "copy": "studio",
+    "backend": "dev",
+    "logic": "dev",
+    "deploy": "ops",
+    "automations": "ops"
+  }
+}

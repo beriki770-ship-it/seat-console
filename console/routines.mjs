@@ -5,7 +5,7 @@
 // routines.json = [{ id, promptFile | prompt, cron, seat, cwd, enabled, mode, model?, effort? }], cron on the wall clock of `tz` (Europe/Vienna).
 // The prompt is read from the file at RUN time (frontmatter stripped), never copied into the config.
 // state.routines[id] = { lastAskedFor, askedAt, messageId, decision, decidedAt, conversationId, enabled?, lastRun? }
-//   decision: pending | blocked (seat full / quota, waiting for "anyway" or another seat) | run | skip | expired | initial (first-ever start: past slots are never asked late)
+//   decision: pending | blocked (seat full: "anyway" or another seat; quota: "anyway" or skip only) | run | skip | expired | initial (first-ever start: past slots are never asked late)
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseCron, dueBetween, nextDue, wallAsUtc } from './cron.mjs';
@@ -133,6 +133,8 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
     if (a === 's') { Object.assign(s, { decision: 'skip', decidedAt: now() }); save(); log(`[routine] ${r.id}: skipped`); return { toast: 'skipped', edit: { text: [head(r, slotMs), '⏭️ Skipped'].join('\n') } }; }
     let target = r.seat;
     if ((a === 't' || a === 'f') && seat) { if (!deps.seatNames().includes(seat)) return { toast: 'unknown seat' }; target = seat; }
+    // Another seat only while the routine's own seat is NOT at its usage limit (an old "other seat" button from a process-cap block may be tapped later).
+    if (target !== r.seat) { const own = full(r.seat); if (own?.quota) return { toast: own.plain, edit: blockedEdit(r, slotMs, r.seat, own) }; }
     if (a === 'r' || a === 't') {
       const why = full(target);
       if (why) return { toast: why.plain, edit: blockedEdit(r, slotMs, target, why) };
@@ -143,13 +145,15 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
   // At its process cap or (nearly) out of quota. null = free to use.
   function full(seat) {
     const l = deps.seatLoad(seat);
+    // Usage first: a seat at its cap AND at its limit is a quota block (no other seats offered).
+    if (l.usage != null && l.usage >= QUOTA_BLOCK) return { quota: true, plain: `${seat} at ${Math.round(l.usage * 100)}%`, line: `${emoji(seat)} <b>${esc(seat)}</b> at ${Math.round(l.usage * 100)}% of the quota` };
     if (l.alive >= l.max) return { plain: `${seat} full (${l.alive}/${l.max})`, line: `${emoji(seat)} <b>${esc(seat)}</b> full (${l.alive}/${l.max})` };
-    if (l.usage != null && l.usage >= QUOTA_BLOCK) return { plain: `${seat} at ${Math.round(l.usage * 100)}%`, line: `${emoji(seat)} <b>${esc(seat)}</b> at ${Math.round(l.usage * 100)}% of the quota` };
     return null;
   }
   function blockedEdit(r, slot, target, why) {
     const s = st(r.id); s.decision = 'blocked'; save();
-    const alts = deps.seatNames().filter((n) => n !== target && !full(n)).map((n) => ({ n, u: deps.seatLoad(n).usage ?? 0 })).sort((x, y) => x.u - y.u);
+    // Other seats only when the seat is at its PROCESS cap (RAM). At its usage limit: run anyway or skip, never another seat (each seat's limit is its own).
+    const alts = why.quota ? [] : deps.seatNames().filter((n) => n !== target && !full(n)).map((n) => ({ n, u: deps.seatLoad(n).usage ?? 0 })).sort((x, y) => x.u - y.u);
     return { text: [head(r, slot), `⚠️ ${why.line}`].join('\n'), rows: [
       [{ text: `▶️ Anyway (${target})`, callback_data: cbData('f', r.id, slot, target === r.seat ? undefined : target) }],
       ...alts.map((x) => [{ text: `${emoji(x.n)} ${x.n}${x.u ? ' ' + Math.round(x.u * 100) + '%' : ''}`, callback_data: cbData('t', r.id, slot, x.n) }]),

@@ -40,6 +40,37 @@ small { display:block; color:var(--mute); font-size:12px; line-height:1.35; }
 .badge { font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:1px 6px; border-radius:10px; background:var(--user); color:var(--mute); }
 .badge.bypass { background:var(--warn); color:#fff; }
 
+/* ---- Projects: sidebar entry + the page (body.projects takes over main) ---- */
+#multi { margin:0 0 10px; padding-bottom:10px; border-bottom:1px solid var(--line); }
+#multi h2 { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:0 8px 8px; font-weight:600; }
+#multi > button { margin:0 8px 6px; width:calc(100% - 16px); }
+.mline { display:flex; justify-content:space-between; gap:8px; padding:4px 8px; border-radius:8px; color:var(--ink); text-decoration:none; font-size:13px; }
+.mline:hover { background:var(--user); } .mline small { color:var(--mute); white-space:nowrap; }
+#projects { display:none; }
+body.projects main > :not(#projects) { display:none !important; }
+body.projects #projects { display:block; flex:1; min-height:0; overflow:auto; padding:20px 24px; }
+.phead h2 { margin:0 0 4px; font-size:20px; } .phead small { color:var(--mute); }
+#projects h3 { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:20px 0 8px; font-weight:600; }
+.pgrid { display:grid; grid-template-columns:minmax(260px, 380px) minmax(0, 1fr); gap:28px; align-items:start; }
+@media (max-width: 900px) { .pgrid { grid-template-columns:minmax(0, 1fr); } .pgrid > .pcol:last-child { order:-1; } body.projects #projects { padding:16px; } }   /* phone: the running projects first, the form below */
+#mform { display:flex; flex-direction:column; gap:8px; }
+#mform .racts { flex-direction:row; }
+#mform input, #mform textarea, #mfq { width:100%; box-sizing:border-box; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font:inherit; font-size:13px; }
+#mform input:focus, #mform textarea:focus, #mfq:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+#mform label { font-size:13px; color:var(--mute); } #mform > small { color:var(--mute); }
+#mfolders { display:flex; flex-direction:column; margin-top:6px; max-height:60vh; overflow:auto; }
+.mfolder { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 4px; border-bottom:1px solid var(--line); font-size:13px; }
+.mfolder small, #mfolders > small { display:block; color:var(--mute); font-size:12px; } .mfolder span { overflow-wrap:anywhere; }
+.mproj { display:flex; flex-direction:column; gap:2px; padding:10px 12px; margin-bottom:10px; border-radius:10px; border:1px solid var(--line); background:var(--panel); transition:box-shadow .3s; }
+.mproj.flash { box-shadow:0 0 0 2px var(--accent); }
+.mproj small, .mtask small { display:block; color:var(--mute); overflow-wrap:anywhere; }
+.mproj a { color:var(--accent); }
+.mproj .err, #projects p.err { color:var(--warn); }
+#mform[hidden] { display:none; }
+.mproj > .racts { flex-direction:row; flex-wrap:wrap; margin:6px 0; }
+.mtask { display:flex; justify-content:space-between; gap:8px; padding:4px 0 4px 8px; margin-top:4px; border-left:3px solid var(--line); }
+.mtask.st-running { border-left-color:var(--accent); } .mtask.st-done { border-left-color:var(--ok); }
+.mtask.st-error, .mtask.st-stuck, .mtask.st-needs-answer { border-left-color:var(--warn); }
 /* ---- routines (sidebar) ---- */
 #routines { margin-top:6px; border-top:1px solid var(--line); padding-top:12px; }
 #routines h2 { font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--mute); margin:0 8px 8px; font-weight:600; }
@@ -227,3 +258,9 @@ main { position:relative; }
   .chip { min-height:40px; font-size:15px; }
   .pin .pjump, .pin .pdone { min-height:36px; }
 }
+#q { width:calc(100% - 16px); margin:0 8px 10px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:inherit; font:inherit; font-size:13px; }
+#results .qhit { margin-bottom:2px; }
+#results .qhit small { white-space:normal; color:var(--mute); line-height:1.35; }
+#results .qseat { font-size:11px; color:var(--mute); white-space:nowrap; }
+#results mark { background:color-mix(in srgb, var(--accent) 30%, transparent); color:inherit; border-radius:2px; }
+.qnote { margin:6px 14px; font-size:12px; color:var(--mute); }

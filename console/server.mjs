@@ -22,12 +22,14 @@ import { createLifecycle } from './lifecycle.mjs';
 import { guardedKillers, hostNeedle } from './procid.mjs';
 import { applyCtx, parseContextReply, ctxLevel, AUTOCOMPACT_BUFFER } from './context.mjs';
 import { runRetention, readLogText, restoreLog, gzPath, purgeArchive } from './retention.mjs';
+import { createSearch } from './searchidx.mjs';
 import { viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
 import { markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
 import { loadRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
+import { createMulti, loadDisciplines } from './multi.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { findPaths } = createRequire(import.meta.url)('./public/paths.js');   // the browser's preview detector: the same paths become Telegram attachments
@@ -101,6 +103,7 @@ const STATE_FILE = path.join(DATA, 'state.json');
 const TOKEN_FILE = path.join(DATA, 'token.txt');
 const TELEGRAM_FILE = ISOLATED ? path.join(DATA, 'telegram-off.json') : path.join(HOME, '.claude', 'secrets', 'seat-console-telegram.json');   // a test instance points at a file that never exists: nothing is sent
 const UPLOADS = path.join(DATA, 'uploads');
+const DISCIPLINES_FILE = arg('disciplines') ? path.resolve(arg('disciplines')) : path.join(HERE, 'disciplines.json');   // multi-sided projects: discipline -> seat (copy disciplines.example.json)
 const ROUTINES_FILE = arg('routines') ? path.resolve(arg('routines')) : path.join(HERE, 'routines.json');   // --routines <file>: the test instance runs a temporary routine from its own file
 const AUTH_FILE = path.join(HOME, '.claude', 'secrets', 'seat-console-auth.json');
 const MAX_PER_SEAT = 5;
@@ -205,6 +208,7 @@ const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = 
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
+const search = createSearch({ data: DATA, logFile, gzPath: (c) => gzPath(DATA, c) });   // full-text search over titles + chat text (searchidx.mjs)
 // Memory keeps a clipped copy of each logged event (memSlim) plus the byte range of its line in the jsonl, as a non-enumerable `logAt` (never serialized,
 // never spread into a page copy). /api/tool reads the full event back from there (fullEvent). An event without a range (not written yet) stays whole.
 const slimAt = (ev, start, end) => { Object.defineProperty(ev, 'logAt', { value: [start, end] }); return memSlim(ev); };
@@ -489,7 +493,7 @@ function handleLine(c, line, end) {
       if (tries <= QUOTA_MAX_TRIES) { c.quotaWait = { until: resumeAt(ev, state.usage[c.seat]?.windows, Date.now()), tries }; saveState(); broadcast({ conv: summary(c) }); info.text = `${ev.result}\n\n⏸ resumes by itself at ${new Date(c.quotaWait.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; console.log(`[quota] conv=${c.id.slice(0, 8)} stopped on the limit, resume at ${new Date(c.quotaWait.until).toISOString()} (try ${tries})`); }
       else { c.quotaTries = 0; info.text = `${ev.result}\n\n⏸ ${QUOTA_MAX_TRIES} resumes in a row hit the limit again; it needs a look`; console.log(`[quota] conv=${c.id.slice(0, 8)} gave up after ${QUOTA_MAX_TRIES} tries`); }
     } else if (!ev.is_error && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; saveState(); broadcast({ conv: summary(c) }); }   // a turn ended normally (a routine, a background agent after the reset): the work went on, no resume; the next limit counts from 1
-    if (ev.is_error) { r.done = null; tg.notify('error', info, PHONE).catch(notifyFailed); }
+    if (ev.is_error) { r.done = null; if (c.multi && !c.quotaWait) multi.settled(c, { error: String(ev.result || 'run ended with an error').slice(0, 300) }); tg.notify('error', info, PHONE).catch(notifyFailed); }
     else { r.done = { info, at: Date.now() }; settleDone(c); }   // the latest result wins; it is announced once ALL work of the conversation is over
     }
   }
@@ -535,6 +539,7 @@ function settleDone(c) {
   // Two turns finishing within the throttle window: the later one stays pending (re-checked every second) and goes out when the window has passed, it is never dropped.
   if (!doneThrottle.allow(c.id)) return;
   const { info } = r.done; r.done = null;
+  if (c.multi) multi.settled(c, { needsAnswer: !!info.needsAnswer });   // multi-sided project: task done when its .multi/out file exists (multi.mjs)
   if (!info.needsAnswer && quietRepeat(c, info.text)) { console.log(`[done] conv=${c.id.slice(0, 8)} notify=quiet (short repeat)`); return; }
   console.log(`[done] ${new Date().toISOString().slice(11, 19)} conv=${c.id.slice(0, 8)} notify=sent`);
   // The turn's files follow as replies to the done-message, under the same rules as /api/file (outFiles in hardening.mjs).
@@ -892,6 +897,7 @@ async function send(b) {
   if (rem ? !/^\/[^\0\r\n]*$/.test(cwd) : !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('cwd does not exist: ' + cwd);
   if (c && R(c).slash && Date.now() - R(c).slash.at < 600000) throw new Error('/' + R(c).slash.kind + ' is running on this conversation: send again when it has finished.');
   const created = !c;
+  if (c?.archived) c.archived = false;   // writing to it again = in use: back to the live list
   if (!c) { c = newConversation(seat, { cwd, model: b.model, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }
   // Anything below failing (spawn, bad image id, dead stdin) must not leave a ghost conversation behind that THIS call created.
   try {
@@ -975,12 +981,11 @@ const fiveHour = (name) => {
 };
 const quotaOf = (name) => { const q = fiveHour(name); return q ? { usage: q.util, resetsAt: q.resetsAt } : {}; };
 const tgUsage = async () => Object.fromEntries(Object.keys(SEATS).map((n) => [n, fiveHour(n)?.util]).filter(([, u]) => u != null));
-// 90 % warning, ONE per seat per window; names the seat with the most quota left.
+// 90 % warning, ONE per seat per window. It never names another seat: each seat has its own limit, work is never moved to dodge it.
 function quotaWatch(seat) {
   const q = fiveHour(seat); if (!q || q.expired || !quotaWarnDue(state.quotaWarned, seat, q.util, q.resetsAt / 1000)) return;
   saveState();
-  const alt = Object.keys(SEATS).filter((n) => n !== seat).map((name) => ({ name, util: fiveHour(name)?.util })).filter((x) => x.util != null).sort((a, b) => a.util - b.util)[0] || null;
-  tg.send(buildQuotaWarning({ seat, util: q.util, resetsAt: q.resetsAt, alt })).catch(notifyFailed);
+  tg.send(buildQuotaWarning({ seat, util: q.util, resetsAt: q.resetsAt })).catch(notifyFailed);
 }
 const tgStatus = async () => ({ seats: Object.keys(SEATS).map((name) => {
   return { name, ...quotaOf(name),
@@ -999,7 +1004,38 @@ async function tgRecover(which) { // 'all' or a conversation id prefix; a conver
 }
 const tgFind = (short) => { const c = Object.values(state.conversations).find((x) => x.id.startsWith(short)); return c && { id: c.id, seat: c.seat, title: c.title }; };
 const notifyFailed = (e) => console.log('telegram notify failed: ' + (e?.message || e));
-const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
+const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${p.tasks.length} task${p.tasks.length === 1 ? '' : 's'} starting`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
+
+// The Projects page lists project folders to start from: a folder under projectsDir (2 levels deep) that has one of these markers. Read at most once a minute.
+const PROJECT_MARKERS = ['.git', 'package.json', 'CLAUDE.md', 'BRIEF.md', 'PLAN.md', 'HANDOFF.md', path.join('docs', 'HANDOFF.md')];
+let foldersCache = { at: 0, list: [] };
+function projectFolders() {
+  if (Date.now() - foldersCache.at < 60e3) return foldersCache.list;
+  const root = DEFAULT_CWD, list = [];
+  const dirs = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory() && !/^[._]|^node_modules$/.test(e.name)).map((e) => path.join(d, e.name)); } catch { return []; } };
+  for (const d1 of dirs(root)) for (const d of [d1, ...dirs(d1)]) {
+    const hit = PROJECT_MARKERS.find((m) => fs.existsSync(path.join(d, m))); if (!hit) continue;
+    let mtime = 0; try { mtime = fs.statSync(path.join(d, hit)).mtimeMs; } catch {}
+    list.push({ name: path.relative(root, d), dir: d, mtime });
+  }
+  foldersCache = { at: Date.now(), list: list.sort((a, b) => b.mtime - a.mtime) };
+  return foldersCache.list;
+}
+
+// ---- multi-sided projects (multi.mjs): discipline -> its FIXED seat (console/disciplines.json); a seat at its limit makes its tasks wait, never another seat ----
+// No disciplines.json (or one naming an unknown seat): the console runs as usual, only multi-sided projects are off and say why.
+let DISC; try { DISC = loadDisciplines(DISCIPLINES_FILE, SEATS); } catch (e) { DISC = { map: {}, owner: Object.keys(SEATS)[0], off: e.code === 'ENOENT' ? 'copy console/disciplines.example.json to console/disciplines.json to turn multi-sided projects on' : e.message }; console.log('[multi] off: ' + DISC.off); }
+const multiOn = () => { if (DISC.off) throw new Error('multi-sided projects are off: ' + DISC.off); return multi; };
+const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({ multi: true }), deps: {
+  map: DISC.map, owner: DISC.owner, seats: SEATS, root: DEFAULT_CWD, windows: (seat) => state.usage[seat]?.windows, log: console.log,
+  send: (b) => send({ ...b, auto: true }),
+  idle: (id) => { const c = convOf(id); return !!c && !c.working && !c.turns && R(c).status !== 'working' && !R(c).perms.size; },
+  notify: (p, kind) => {
+    const head = { 'plan-ready': '🧩 Plan ready', integrating: '🧩 All tasks done, integration running', done: '✅ Multi-sided project done', 'integrate-error': '⚠️ Integration failed' }[kind] || kind;
+    const lines = [`<b>${head}</b> · <i>${esc(p.name)}</i>`, `<code>${esc(p.dir)}</code>`, ...p.tasks.map((t) => `• ${esc(t.id)} → <b>${esc(t.seat)}</b> (${esc(t.discipline)})${t.deps.length ? ' ⟵ ' + esc(t.deps.join(', ')) : ''}`), `${PHONE}/#multi-${p.id}`];
+    tg.send(lines.join('\n'), kind === 'plan-ready' ? [[{ text: '✅ Approve and start', callback_data: `x:${p.id}` }]] : null).catch(notifyFailed);
+  },
+} });
 
 // ---- routines: recurring prompts that only ASK at their due time (Telegram buttons) and start on the user's tap, never unattended (routines.mjs) ----
 const routines = createRoutines({ file: ROUTINES_FILE, state, save: saveState, deps: {
@@ -1161,6 +1197,7 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ready: true });
     if (req.method === 'GET' && url.pathname === '/api/seats') return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify(seatsView()));
     if (req.method === 'GET' && url.pathname === '/api/routines') return json(res, 200, routines.view());
+    if (req.method === 'GET' && url.pathname === '/api/multi') return json(res, 200, { projects: multi.view(), disciplines: DISC.map, owner: DISC.owner, off: DISC.off || null, folders: projectFolders() });
     if (req.method === 'GET' && url.pathname === '/api/digest') return json(res, 200, digestMessage(Date.now(), url.searchParams.get('kind') === 'evening' ? 'evening' : 'morning'));   // the digest text + buttons, nothing is sent
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
       const c = viewOf(url.searchParams.get('id')); if (!c) return json(res, 404, { error: 'no conversation' });
@@ -1173,6 +1210,12 @@ async function handler(req, res) {
       const c = viewOf(url.searchParams.get('conv')); if (!c) return json(res, 404, { error: 'no conversation' });
       const d = await toolDetailFull(c, url.searchParams.get('id') || ''); if (!d) return json(res, 404, { error: 'no such tool call' });
       return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify(d));
+    }
+    if (req.method === 'GET' && url.pathname === '/api/search') {   // ?q=words: every word in the title or the chat text, archived ones included
+      const all = [...Object.values(state.conversations), ...Object.values(state.remoteConvs)];
+      const partial = !(await search.refresh(all, { wait: false })) || search.building();
+      const hits = search.query(url.searchParams.get('q') || '', all).map((h) => { const c = viewOf(h.id), v = c && viewSummary(c); return v && { ...h, seat: v.seat, title: v.title, archived: !!v.archived, status: v.status, keep: !!v.keep }; }).filter(Boolean);
+      return json(res, 200, { hits, partial });
     }
     if (req.method === 'GET' && url.pathname === '/api/history') {
       const seat = url.searchParams.get('seat'); if (!hasKey(SEATS, seat)) return json(res, 404, { error: 'no seat' });
@@ -1220,6 +1263,39 @@ async function handler(req, res) {
         if (!ISOLATED) return json(res, 403, { error: 'test instance only' });
         return json(res, 200, await retentionRun());
       }
+      if (url.pathname === '/api/import') {   // a Claude Code session run outside the console (terminal, SDK) becomes a conversation here: its chat is copied into the log, the next send resumes it
+        let file; try { file = fs.realpathSync(String(b.file || '')); } catch { return json(res, 404, { error: 'no such file' }); }
+        const root = fs.realpathSync(path.join(HOME, '.claude', 'projects'));
+        if (!file.startsWith(root + path.sep) || !file.endsWith('.jsonl')) return json(res, 400, { error: 'not a session transcript' });
+        const sid = path.basename(file, '.jsonl'), seat = String(b.seat || '');
+        if (!hasKey(SEATS, seat)) return json(res, 400, { error: 'unknown seat' });
+        if ([...Object.values(state.conversations), ...Object.values(state.remoteConvs)].some((x) => x.sessionId === sid)) return json(res, 409, { error: 'already in the console' });
+        const out = []; let cwd = '', first = '', last = 0;
+        for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+          let j; try { j = JSON.parse(line); } catch { continue; }
+          if (j.isSidechain || j.isMeta) continue;
+          const ts = Date.parse(j.timestamp) || 0; if (ts) last = ts; if (!cwd && j.cwd) cwd = j.cwd;
+          const m = j.message, txt = typeof m?.content === 'string' ? m.content : Array.isArray(m?.content) && m.content.every((x) => x.type === 'text') ? m.content.map((x) => x.text).join('\n') : null;
+          if (j.type === 'user' && txt != null) { if (/^<(command|local-command)/.test(txt)) continue; first ||= txt; out.push({ type: 'console_user', text: txt, ts }); }
+          else if (j.type === 'user' && m) out.push({ type: 'user', message: m, session_id: sid });
+          else if (j.type === 'assistant' && m) out.push({ type: 'assistant', message: m, session_id: sid });
+        }
+        if (!first) return json(res, 400, { error: 'no user message in it' });
+        const c = newConversation(seat, { cwd: cwd && fs.existsSync(cwd) ? cwd : DEFAULT_CWD, mode: 'auto' });
+        delete state.conversations[c.id]; c.id = sid; c.sessionId = sid; c.started = true; c.imported = file; c.updatedAt = last || fs.statSync(file).mtimeMs;
+        fs.mkdirSync(path.dirname(logFile(c)), { recursive: true }); fs.writeFileSync(logFile(c), out.map((e) => JSON.stringify(e)).join('\n') + '\n');
+        state.conversations[c.id] = c; R(c).status = 'stopped'; try { setTitle(c, String(b.title || first).replace(/\s+/g, ' ').trim().slice(0, 60)); } catch { c.title = 'Imported session'; }
+        saveState(); broadcast({ conv: summary(c) });
+        return json(res, 200, { ok: true, conversationId: c.id, events: out.length });
+      }
+      if (url.pathname === '/api/multi') {   // multi-sided project: create (name, brief, dir, owner) | approve (id) | retry (id, task)
+        try {
+          const p = b.action === 'create' ? multiOn().create({ name: b.name, brief: b.brief, dir: b.dir, owner: b.owner || undefined })
+            : b.action === 'approve' ? multi.approve(String(b.id)) : b.action === 'cancel' ? multi.cancel(String(b.id)) : b.action === 'retry' ? multi.retry(String(b.id), b.task ? String(b.task) : undefined) : null;
+          if (!p) return json(res, 400, { error: 'unknown action' });
+          return json(res, 200, { ok: true, id: p.id });
+        } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
+      }
       if (url.pathname === '/api/routine') {
         if (b.action === 'tap') {   // test instance only: drives the Telegram button handler without a phone
           if (!ISOLATED) return json(res, 403, { error: 'test instance only' });
@@ -1263,7 +1339,7 @@ async function handler(req, res) {
         if (R(c).proc || R(c).starting) return json(res, 409, { error: 'a message started this conversation again: stop it first' });
         if (c.remote && hostInfoOf(c)) return json(res, 409, { error: `remote ${c.remote} unreachable: its host there could not be stopped, try again when it answers` });   // deleting now would orphan it // a send slipped in while the kill ran: deleting now would orphan its host
         delete state.conversations[c.id]; rt.delete(c.id); saveState();
-        fs.rmSync(logFile(c), { force: true }); fs.rmSync(logFile(c) + '.restore', { force: true }); purgeArchive(DATA, c); fs.rmSync(path.join(UPLOADS, c.id), { recursive: true, force: true });
+        fs.rmSync(logFile(c), { force: true }); fs.rmSync(logFile(c) + '.restore', { force: true }); purgeArchive(DATA, c); fs.rmSync(path.join(UPLOADS, c.id), { recursive: true, force: true }); search.forget(c.id);
         if (ctlOf(c)) rhost.remoteRmUploads(ctlOf(c), c.id);   // the copies made for its claude there
         for (const x of fs.readdirSync(path.dirname(logFile(c))).filter((n) => n.startsWith(c.id + '.host'))) fs.rmSync(path.join(path.dirname(logFile(c)), x), { force: true }); // host leftovers (log)
         broadcast({ removed: c.id }); return json(res, 200, { ok: true });
@@ -1306,6 +1382,7 @@ bindTailscale(); setInterval(bindTailscale, 10000).unref();
 if (!ISOLATED) tg.start();   // a test instance never polls Telegram
 if (crashLoopStart && !ISOLATED && crashWarnDue(state, Date.now())) { saveState(); tg.send('⚠️ Seat Console is restarting after an uncaught error (twice within a minute). See server.err.log.').catch(notifyFailed); }
 routines.start();
+setInterval(guard('multi', () => multi.tick()), 30000).unref();   // after reattachAll: never sends into a conversation still being reattached
 startRemotes();   // after `ready`: an unreachable remote never holds up the start
 reattachRemotes();   // same: conversations whose host runs on a remote are reconnected in the background
 // After a crash the interrupted conversations are offered on Telegram (one message, buttons) and never resumed without a tap: resuming spends quota.
@@ -1331,26 +1408,29 @@ function accountUsage(rem, ev) {
 // Read-only use of the seat's current access token; never refreshes it (that would rotate the CLI's refresh token). Expired token = keep the last value.
 // The same two calls, run ON a remote whose claude is logged in to the seat's account: the token never leaves that machine, only the numbers come back.
 const REMOTE_USAGE_JS = `const o=require(require('os').homedir()+'/.claude/.credentials.json').claudeAiOauth;const h={Authorization:'Bearer '+o.accessToken,'anthropic-beta':'oauth-2025-04-20'};
-Promise.all(['profile','usage'].map((p)=>fetch('https://api.anthropic.com/api/oauth/'+p,{headers:h}).then((r)=>r.json()))).then(([p,u])=>console.log(JSON.stringify({email:p.account&&p.account.email,five_hour:u.five_hour||null})))`;
-// Seat -> its five_hour window. The PC token first; expired (a seat whose work all runs on a remote) -> the remote with "account": seat.
+Promise.all(['profile','usage'].map((p)=>fetch('https://api.anthropic.com/api/oauth/'+p,{headers:h}).then((r)=>r.json()))).then(([p,u])=>console.log(JSON.stringify({email:p.account&&p.account.email,five_hour:u.five_hour||null,seven_day:u.seven_day||null})))`;
+// Seat -> its usage windows (five_hour, seven_day). The PC token first; expired (a seat whose work all runs on a remote) -> the remote with "account": seat.
 // The remote's answer counts only if its account email is the seat's own: a remote whose default login is another account never lands on this meter.
 async function seatUsage(seat) {
   const o = JSON.parse(fs.readFileSync(path.join(HOME, '.claude-seats', seat, '.credentials.json'), 'utf8')).claudeAiOauth;
   if (o?.accessToken && o.expiresAt > Date.now()) {   // expired: only the seat's own CLI refreshes it; the console never writes credentials
     const r = await fetch('https://api.anthropic.com/api/oauth/usage', { headers: { Authorization: 'Bearer ' + o.accessToken, 'anthropic-beta': 'oauth-2025-04-20' }, signal: AbortSignal.timeout(15000) });
-    return r.ok ? (await r.json()).five_hour : undefined;
+    return r.ok ? await r.json() : undefined;   // { five_hour, seven_day, ... }
   }
   const rem = REMOTES.find((x) => x.account === seat && !remoteDown.has(x.name)); if (!rem || !SEATS[seat].email) return undefined;
   const x = await rhost.sshRun(rem, rem.node + ' -', { input: REMOTE_USAGE_JS, timeout: 30000, max: 65536 });
   const j = x.code === 0 ? parseLine(x.out.toString().trim().split('\n').pop()) : null;
-  return j && j.email === SEATS[seat].email ? j.five_hour : undefined;
+  return j && j.email === SEATS[seat].email ? j : undefined;
 }
 async function pollUsage() {
   for (const seat of Object.keys(SEATS)) {
     try {
-      const w = await seatUsage(seat); if (!w || typeof w.utilization !== 'number') continue;
+      const u = await seatUsage(seat), w = u?.five_hour; if (!w || typeof w.utilization !== 'number') continue;
       // resets_at null = no 5 h window open (nothing used since the last reset): 0 %, shown as reset
-      state.usage[seat] = { windows: { five_hour: { utilization: w.utilization / 100, resetsAt: w.resets_at ? Math.round(Date.parse(w.resets_at) / 1000) : Math.floor(Date.now() / 1000) } }, at: Date.now() };
+      const windows = { five_hour: { utilization: w.utilization / 100, resetsAt: w.resets_at ? Math.round(Date.parse(w.resets_at) / 1000) : Math.floor(Date.now() / 1000) } };
+      const wk = u.seven_day;   // the weekly window: every seat shows its exact reset day + time
+      if (wk && typeof wk.utilization === 'number' && wk.resets_at) windows.seven_day = { utilization: wk.utilization / 100, resetsAt: Math.round(Date.parse(wk.resets_at) / 1000) };
+      state.usage[seat] = { windows, at: Date.now() };
       broadcast({ usage: { seat, ...state.usage[seat] } }); quotaWatch(seat);
     } catch {}   // missing creds / network / ssh: the event path still updates the meter
   }
@@ -1360,6 +1440,22 @@ if (!ISOLATED) { setInterval(() => pollUsage().catch(() => {}), 180e3).unref(); 
 setTimeout(() => retentionRun().catch((e) => console.log('[retention] failed: ' + e.message)), 30000).unref();
 setInterval(guard('retention', () => { if (viennaHour(Date.now()) === 4 && state.lastRetentionFor !== viennaYmd(Date.now())) retentionRun().catch((e) => console.log('[retention] failed: ' + e.message)); }), 60000).unref();
 // Idle processes are stopped after IDLE_REAP_MS (see ensureProc); checked at least once a minute.
+// Auto-archive: a conversation untouched for AUTO_ARCHIVE_DAYS moves to the archive, unless it is marked ★ Keep (⋯ menu)
+// or still has something going on. Nothing is deleted; search finds archived ones, and sending to one brings it back.
+const AUTO_ARCHIVE_DAYS = +arg('auto-archive-days') || 3;
+function autoArchive() {
+  const cut = Date.now() - AUTO_ARCHIVE_DAYS * 864e5;
+  for (const c of Object.values(state.conversations)) {
+    if (c.archived || c.keep || (c.updatedAt || 0) > cut) continue;
+    const r = R(c);
+    if (c.working || c.bg?.length || r.perms.size || c.needsAnswer || c.quotaWait || c.interrupted || r.status === 'working') continue;
+    c.archived = true; saveState(); broadcast({ conv: summary(c) });
+    console.log(`[auto-archive] conv=${c.id.slice(0, 8)} "${String(c.title).slice(0, 40)}": idle ${Math.floor((Date.now() - c.updatedAt) / 864e5)} d`);
+  }
+}
+if (!ISOLATED) { setInterval(guard('auto-archive', autoArchive), 10 * 60000).unref(); setTimeout(guard('auto-archive', autoArchive), 30000).unref(); }
+// Build the search index in the background after start (the first build reads every log once); later passes only read what was appended.
+setTimeout(() => search.refresh([...Object.values(state.conversations), ...Object.values(state.remoteConvs)]).then(() => console.log('[search] index ready')).catch((e) => console.log('[search] ' + e.message)), 5000).unref();
 setInterval(() => reapIdle().catch((e) => console.log('[idle] ' + e.message)), Math.min(60000, IDLE_REAP_MS / 2)).unref();
 // A quiet conversation's host-out file holds only what the jsonl already has: empty it so it does not grow for the life of the conversation.
 // Not while a jsonl append failed or a line threw (the file is then the only durable copy); compactFile re-checks that the file really is empty afterwards.

@@ -31,10 +31,9 @@ export function quotaWarnDue(warned, seat, util, resetsAtSec) {
   if (!(util >= 0.9) || (Object.hasOwn(warned, seat) && Math.abs(warned[seat] - resetsAtSec) < 600)) return false;
   warned[seat] = resetsAtSec; return true;
 }
-// alt = the seat with the lowest utilisation, { name, util } or null.
-export const buildQuotaWarning = ({ seat, util, resetsAt, alt }, now = Date.now()) => [
-  `🔴 <b>${esc(seat)}</b> at ${Math.round(util * 100)}% of the 5-hour quota`, resetTag(resetsAt, now),
-  alt ? `More room: <b>${esc(alt.name)}</b> (${Math.round(alt.util * 100)}%)` : null].filter(Boolean).join('\n');
+// No "another seat has quota left" line: each seat's limit is its own, and the console never moves work to another seat to dodge it.
+export const buildQuotaWarning = ({ seat, util, resetsAt }, now = Date.now()) => [
+  `🔴 <b>${esc(seat)}</b> at ${Math.round(util * 100)}% of the 5-hour quota`, resetTag(resetsAt, now)].filter(Boolean).join('\n');
 export const SEAT_EMOJI = { studio: '🎨', dev: '🧑‍💻', render: '🎬', info: '💼', ops: '⚙️' };
 const quote = (h, expandable) => `<blockquote${expandable ? ' expandable' : ''}>${h}</blockquote>`;
 const link = (url) => `<a href="${escAttr(url)}">Open in console ↗</a>`;
@@ -152,7 +151,7 @@ export function buildDigest(data, now, base) {
 // Uploads of every conversation share ONE serial queue (see sendFiles).
 let fileQueue = Promise.resolve();
 export const TG_FILE_MAX = 20 * 1024 * 1024;   // Telegram's own limit for a bot's getFile download
-export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error('compact is not available'); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: 'routines are off' }), onRoutineList = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000 }) {
+export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error('compact is not available'); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: 'routines are off' }), onRoutineList = null, onMulti = null, onMultiApprove = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000 }) {
   let warned = false;
   const base = () => (typeof phoneBase === 'function' ? phoneBase() : phoneBase); // a function when the console URL can change after start (Tailscale coming up late)
   const readCfg = () => {
@@ -267,7 +266,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       '<b>🤖 Seat Console</b>', '',
       '✍️ Plain message: I ask which seat gets it',
       `⚡ <code>/${esc(seats[0] || 'seat')} text</code>: straight to a seat, default model, auto (${seats.map((s) => '/' + esc(s)).join(' ')})`,
-      '📊 /status: what happened in the last 24 hours', '☀️ /digest: morning digest (also sent on its own at 08:00)', '🌆 /evening: evening digest (also sent on its own at 21:00)','🗂 /list: recent conversations', '🔄 /recover: conversations cut off by a crash', '⏰ /routines: scheduled routines (run only after your tap)', '↩️ Reply to a notification: continues that conversation', '🗜️ Reply to a notification with <code>/compact</code>: compacts the conversation context'].join('\n')));
+      '📊 /status: what happened in the last 24 hours', '☀️ /digest: morning digest (also sent on its own at 08:00)', '🌆 /evening: evening digest (also sent on its own at 21:00)','🧩 /multi: multi-sided project (name | folder, the brief on the next lines)', '🗂 /list: recent conversations', '🔄 /recover: conversations cut off by a crash', '⏰ /routines: scheduled routines (run only after your tap)', '↩️ Reply to a notification: continues that conversation', '🗜️ Reply to a notification with <code>/compact</code>: compacts the conversation context'].join('\n')));
     if (isStatusRequest(text)) { const d = buildDigest(await onStatus(), Date.now(), base()); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }
     if (/^\/digest(@\w+)?$/i.test(text) && onDigest) { const d = await onDigest('morning'); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }   // the morning digest on demand
     if (/^\/(evening(@\w+)?|digest(@\w+)?\s+evening)$/i.test(text) && onDigest) { const d = await onDigest('evening'); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }   // the evening digest on demand
@@ -281,6 +280,13 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     if (/^\/routines(@\w+)?$/i.test(text) && onRoutineList) { const d = onRoutineList(); return void (await say(d.text, { reply_markup: kb(d.rows) })); }
     const sc = new RegExp(`^/(${seats.join('|')})(?:@\\w+)?\\s+([\\s\\S]+)`, 'i').exec(text);
     if (sc) { let out; try { const seat = sc[1].toLowerCase(); await onNewTask({ seat, model: null, mode: 'auto', text: sc[2].trim() }); out = startedLine(seat, null, 'auto'); } catch (e) { out = errLine('Not started', e.message); } return void (await say(out)); }
+    const mp = /^\/multi(?:@\w+)?(?:[ \t]+([^\n]*))?(?:\n([\s\S]*))?$/i.exec(text);   // /multi Name | /folder (optional) + the brief on the next lines
+    if (mp && onMulti) {
+      const [name, dir] = String(mp[1] || '').split('|').map((x) => x.trim()), brief = String(mp[2] || '').trim();
+      if (!name || !brief) return void (await say('🧩 <code>/multi Project name | /optional/folder</code>\nThen the brief on the next lines.'));
+      let out; try { const p = await onMulti({ name, dir, brief }); out = `🧩 <b>${esc(p.name)}</b>: planning started on <b>${esc(p.owner)}</b> · <code>${esc(p.dir)}</code>\nWhen the plan is ready you get a message with an approve button.`; } catch (e) { out = errLine('Not started', e.message); }
+      return void (await say(out));
+    }
     if (text.startsWith('/')) return void (await say('🤷 Unknown command. <code>/help</code> shows what there is.'));
     // 3. a plain message: continues the conversation picked with "continue", else becomes a new task
     if (live(cont)) { const c = cont; cont = null; return void (await deliver(c.convId, text, msg, say, reqs)); }
@@ -324,6 +330,12 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       if (out.edit) await edit(out.edit.text, out.edit.rows ? kb(out.edit.rows) : undefined);
       return out.toast;
     }
+    if (kind === 'x' && onMultiApprove) {   // "approve and dispatch" under a multi-sided plan; the button goes, one tap
+      if (!/^[0-9a-f]{8}$/.test(a)) return 'unknown button';
+      let out; try { out = await onMultiApprove(a); } catch (e) { return String(e.message || e).slice(0, 190); }
+      await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+      return out;
+    }
     if (kind === 'k') {   // "Compact" button on a finished-message
       if (!/^[0-9a-f]{8}$/.test(a)) return 'unknown button';
       await onCompact(a);
@@ -366,7 +378,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     const cb = u.callback_query;
     if (!cb || !cfg.chatId) return;
     if (String(cb.message?.chat?.id) !== String(cfg.chatId)) { await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {}); return; } // strangers are ignored
-    if (/^[smdcrqk]:/.test(cb.data || '')) { let t; try { t = await pickerStep(cfg, cb); } catch (e) { t = 'failed: ' + e.message; } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(t, 190) }).catch(() => {}); return; }
+    if (/^[smdcrqkx]:/.test(cb.data || '')) { let t; try { t = await pickerStep(cfg, cb); } catch (e) { t = 'failed: ' + e.message; } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(t, 190) }).catch(() => {}); return; }
     const p = parseCallback(cb.data);
     let outcome;
     if (!p) outcome = 'unknown button';
@@ -398,7 +410,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       try {
         if (!cfg.chatId) ensureLinkCode();
         if (commandsFor && commandsFor !== cfg.botToken) { offset = 0; setOffset(0); } // the token changed while running: another bot's update ids start over
-        if (commandsFor !== cfg.botToken) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: 'status: the last 24 hours' }, ...seats.map((s) => ({ command: s, description: `new task on ${s} : default model, auto mode` })), { command: 'digest', description: 'morning digest: usage, stuck, finished overnight, errors' }, { command: 'evening', description: 'evening digest: finished today, stuck, errors, tomorrow' }, { command: 'list', description: 'recent conversations: continue or open' }, { command: 'recover', description: 'conversations cut off by a crash: resume them' }, { command: 'routines', description: 'scheduled routines: next due, run now' }] }); commandsFor = cfg.botToken; }
+        if (commandsFor !== cfg.botToken) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: 'status: the last 24 hours' }, ...seats.map((s) => ({ command: s, description: `new task on ${s} : default model, auto mode` })), { command: 'digest', description: 'morning digest: usage, stuck, finished overnight, errors' }, { command: 'evening', description: 'evening digest: finished today, stuck, errors, tomorrow' }, { command: 'list', description: 'recent conversations: continue or open' }, { command: 'recover', description: 'conversations cut off by a crash: resume them' }, { command: 'routines', description: 'scheduled routines: next due, run now' }, { command: 'multi', description: 'multi-sided project: name | folder, the brief on the next lines' }] }); commandsFor = cfg.botToken; }
         const ups = await call(cfg, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }, 45000);
         for (const u of ups) { offset = u.update_id + 1; setOffset(offset); await handleUpdate(readCfg() || cfg, u); }
       } catch (e) { log('telegram poll failed: ' + e.message); await new Promise((r) => setTimeout(r, 30000)); }

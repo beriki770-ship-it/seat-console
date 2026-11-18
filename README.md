@@ -18,11 +18,15 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 - **Permission modes per conversation:** `auto`, `ask` (approval cards in the chat: Allow once / Deny) and `bypass` (shown with a red badge).
 - **Restart-proof.** Each conversation's `claude.exe` runs inside its own detached host process. Restarting or crashing the console server does not interrupt a turn; at start the server reattaches to every host and replays missed output and pending approvals.
 - **Crash recovery.** A supervisor (scheduled task) restarts the server within seconds of any exit. After a PC crash, conversations that were mid-turn are marked `interrupted`. Nothing resumes by itself, because resuming spends quota: you resume them with `recover.ps1`, from the Telegram message, or with `/recover`.
-- **Telegram bot (optional).** Finished / failed / waiting-for-approval notifications, Allow / Deny buttons, reply to a notification to continue that conversation (text, photo or file), start a new task from the phone, `/list`, `/status`, `/digest`, `/evening`, `/recover`, `/routines`. Images and PDFs a turn produces are sent along with the done message.
+- **Telegram bot (optional).** Finished / failed / waiting-for-approval notifications, Allow / Deny buttons, reply to a notification to continue that conversation (text, photo or file), start a new task from the phone, `/list`, `/status`, `/digest`, `/evening`, `/recover`, `/routines`, `/multi`. Images and PDFs a turn produces are sent along with the done message.
 - **Routines.** Recurring prompts on a cron schedule. They never run unattended: at the due time you get a Telegram message with Run / Skip buttons, and the run starts on your tap (or with "Run now" in the web sidebar).
+- **Search and auto-archive.** One search box over the titles and chat text of every conversation, archived ones included. A conversation untouched for 3 days moves to the archive by itself unless you mark it ★ Keep; sending to an archived one brings it back. Long seat lists end in "Show N more".
+- **Import a terminal session.** A Claude Code session you ran in a terminal or through the SDK becomes a console conversation (`POST /api/import`, see [Scripting](#scripting)); the next message resumes it.
+- **Multi-sided projects (optional).** One brief is split into tasks by a planner turn; you approve the plan once, then each task runs as its own conversation on the seat fixed for its discipline (design, backend, deploy, ...), in parallel, with dependencies, and the owner seat runs a final integration. The **Projects** page starts and follows them; Telegram has `/multi` and an approve button. See [`disciplines.json`](#disciplinesjson-optional).
+- **Usage limits stay per seat.** On Team and Enterprise plans each seat's limit is its own. The console never moves work to another seat to dodge a limit: a task or routine whose seat is at its limit waits for the reset (or you run it there anyway).
 - **Daily digests** at 08:00 and 21:00: quota per seat, stuck conversations, what finished, errors in the server log, today's routines.
 - **Phone-friendly, installable (PWA).** Works over Tailscale with Basic auth; with `tailscale serve` you get HTTPS and can install it as an app.
-- **Handy extras.** Attachments of any file type, per-seat 5-hour usage bar, context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
+- **Handy extras.** Attachments of any file type, per-seat usage bars (5-hour and weekly window, with the reset day and time), context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
 - **Zero npm dependencies.** Plain Node.js modules and static files. No build step.
 
 ## Requirements
@@ -91,6 +95,20 @@ copy console\routines.example.json console\routines.json
 
 Each entry: `id`, `prompt` (inline text) or `promptFile` (a Markdown file; YAML front matter is stripped), `cron` (5 fields), `seat`, `cwd`, `enabled`, `mode` (`auto`), and optional `model` / `effort`. The file is re-read when it changes, so no restart is needed.
 
+### `disciplines.json` (optional)
+
+Turns on multi-sided projects. Each discipline maps to one seat from `seats.json`; `owner` is the seat that writes the plan and runs the final integration.
+
+```powershell
+copy console\disciplines.example.json console\disciplines.json
+```
+
+```json
+{ "owner": "dev", "disciplines": { "design": "studio", "frontend": "studio", "backend": "dev", "deploy": "ops" } }
+```
+
+Without the file (or with a seat name that is not in `seats.json`) the console runs as usual and only the Projects page says why it is off. The planner writes `PLAN.md` and `.multi/plan.json` in the project folder; a task counts as done when its seat has written `.multi/out/<task>.md`. The seat of a task always comes from this file: a seat at its usage limit makes its tasks wait for the reset, they are never moved to another seat.
+
 ## Sign in each seat
 
 Run this once per seat in a normal PowerShell window. A browser opens: sign in with the account you want for that seat.
@@ -128,7 +146,7 @@ The Attach button in the composer takes any file, up to 50 MB (the page holds it
 
 ### Files the console writes
 
-All of these are gitignored: `console\state.json`, `console\logs\` (one JSONL per conversation), `console\uploads\`, `console\token.txt` (CSRF token for every POST), `console\server.log`, `console\supervisor.log`. Two secret files live outside the repo, in `%USERPROFILE%\.claude\secrets\`:
+All of these are gitignored: `console\state.json`, `console\logs\` (one JSONL per conversation), `console\uploads\`, `console\search\` (the search index, a cache: deleting it only costs one rebuild), `console\token.txt` (CSRF token for every POST), `console\server.log`, `console\supervisor.log`. Two secret files live outside the repo, in `%USERPROFILE%\.claude\secrets\`:
 
 - `seat-console-auth.json`: user name and a random password for remote (non-loopback) access. Created on first start.
 - `seat-console-telegram.json`: your bot token and linked chat id (see below).
@@ -216,6 +234,15 @@ The console reaches each remote host over `ssh -W` (stdio forwarding), so no por
 ```
 
 `send.ps1` prints `conversationId: <id>`; without `-Conversation` it starts a new conversation. Put the text in a UTF-8 file.
+
+To bring a session you ran in a terminal into the console, POST its transcript (a `.jsonl` under `~/.claude/projects`) with the CSRF token from `console\token.txt`:
+
+```powershell
+$t = Get-Content console\token.txt
+Invoke-RestMethod http://127.0.0.1:4850/api/import -Method Post -Headers @{ 'X-Seat-Token' = $t } -ContentType 'application/json' -Body (@{ file = "$env:USERPROFILE\.claude\projects\<folder>\<session-id>.jsonl"; seat = 'dev' } | ConvertTo-Json)
+```
+
+The chat text is copied into the console's log (tool calls and their output are kept, sub-agent lines are not) and the next message resumes that session on the seat you named.
 
 ## Tests
 

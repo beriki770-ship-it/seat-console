@@ -63,8 +63,7 @@ const wn = {};
 assert.ok(!quotaWarnDue(wn, 'ops', 0.89, 1000) && quotaWarnDue(wn, 'ops', 0.9, 1000) && !quotaWarnDue(wn, 'ops', 0.95, 1000) && !quotaWarnDue(wn, 'ops', 0.97, 1005));
 assert.ok(quotaWarnDue(wn, 'ops', 0.91, 1000 + 5 * 3600) && quotaWarnDue(wn, 'dev', 0.92, 1000) && !quotaWarnDue(wn, 'constructor', NaN, 1));
 const qw = ok(buildQuotaWarning({ seat: 'ops', util: 0.92, resetsAt: new Date(2026, 9, 13, 19, 40).getTime(), alt: { name: 'info', util: 0.12 } }, T0));
-assert.equal(qw, '🔴 <b>ops</b> at 92% of the 5-hour quota\n🔁 resets 19:40\nMore room: <b>info</b> (12%)');
-assert.ok(!ok(buildQuotaWarning({ seat: 'ops', util: 0.9, resetsAt: T0 + 1000, alt: null }, T0)).includes('More room'));
+assert.equal(qw, '🔴 <b>ops</b> at 92% of the 5-hour quota\n🔁 resets 19:40');   // never names another seat, even if one is passed
 // a 200-char command shows in full; one over PERM_MAX is not shown in full and sends the reader to the console
 const cmd200 = 'c'.repeat(200);
 assert.ok(ok(buildMessage('perm', { seat: 'ops', title: 'T', tool: 'Bash', input: { command: cmd200 }, convId: id }, BASE)).includes(cmd200));
@@ -348,7 +347,7 @@ await new Promise((r) => setTimeout(r, 400)); assert.equal(rec.sent.length, 2);
 }
 // setMyCommands registered /status first, then the shortcuts + /list + /recover + /routines
 const cmds = calls.find((c) => c.method === 'setMyCommands').body.commands.map((c) => c.command);
-assert.deepEqual(cmds, ['status', 'studio', 'dev', 'render', 'info', 'ops', 'digest', 'evening', 'list', 'recover', 'routines']);
+assert.deepEqual(cmds, ['status', 'studio', 'dev', 'render', 'info', 'ops', 'digest', 'evening', 'list', 'recover', 'routines', 'multi']);
 // every message the bot sent through the flow was valid HTML
 for (const c of calls) if (['sendMessage', 'editMessageText'].includes(c.method) && c.body.parse_mode) ok(c.body.text);
 // HTML rejected -> one plain-text retry, logged, nothing lost

@@ -131,6 +131,10 @@ const labels = b.edit.rows.flat().map((x) => x.text); assert.ok(labels[0].starts
 assert.ok(b.edit.rows.flat().every((x) => x.callback_data.length <= 64)); assert.equal(w.r.view()[0].decision, 'blocked');
 const anyway = b.edit.rows[0][0].callback_data, other = b.edit.rows.flat().find((x) => x.text.includes('studio')).callback_data;
 w.load.ops.alive = 0; w.load.ops.usage = 0.96; b = await w.r.tap(cbR); assert.equal(b.toast, 'ops at 96%'); assert.equal(w.started.length, 0);
+assert.deepEqual(b.edit.rows.flat().map((x) => x.text), ['▶️ Anyway (ops)', '⏭️ Skip'], 'at its usage limit no other seat is offered');
+const otherOld = await w.r.tap(other); assert.equal(otherOld.toast, 'ops at 96%'); assert.equal(w.started.length, 0, 'an old other-seat button never runs while ops is at its limit');
+w.load.ops.alive = 3; w.load.ops.usage = 0.97; b = await w.r.tap(cbR); assert.deepEqual(b.edit.rows.flat().map((x) => x.text), ['▶️ Anyway (ops)', '⏭️ Skip'], 'cap AND limit = quota block');
+w.load.ops.alive = 3; w.load.ops.usage = 0.1;
 assert.equal((await w.r.tap(other)).toast, 'started'); assert.equal(w.started[0].seat, 'studio'); assert.equal(w.r.view()[0].decision, 'run');
 w = world(null, at('2026-10-13 19:00')); w.t = at('2026-10-13 20:00'); await w.r.tick(); w.load.ops.usage = 0.97; b = await w.r.tap(w.asks[0].rows[0][0].callback_data);
 assert.equal((await w.r.tap(b.edit.rows[0][0].callback_data)).toast, 'started'); assert.equal(w.started[0].seat, 'ops');   // anyway: same seat despite 97 %

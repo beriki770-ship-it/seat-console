@@ -15,10 +15,14 @@
 <div id="saveBanner" role="alert" hidden>The console cannot save its state file. Conversations are kept in memory only: a restart now would lose what happened since the last good save.</div>
 <aside data-sid="seat-list" data-title="Seats and their conversations">
   <div class="ahead"><h1>Seat Console</h1><button type="button" id="foldall" title="Fold or expand every seat's conversation list">Fold all</button></div>
+  <input id="q" type="search" dir="auto" placeholder="Search all conversations (archived too)" aria-label="Search conversations" autocomplete="off" spellcheck="false">
+  <nav id="results" aria-live="polite" hidden></nav>
+  <section id="multi" data-sid="multi" data-title="Projects: link to the Projects page and the projects still running"></section>
   <nav id="seats"></nav>
   <section id="routines" data-sid="routines" data-title="Scheduled routines (ask first, run on tap)"></section>
 </aside>
 <main data-sid="conversation" data-title="Conversation">
+  <section id="projects" data-sid="projects" data-title="Projects: start and follow multi-sided projects"></section>
   <header id="head" dir="auto"></header>
   <div id="ctxscrim" hidden></div>
   <div id="ctxpanel" role="dialog" aria-label="Context window" hidden></div>
