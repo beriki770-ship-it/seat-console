@@ -23,7 +23,8 @@ import { guardedKillers, hostNeedle } from './procid.mjs';
 import { applyCtx, parseContextReply, ctxLevel, AUTOCOMPACT_BUFFER } from './context.mjs';
 import { runRetention, readLogText, restoreLog, gzPath, purgeArchive } from './retention.mjs';
 import { createSearch } from './searchidx.mjs';
-import { viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
+import { TZ as DIGEST_TZ, viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
+import { t, tn, hm, useLanguage, pickLang, LANGS, RTL } from './i18n.mjs';
 import { markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
 import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
@@ -117,6 +118,7 @@ const settingsCtx = () => ({ seats: SEATS, disciplines: fs.existsSync(DISCIPLINE
 let settingsNow = readSettings(SETTINGS_FILE, settingsCtx());
 if (settingsNow.error) console.log('[settings] ' + settingsNow.error);
 const SET = () => settingsNow.settings;
+useLanguage(() => SET().language || 'en');   // the bot speaks the language chosen in Settings, from its next message on (no choice yet: English)
 let restartNeeded = false;   // a config file the server reads only at start was changed (seats, remotes, disciplines): the page offers "Restart now"
 const canWrite = (argName) => !ISOLATED || !!arg(argName);   // a test instance never edits the real config files
 const MAX_PER_SEAT = 5;
@@ -183,7 +185,7 @@ const hasKey = (o, k) => typeof k === 'string' && Object.hasOwn(o, k);
 // A transient lock on state.json must not take the server down: 3 tries, then log and keep the in-memory state (the next save writes it).
 // Three failures in a row: one Telegram warning and a red banner in the page until a save works again (a silent failure means a crash loses everything since).
 const saveFails = failCounter(3,
-  () => { saveError = true; try { broadcast({ saveError: true }); tg.send('⚠️ Seat Console cannot write state.json (3 saves failed in a row). Conversations are kept in memory only until it works again.').catch(notifyFailed); } catch {} }, // try: at startup broadcast/tg are not defined yet
+  () => { saveError = true; try { broadcast({ saveError: true }); tg.send('⚠️ ' + t('bot.server.saveFailed')).catch(notifyFailed); } catch {} }, // try: at startup broadcast/tg are not defined yet
   () => { saveError = false; try { broadcast({ saveError: false }); } catch {} });
 let saveError = false;
 function saveState() {
@@ -531,8 +533,8 @@ function slashDone(c, ev, slash) {
   const r = R(c); r.slash = null; r.compacting = false;
   if (slash?.kind === 'compact' && slash.notify) {
     const m = slash.boundary, v = ctxView(c), k = (n) => (n >= 1000 ? Math.round(n / 100) / 10 + 'k' : String(n));
-    tg.send(m ? `🗜️ <b>${esc(c.seat)}</b> · <i>${esc(clipChars(c.title, 40))}</i> · Compact: ${k(m.pre_tokens)} ← ${k(m.post_tokens)}${v?.pct != null ? ` (🧠 ${Math.round(v.pct)}%)` : ''}`
-      : `⚠️ <b>${esc(c.seat)}</b> · <i>${esc(clipChars(c.title, 40))}</i> · Compact failed`).catch(notifyFailed);
+    tg.send(m ? `🗜️ <b>${esc(c.seat)}</b> · <i>${esc(clipChars(c.title, 40))}</i> · ${t('bot.compact.done', { from: k(m.pre_tokens), to: k(m.post_tokens) })}${v?.pct != null ? ` (🧠 ${Math.round(v.pct)}%)` : ''}`
+      : `⚠️ <b>${esc(c.seat)}</b> · <i>${esc(clipChars(c.title, 40))}</i> · ${t('bot.compact.failedShort')}`).catch(notifyFailed);
   }
   broadcast({ conv: summary(c) });
 }
@@ -576,7 +578,7 @@ setInterval(guard('quota', () => {
       .catch((e) => {   // retried twice, a minute apart; then it needs a person (a write that failed may already have logged the message)
         const fails = (w.fails || 0) + 1; c.quotaWait = fails < 3 ? { until: Date.now() + 60e3, tries: w.tries, fails } : undefined; saveState();
         console.log(`[quota] conv=${c.id.slice(0, 8)} resume send failed (${fails}/3): ${e.message}`);
-        if (fails >= 3) tg.notify('error', { seat: c.seat, title: c.title, text: `⏸ the automatic resume after the usage limit failed 3 times: ${e.message}`, convId: c.id, files: [] }, PHONE).catch(notifyFailed);
+        if (fails >= 3) tg.notify('error', { seat: c.seat, title: c.title, text: '⏸ ' + t('bot.server.resumeFailed', { error: e.message }), convId: c.id, files: [] }, PHONE).catch(notifyFailed);
       })
       .finally(() => { quotaBusy.delete(c.id); broadcast({ conv: summary(c) }); });
   }
@@ -1040,7 +1042,7 @@ async function tgRecover(which) { // 'all' or a conversation id prefix; a conver
 }
 const tgFind = (short) => { const c = Object.values(state.conversations).find((x) => x.id.startsWith(short)); return c && { id: c.id, seat: c.seat, title: c.title }; };
 const notifyFailed = (e) => console.log('telegram notify failed: ' + (e?.message || e));
-const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${p.tasks.length} task${p.tasks.length === 1 ? '' : 's'} starting`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
+const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${tn('bot.multi.starting', p.tasks.length)}`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
 
 // The Projects page lists project folders to start from: a folder under projectsDir (2 levels deep) that has one of these markers. Read at most once a minute.
 const PROJECT_MARKERS = ['.git', 'package.json', 'CLAUDE.md', 'BRIEF.md', 'PLAN.md', 'HANDOFF.md', path.join('docs', 'HANDOFF.md')];
@@ -1072,9 +1074,9 @@ const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({
   models: () => modelsSnap,   // per seat, what the planner may pick from for each task (refreshModels below)
   idle: (id) => { const c = convOf(id); return !!c && !c.working && !c.turns && R(c).status !== 'working' && !R(c).perms.size; },
   notify: (p, kind) => {
-    const head = { 'plan-ready': '🧩 Plan ready', integrating: '🧩 All tasks done, integration running', done: '✅ Multi-sided project done', 'integrate-error': '⚠️ Integration failed' }[kind] || kind;
+    const head = { 'plan-ready': '🧩 ' + t('bot.multi.planReady'), integrating: '🧩 ' + t('bot.multi.integrating'), done: '✅ ' + t('bot.multi.done'), 'integrate-error': '⚠️ ' + t('bot.multi.integrateError') }[kind] || kind;
     const lines = [`<b>${head}</b> · <i>${esc(p.name)}</i>`, `<code>${esc(p.dir)}</code>`, ...p.tasks.map((t) => `• ${esc(t.id)} → <b>${esc(t.seat)}</b> (${esc(t.discipline)})${t.deps.length ? ' ⟵ ' + esc(t.deps.join(', ')) : ''}`), `${PHONE}/#multi-${p.id}`];
-    tg.send(lines.join('\n'), kind === 'plan-ready' ? [[{ text: '✅ Approve and start', callback_data: `x:${p.id}` }]] : null).catch(notifyFailed);
+    tg.send(lines.join('\n'), kind === 'plan-ready' ? [[{ text: '✅ ' + t('bot.multi.approve'), callback_data: `x:${p.id}` }]] : null).catch(notifyFailed);
   },
 } });
 
@@ -1091,7 +1093,7 @@ function tailOf(file, bytes) {
 }
 // kind 'morning': since 20:00, today's routines. 'evening': since 08:00, tomorrow's routines (+24 h from the slot, so a late one sent at 07:00 lists that same day). slot = dueSlot() result for the late/skipped lines.
 function digestMessage(now = Date.now(), kind = 'morning', slot = null) {
-  const evening = kind === 'evening', { since, routinesAt } = digestRefs(kind, now, slot), sinceLabel = viennaHm(since);
+  const evening = kind === 'evening', { since, routinesAt } = digestRefs(kind, now, slot), sinceLabel = hm(since, DIGEST_TZ);
   const convs = Object.values(state.conversations).filter((c) => !c.archived).map((c) => {
     const r = R(c), status = effStatus(c), live = status === 'working' || status === 'waiting';
     // only conversations touched since 20:00 (evening: 08:00) have their log read for a result (a stopped 66 MB log is not loaded for nothing)
@@ -1143,6 +1145,7 @@ const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['
   // installable app (PWA): the manifest, its icons and the service worker must be same-origin for Chrome/Edge "Install app"
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/icon-maskable-512.png': ['icon-maskable-512.png', 'image/png'], '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'] };
+for (const c of Object.keys(LANGS)) STATIC[`/locales/${c}.json`] = [`locales/${c}.json`, 'application/json; charset=utf-8'];   // the page's strings (i18n.mjs)
 // ---- file previews: GET /api/file streams a file the UI found named in a message ----
 const PROJECTS = DEFAULT_CWD;
 const MIME = { mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
@@ -1238,7 +1241,7 @@ async function settingsView() {
     disciplines: disc ? { owner: disc.owner, disciplines: disc.disciplines || {}, off: DISC.off || null } : null,
     routines: routines.view().map((r) => ({ ...r, prompt: rlist.find((x) => x?.id === r.id)?.prompt ?? null })),
     remotes: (Array.isArray(rem) ? rem : []).map((r) => ({ ...r, active: REMOTES.some((x) => x.name === r.name), down: remoteDown.has(r.name) })),
-    models: Object.fromEntries(Object.keys(SEATS).map((n) => [n, modelsSnap[n] || []])), error: problems.filter(Boolean).join(' · ') || null };
+    models: Object.fromEntries(Object.keys(SEATS).map((n) => [n, modelsSnap[n] || []])), languages: LANGS, error: problems.filter(Boolean).join(' · ') || null };
 }
 // The request must come from this console's own page (Referer or Origin): /api/file and /api/restart.
 const fromPage = (req) => { let o = null; try { o = new URL(req.headers.referer || req.headers.origin || '').origin; } catch {} return !!o && ALLOWED_ORIGINS.includes(o); };
@@ -1292,7 +1295,7 @@ async function settingsPost(p, b) {
     return changed({ ok: true, restartNeeded: true });
   }
   if (p === '/api/settings/telegram') {
-    if (b.action === 'test') { const m = await tg.send('✅ Test message from the Seat Console settings page.'); if (!m) throw new Error(tg.readCfg() ? 'the chat is not linked yet' : 'no bot token yet'); return { ok: true }; }
+    if (b.action === 'test') { const m = await tg.send('✅ ' + t('bot.server.testMessage')); if (!m) throw new Error(tg.readCfg() ? 'the chat is not linked yet' : 'no bot token yet'); return { ok: true }; }
     if (ISOLATED) throw new Error('test instance: Telegram is off here');
     const cfg = telegramToken(readJsonFile(TELEGRAM_FILE, {}), String(b.token || '').trim());
     fs.mkdirSync(path.dirname(TELEGRAM_FILE), { recursive: true }); writeJsonAtomic(TELEGRAM_FILE, cfg, 0o600); console.log('[settings] telegram bot token saved');
@@ -1348,7 +1351,10 @@ async function handler(req, res) {
       const [file, type] = STATIC[url.pathname];
       const raw = fs.readFileSync(path.join(HERE, 'public', file));
       let body = type.startsWith('image/') ? raw : raw.toString('utf8');   // PNG icons stay bytes: a utf8 round trip corrupts them
-      if (file === 'index.html') body = body.replace('__TOKEN__', TOKEN);
+      if (file === 'index.html') {   // the language: Settings' choice, else the browser's (Accept-Language), else English; he/ar right-to-left
+        const lg = SET().language || pickLang(req.headers['accept-language']);
+        body = body.replace('__TOKEN__', TOKEN).replace('<html lang="en">', `<html lang="${lg}" dir="${RTL.has(lg) ? 'rtl' : 'ltr'}">`);
+      }
       return sendZ(req, res, 200, type, body);
     }
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ready: true });
@@ -1577,7 +1583,7 @@ function bindTailscale() {
 }
 bindTailscale(); setInterval(bindTailscale, 10000).unref();
 if (!ISOLATED) tg.start();   // a test instance never polls Telegram
-if (crashLoopStart && !ISOLATED && crashWarnDue(state, Date.now())) { saveState(); tg.send('⚠️ Seat Console is restarting after an uncaught error (twice within a minute). See server.err.log.').catch(notifyFailed); }
+if (crashLoopStart && !ISOLATED && crashWarnDue(state, Date.now())) { saveState(); tg.send('⚠️ ' + t('bot.server.crashLoop')).catch(notifyFailed); }
 routines.start();
 setInterval(guard('multi', () => multi.tick()), 30000).unref();   // after reattachAll: never sends into a conversation still being reattached
 // Model lists for the planner: Claude seats share the main list, agent seats ask their own CLI (cached 10 min in agentModels).

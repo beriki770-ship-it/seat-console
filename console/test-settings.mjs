@@ -21,6 +21,11 @@ t('validation: types, ranges, unknown keys, models of known seats only', () => {
   for (const bad of [{ claudeResets: 'yes' }, { autoArchiveDays: -1 }, { autoArchiveDays: 1.5 }, { idleReapMinutes: 0 }, { nope: true }, { models: { ghost: 'x' } }, { models: { dev: 'a b' } }, null, []])
     assert.throws(() => validateSettings(bad, seats), undefined, JSON.stringify(bad));
 });
+t('language: empty (the browser decides) or one of the shipped languages', () => {
+  assert.equal(defaults({ seats }).language, '');
+  assert.deepEqual(validateSettings({ language: 'he' }, seats), { language: 'he' }); assert.deepEqual(validateSettings({ language: 'zh-CN' }, seats), { language: 'zh-CN' }); assert.deepEqual(validateSettings({ language: '' }, seats), { language: '' });
+  for (const bad of ['xx', 'EN', 'zh', 3, null]) assert.throws(() => validateSettings({ language: bad }, seats), /language/, String(bad));
+});
 t('read: missing = first run with defaults; a broken file = defaults + the reason', () => {
   assert.deepEqual(readSettings(file, { seats }), { settings: defaults({ seats }), firstRun: true, error: null });
   fs.writeFileSync(file, '{"claudeResets": 1}'); const r = readSettings(file, { seats });

@@ -2,6 +2,7 @@
 // Pure functions only: server.mjs collects the facts (conversations, usage, server.log, routines), this file decides what is stuck / finished / worth a line and builds the text.
 import { wallAsUtc, dueBetween } from './cron.mjs';
 import { bar, resetTag, SEAT_EMOJI, esc, escClip, clip, summaryText } from './telegram.mjs';
+import { t, tn, hm, fmt, num } from './i18n.mjs';
 
 export const TZ = process.env.SEAT_CONSOLE_TZ || 'Europe/Vienna';   // wall clock of the digests and routine crons (README: Configure)
 export const MORNING_CRON = '0 8 * * *', EVENING_CRON = '0 21 * * *';
@@ -71,48 +72,48 @@ export function digestRoutines(list, now) {
   return out.sort((a, b) => a.at - b.at);
 }
 
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const mins = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
-const SLOT_NAME = { morning: 'Morning digest', evening: 'Evening digest' };
+const mins = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? tn('bot.dur.min', m) : tn('bot.dur.h', Math.round(m / 60)); };
+const slotName = (kind) => t(kind === 'evening' ? 'bot.digest.evening' : 'bot.digest.morning');
+const at = (ms) => hm(ms, TZ);
 // d = { seats:[{ name, usage: 0..1|null, resetsAt }], stuck, finished, finishedTotal, errors:{count,last}, sinceLabel, routines:[{id,seat,at}], slot?: dueSlot() result } -> { text (HTML), rows (inline keyboard | null) }
 export const buildMorningDigest = (d, now, base) => buildDigest(d, now, base, false);
 // Evening: the same sections for the day since 08:00 and tomorrow's routines; no usage block (d.seats is not read).
 export const buildEveningDigest = (d, now, base) => buildDigest(d, now, base, true);
 function buildDigest(d, now, base, evening) {
-  const w = wall(now), lines = [];
+  const lines = [];
   // a late slot says so in its FIRST line: the user reads "21:00" at 07:00 and must know why
-  if (d.slot?.late) lines.push(`⏰ <b>Late</b> · the server was not available at ${viennaHm(d.slot.at)}`);
-  if (d.slot?.skipped) lines.push(`<i>${SLOT_NAME[d.slot.skipped.kind]} of ${viennaHm(d.slot.skipped.at)} was not sent: only the latest is sent</i>`);
+  if (d.slot?.late) lines.push(`⏰ <b>${t('bot.digest.late')}</b> · ${t('bot.digest.lateWhy', { time: at(d.slot.at) })}`);
+  if (d.slot?.skipped) lines.push(`<i>${t('bot.digest.skipped', { digest: slotName(d.slot.skipped.kind), time: at(d.slot.skipped.at) })}</i>`);
   if (lines.length) lines.push('');
-  lines.push(`${evening ? '🌆 <b>Good evening</b>' : '☀️ <b>Good morning</b>'} · <i>${DAYS[w.getUTCDay()]} ${String(w.getUTCDate()).padStart(2, '0')}.${String(w.getUTCMonth() + 1).padStart(2, '0')}</i>`, '');
+  lines.push(`${evening ? '🌆' : '☀️'} <b>${t(evening ? 'bot.digest.goodEvening' : 'bot.digest.goodMorning')}</b> · <i>${fmt(now, { weekday: 'long', day: 'numeric', month: 'numeric' }, TZ)}</i>`, '');
   if (!evening) {
-    lines.push("<b>📊 Quota · 5 hours</b>");
-    for (const s of d.seats) lines.push(`${SEAT_EMOJI[s.name] || '🔹'} <b>${esc(s.name)}</b>  ${s.usage == null ? '<i>no data</i>' : [bar(s.usage), resetTag(s.resetsAt, now)].filter(Boolean).join(' · ')}`);
+    lines.push(`<b>📊 ${t('bot.digest.quota')}</b>`);
+    for (const s of d.seats) lines.push(`${SEAT_EMOJI[s.name] || '🔹'} <b>${esc(s.name)}</b>  ${s.usage == null ? `<i>${t('bot.digest.noData')}</i>` : [bar(s.usage), resetTag(s.resetsAt, now)].filter(Boolean).join(' · ')}`);
     lines.push('');
   }
   const rows = [];
   if (d.stuck.length) {
-    lines.push(`⚠️ <b>Stuck</b> (${d.stuck.length})`);
+    lines.push(`⚠️ <b>${t('bot.digest.stuck')}</b> (${num(d.stuck.length)})`);
     for (const c of d.stuck.slice(0, STUCK_MAX)) {
-      lines.push(`${c.kind === 'waiting' ? '⏳' : '⚙️'} <b>${esc(c.seat)}</b> · <i>${escClip(c.title, 40)}</i> · ${c.kind === 'waiting' ? 'waiting for approval' : 'idle'} ${mins(c.quietMs)}`);
+      lines.push(`${c.kind === 'waiting' ? '⏳' : '⚙️'} <b>${esc(c.seat)}</b> · <i>${escClip(c.title, 40)}</i> · ${t(c.kind === 'waiting' ? 'bot.digest.waitingFor' : 'bot.digest.idleFor', { time: mins(c.quietMs) })}`);
       rows.push([{ text: `↗ ${c.seat} · ${clip(c.title, 24)}`, url: `${base}/#${c.id}` }]);
     }
-    if (d.stuck.length > STUCK_MAX) lines.push(`<i>+${d.stuck.length - STUCK_MAX} more</i>`);
-  } else lines.push('✅ Nothing is stuck');
+    if (d.stuck.length > STUCK_MAX) lines.push(`<i>${t('bot.more', { n: d.stuck.length - STUCK_MAX })}</i>`);
+  } else lines.push('✅ ' + t('bot.digest.nothingStuck'));
   lines.push('');
   if (d.finished.length) {
-    lines.push(evening ? `✅ <b>Finished today</b> (${d.finishedTotal})` : `🌙 <b>Finished overnight</b> (${d.finishedTotal})`);
+    lines.push(`${evening ? '✅' : '🌙'} <b>${t(evening ? 'bot.digest.finishedToday' : 'bot.digest.finishedOvernight')}</b> (${num(d.finishedTotal)})`);
     for (const c of d.finished) {
       const sum = summaryText(c.result) || String(c.result || '').replace(/\s+/g, ' ').trim();
       lines.push(`${SEAT_EMOJI[c.seat] || '🔹'} <b>${esc(c.seat)}</b> · <i>${escClip(c.title, 40)}</i>`);
       if (sum) lines.push(`<blockquote>${escClip(sum, 120)}</blockquote>`);
     }
-    if (d.finishedTotal > d.finished.length) lines.push(`<i>+${d.finishedTotal - d.finished.length} more</i>`);
-  } else lines.push(evening ? '✅ No conversations finished today' : '🌙 No conversations finished overnight');
+    if (d.finishedTotal > d.finished.length) lines.push(`<i>${t('bot.more', { n: d.finishedTotal - d.finished.length })}</i>`);
+  } else lines.push(evening ? '✅ ' + t('bot.digest.noneToday') : '🌙 ' + t('bot.digest.noneOvernight'));
   lines.push('');
-  lines.push(d.errors.count ? `🛠 <b>Errors and warnings since ${d.sinceLabel}</b>: ${d.errors.count}\n<code>${escClip(d.errors.last, 140)}</code>` : `🛠 No errors in server.log since ${d.sinceLabel}`);
+  lines.push(d.errors.count ? `🛠 <b>${t('bot.digest.errorsSince', { time: d.sinceLabel })}</b>: ${num(d.errors.count)}\n<code>${escClip(d.errors.last, 140)}</code>` : '🛠 ' + t('bot.digest.noErrors', { time: d.sinceLabel }));
   lines.push('');
-  if (d.routines.length) { lines.push(evening ? '⏰ <b>Routines tomorrow</b>' : '⏰ <b>Routines today</b>'); for (const r of d.routines.slice(0, 8)) lines.push(r.at < now ? `<s>${viennaHm(r.at)} · ${esc(r.seat)} · ${esc(r.id)}</s>` : `${viennaHm(r.at)} · ${SEAT_EMOJI[r.seat] || '🔹'} <b>${esc(r.seat)}</b> · ${esc(r.id)}`); if (d.routines.length > 8) lines.push(`<i>+${d.routines.length - 8} more</i>`); }
-  else lines.push(evening ? '⏰ No routines scheduled for tomorrow' : '⏰ No routines scheduled for today');
+  if (d.routines.length) { lines.push(`⏰ <b>${t(evening ? 'bot.digest.routinesTomorrow' : 'bot.digest.routinesToday')}</b>`); for (const r of d.routines.slice(0, 8)) lines.push(r.at < now ? `<s>${at(r.at)} · ${esc(r.seat)} · ${esc(r.id)}</s>` : `${at(r.at)} · ${SEAT_EMOJI[r.seat] || '🔹'} <b>${esc(r.seat)}</b> · ${esc(r.id)}`); if (d.routines.length > 8) lines.push(`<i>${t('bot.more', { n: d.routines.length - 8 })}</i>`); }
+  else lines.push('⏰ ' + t(evening ? 'bot.digest.noRoutinesTomorrow' : 'bot.digest.noRoutinesToday'));
   return { text: lines.join('\n'), rows: rows.length ? rows : null };
 }

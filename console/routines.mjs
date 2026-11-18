@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseCron, dueBetween, nextDue, wallAsUtc } from './cron.mjs';
 import { esc, escClip, SEAT_EMOJI } from './telegram.mjs';
+import { t, hm, fmt, pct } from './i18n.mjs';
 
 export const TZ = process.env.SEAT_CONSOLE_TZ || 'Europe/Vienna';   // wall clock of the digests and routine crons (README: Configure)
 export const GRACE_MS = 2 * 3600e3;     // PC was off at the due time: still ask if the server comes up within 2 h
@@ -36,16 +37,14 @@ export function parseRoutines(json) {
 export const promptOf = (r) => (typeof r.prompt === 'string' ? r.prompt : stripFrontmatter(fs.readFileSync(r.promptFile, 'utf8')));
 
 // ---- formatting (Hebrew, Telegram HTML) ----
-const hhmm = (ms, tz = TZ) => new Date(wallAsUtc(ms, tz)).toISOString().slice(11, 16);
 const ymd = (ms, tz = TZ) => new Date(wallAsUtc(ms, tz)).toISOString().slice(0, 10);
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-// "today 20:00" / "tomorrow 07:30" / "Wed 10:00 (14.10)"
+// "today 20:00" / "tomorrow 07:30" / "Wed 10:00 (14/10)", in the chosen language (i18n.mjs)
 export function when(ms, now, tz = TZ) {
   if (ms == null) return '—';
-  const d = Math.round((Date.parse(ymd(ms, tz)) - Date.parse(ymd(now, tz))) / 86400000), dt = new Date(wallAsUtc(ms, tz));
-  return d === 0 ? `today ${hhmm(ms, tz)}` : d === 1 ? `tomorrow ${hhmm(ms, tz)}` : `${DAYS[dt.getUTCDay()]} ${hhmm(ms, tz)} (${dt.getUTCDate()}.${dt.getUTCMonth() + 1})`;
+  const d = Math.round((Date.parse(ymd(ms, tz)) - Date.parse(ymd(now, tz))) / 86400000), time = hm(ms, tz);
+  return d === 0 ? t('bot.when.today', { time }) : d === 1 ? t('bot.when.tomorrow', { time }) : t('bot.when.day', { weekday: fmt(ms, { weekday: 'short' }, tz), time, date: fmt(ms, { day: 'numeric', month: 'numeric' }, tz) });
 }
-const head = (r, slot, seat = r.seat) => `⏰ <b>${esc(r.id)}</b> · ${emoji(seat)} ${esc(seat)} seat · due ${hhmm(slot)}`;
+const head = (r, slot, seat = r.seat) => `⏰ <b>${esc(r.id)}</b> · ${emoji(seat)} ${t('bot.routine.head', { seat: esc(seat), time: hm(slot, TZ) })}`;
 const slotMin = (slot) => Math.floor(slot / 60000);
 export const cbData = (a, id, slot, seat) => ['q', a, id, slotMin(slot), seat].filter((x) => x !== undefined).join(':');
 
@@ -75,8 +74,8 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
     save();
   }
 
-  const preview = (r) => { try { return promptOf(r); } catch { return '(prompt file not readable)'; } };
-  const askRows = (r, slot) => [[{ text: '▶️ Run', callback_data: cbData('r', r.id, slot) }, { text: '⏭️ Skip', callback_data: cbData('s', r.id, slot) }]];
+  const preview = (r) => { try { return promptOf(r); } catch { return t('bot.routine.promptUnreadable'); } };
+  const askRows = (r, slot) => [[{ text: '▶️ ' + t('bot.routine.run'), callback_data: cbData('r', r.id, slot) }, { text: '⏭️ ' + t('bot.routine.skip'), callback_data: cbData('s', r.id, slot) }]];
   const askText = (r, slot) => [head(r, slot), `<blockquote expandable>${escClip(preview(r).replace(/\s+/g, ' '), 200)}</blockquote>`].join('\n');
   const pending = (s) => s.decision === 'pending' || s.decision === 'blocked';
 
@@ -85,13 +84,13 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
   // ---- starting ----
   // Starts the conversation (throws when the seat cannot take it). If an ask is open for this routine it is settled by this start.
   async function launch(r, { seat = r.seat, by }) {
-    const t = now(), s = st(r.id);
-    const conversationId = await deps.start({ routine: r, seat, title: `⏰ ${r.id} · ${ymd(t)}`, text: promptOf(r) });
-    s.lastRun = { at: t, conversationId, seat, by };
+    const tNow = now(), s = st(r.id);
+    const conversationId = await deps.start({ routine: r, seat, title: `⏰ ${r.id} · ${ymd(tNow)}`, text: promptOf(r) });
+    s.lastRun = { at: tNow, conversationId, seat, by };
     if (pending(s)) {
       const slot = s.lastAskedFor;
-      Object.assign(s, { decision: 'run', decidedAt: t, conversationId });
-      await edit(s, [head(r, slot, seat), `▶️ Started on <b>${esc(seat)}</b> · <a href="${deps.base()}/#${conversationId}">Open in console ↗</a>`].join('\n'));
+      Object.assign(s, { decision: 'run', decidedAt: tNow, conversationId });
+      await edit(s, [head(r, slot, seat), '▶️ ' + t('bot.routine.startedOn', { seat: `<b>${esc(seat)}</b>` }) + ` · <a href="${deps.base()}/#${conversationId}">${t('bot.openInConsole')} ↗</a>`].join('\n'));
     }
     save(); log(`[routine] ${r.id} started by=${by} seat=${seat} conv=${conversationId.slice(0, 8)}`);
     return conversationId;
@@ -101,19 +100,19 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
   async function tick() {
     if (busy) return; busy = true;
     try {
-      const t = now();
+      const tNow = now();
       for (const r of load()) {
         const s = st(r.id);
-        if (pending(s) && t - s.askedAt >= EXPIRE_MS) {
-          s.decision = 'expired'; s.decidedAt = t; save(); log(`[routine] ${r.id}: ask expired`);
-          await edit(s, [head(r, s.lastAskedFor), '⌛ Expired'].join('\n'));
+        if (pending(s) && tNow - s.askedAt >= EXPIRE_MS) {
+          s.decision = 'expired'; s.decidedAt = tNow; save(); log(`[routine] ${r.id}: ask expired`);
+          await edit(s, [head(r, s.lastAskedFor), '⌛ ' + t('bot.pick.expired')].join('\n'));
         }
         if (!enabled(r)) continue;
-        const slot = latestSlot(r, t);
+        const slot = latestSlot(r, tNow);
         if (!slot || slot <= (s.lastAskedFor || 0)) continue;
         const m = await deps.ask(askText(r, slot), askRows(r, slot));
         if (!m && deps.telegramOn()) { log(`[routine] ${r.id}: ask not delivered, retrying`); continue; }   // network not up yet: the slot stays unasked
-        Object.assign(s, { lastAskedFor: slot, askedAt: t, messageId: m?.message_id ?? null, decision: 'pending', decidedAt: null, conversationId: null });
+        Object.assign(s, { lastAskedFor: slot, askedAt: tNow, messageId: m?.message_id ?? null, decision: 'pending', decidedAt: null, conversationId: null });
         save(); log(`[routine] ask ${r.id} slot=${new Date(slot).toISOString()} telegram=${m ? 'sent' : 'off'}`);
       }
     } catch (e) { log('[routine] tick failed: ' + (e?.stack || e)); } finally { busy = false; }
@@ -123,31 +122,31 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
   // Returns { toast, edit?: { text, rows } }.
   async function tap(data) {
     const [, a, id, slot, seat] = String(data).split(':'), r = find(id);
-    if (!r || !/^[rsftn]$/.test(a || '')) return { toast: 'unknown button' };
+    if (!r || !/^[rsftn]$/.test(a || '')) return { toast: t('bot.toast.unknownButton') };
     const s = st(id);
     if (a === 'n') {
-      try { await launch(r, { by: 'telegram-now' }); return { toast: 'started' }; } catch (e) { return { toast: 'failed: ' + e.message }; }
+      try { await launch(r, { by: 'telegram-now' }); return { toast: t('bot.toast.started') }; } catch (e) { return { toast: t('bot.toast.failed', { error: e.message }) }; }
     }
-    if (!pending(s) || String(slotMin(s.lastAskedFor)) !== slot) return { toast: s.decision === 'run' ? 'already started' : 'already handled' };
+    if (!pending(s) || String(slotMin(s.lastAskedFor)) !== slot) return { toast: t(s.decision === 'run' ? 'bot.toast.alreadyStarted' : 'bot.toast.alreadyHandled') };
     const slotMs = s.lastAskedFor;
-    if (a === 's') { Object.assign(s, { decision: 'skip', decidedAt: now() }); save(); log(`[routine] ${r.id}: skipped`); return { toast: 'skipped', edit: { text: [head(r, slotMs), '⏭️ Skipped'].join('\n') } }; }
+    if (a === 's') { Object.assign(s, { decision: 'skip', decidedAt: now() }); save(); log(`[routine] ${r.id}: skipped`); return { toast: t('bot.toast.skipped'), edit: { text: [head(r, slotMs), '⏭️ ' + t('bot.routine.skipped')].join('\n') } }; }
     let target = r.seat;
-    if ((a === 't' || a === 'f') && seat) { if (!deps.seatNames().includes(seat)) return { toast: 'unknown seat' }; target = seat; }
+    if ((a === 't' || a === 'f') && seat) { if (!deps.seatNames().includes(seat)) return { toast: t('bot.toast.unknownSeat') }; target = seat; }
     // Another seat only while the routine's own seat is NOT at its usage limit (an old "other seat" button from a process-cap block may be tapped later).
     if (target !== r.seat) { const own = full(r.seat); if (own?.quota) return { toast: own.plain, edit: blockedEdit(r, slotMs, r.seat, own) }; }
     if (a === 'r' || a === 't') {
       const why = full(target);
       if (why) return { toast: why.plain, edit: blockedEdit(r, slotMs, target, why) };
     }
-    try { await launch(r, { seat: target, by: 'telegram' }); return { toast: 'started' }; }
-    catch (e) { return { toast: 'failed: ' + e.message, edit: { text: [head(r, slotMs, target), `❌ <code>${escClip(e.message, 200)}</code>`].join('\n'), rows: askRows(r, slotMs) } }; }
+    try { await launch(r, { seat: target, by: 'telegram' }); return { toast: t('bot.toast.started') }; }
+    catch (e) { return { toast: t('bot.toast.failed', { error: e.message }), edit: { text: [head(r, slotMs, target), `❌ <code>${escClip(e.message, 200)}</code>`].join('\n'), rows: askRows(r, slotMs) } }; }
   }
   // At its process cap or (nearly) out of quota. null = free to use.
   function full(seat) {
     const l = deps.seatLoad(seat);
     // Usage first: a seat at its cap AND at its limit is a quota block (no other seats offered).
-    if (l.usage != null && l.usage >= QUOTA_BLOCK) return { quota: true, plain: `${seat} at ${Math.round(l.usage * 100)}%`, line: `${emoji(seat)} <b>${esc(seat)}</b> at ${Math.round(l.usage * 100)}% of the quota` };
-    if (l.alive >= l.max) return { plain: `${seat} full (${l.alive}/${l.max})`, line: `${emoji(seat)} <b>${esc(seat)}</b> full (${l.alive}/${l.max})` };
+    if (l.usage != null && l.usage >= QUOTA_BLOCK) return { quota: true, plain: t('bot.routine.atPct', { seat, pct: pct(l.usage) }), line: `${emoji(seat)} ` + t('bot.routine.atQuota', { seat: `<b>${esc(seat)}</b>`, pct: pct(l.usage) }) };
+    if (l.alive >= l.max) return { plain: t('bot.routine.full', { seat, n: `${l.alive}/${l.max}` }), line: `${emoji(seat)} ` + t('bot.routine.full', { seat: `<b>${esc(seat)}</b>`, n: `${l.alive}/${l.max}` }) };
     return null;
   }
   function blockedEdit(r, slot, target, why) {
@@ -155,9 +154,9 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
     // Other seats only when the seat is at its PROCESS cap (RAM). At its usage limit: run anyway or skip, never another seat (each seat's limit is its own).
     const alts = why.quota ? [] : deps.seatNames().filter((n) => n !== target && !full(n)).map((n) => ({ n, u: deps.seatLoad(n).usage ?? 0 })).sort((x, y) => x.u - y.u);
     return { text: [head(r, slot), `⚠️ ${why.line}`].join('\n'), rows: [
-      [{ text: `▶️ Anyway (${target})`, callback_data: cbData('f', r.id, slot, target === r.seat ? undefined : target) }],
-      ...alts.map((x) => [{ text: `${emoji(x.n)} ${x.n}${x.u ? ' ' + Math.round(x.u * 100) + '%' : ''}`, callback_data: cbData('t', r.id, slot, x.n) }]),
-      [{ text: '⏭️ Skip', callback_data: cbData('s', r.id, slot) }]] };
+      [{ text: '▶️ ' + t('bot.routine.anyway', { seat: target }), callback_data: cbData('f', r.id, slot, target === r.seat ? undefined : target) }],
+      ...alts.map((x) => [{ text: `${emoji(x.n)} ${x.n}${x.u ? ' ' + pct(x.u) : ''}`, callback_data: cbData('t', r.id, slot, x.n) }]),
+      [{ text: '⏭️ ' + t('bot.routine.skip'), callback_data: cbData('s', r.id, slot) }]] };
   }
 
   // ---- web UI / API ----
@@ -172,9 +171,9 @@ export function createRoutines({ file, state, save, deps, now = () => Date.now()
 
   // /routines in Telegram: every routine with its next due time and a run-now button.
   function listMessage() {
-    const t = now(), rs = view(), lines = rs.map((r) => `${r.enabled ? emoji(r.seat) : '🔕'} <b>${esc(r.id)}</b> · ${esc(r.seat)} · ${r.enabled ? 'next: ' + when(r.nextDue, t) : 'off'}`);
-    return { text: ['<b>⏰ Routines</b>', '', ...lines, '', '<i>Nothing runs on its own: at the due time you get a question, and the run starts when you tap.</i>'].join('\n'),
-      rows: rs.map((r) => [{ text: `▶️ Run now · ${r.id}`.slice(0, 60), callback_data: `q:n:${r.id}` }]) };
+    const now0 = now(), rs = view(), lines = rs.map((r) => `${r.enabled ? emoji(r.seat) : '🔕'} <b>${esc(r.id)}</b> · ${esc(r.seat)} · ${r.enabled ? t('bot.routine.next', { when: when(r.nextDue, now0) }) : t('bot.routine.off')}`);
+    return { text: [`<b>⏰ ${t('bot.routine.title')}</b>`, '', ...lines, '', `<i>${t('bot.routine.note')}</i>`].join('\n'),
+      rows: rs.map((r) => [{ text: `▶️ ${t('bot.routine.runNow')} · ${r.id}`.slice(0, 60), callback_data: `q:n:${r.id}` }]) };
   }
 
   return { tick, tap, act, view, listMessage, start() { tick(); return setInterval(tick, 30000).unref(); } };

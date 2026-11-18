@@ -12,10 +12,10 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<div id="saveBanner" role="alert" hidden>The console cannot save its state file. Conversations are kept in memory only: a restart now would lose what happened since the last good save.</div>
+<div id="saveBanner" role="alert" data-i18n="banner.saveFailed" hidden>The console cannot save its state file. Conversations are kept in memory only: a restart now would lose what happened since the last good save.</div>
 <aside data-sid="seat-list" data-title="Seats and their conversations">
-  <div class="ahead"><h1>Seat Console</h1><span><button type="button" id="setbtn" title="Settings: seats, Telegram, phone access, features">⚙ Settings</button> <button type="button" id="foldall" title="Fold or expand every seat's conversation list">Fold all</button></span></div>
-  <input id="q" type="search" dir="auto" placeholder="Search all conversations (archived too)" aria-label="Search conversations" autocomplete="off" spellcheck="false">
+  <div class="ahead"><h1>Seat Console</h1><span><button type="button" id="setbtn" data-i18n-title="side.settingsTitle" title="Settings: seats, Telegram, phone access, features">⚙ <span data-i18n="set.title">Settings</span></button> <button type="button" id="foldall" data-i18n="side.foldAll" data-i18n-title="side.foldAllTitle" title="Fold or expand every seat's conversation list">Fold all</button></span></div>
+  <input id="q" type="search" dir="auto" placeholder="Search all conversations (archived too)" aria-label="Search conversations" data-i18n-placeholder="side.searchPh" data-i18n-aria-label="side.searchLabel" autocomplete="off" spellcheck="false">
   <nav id="results" aria-live="polite" hidden></nav>
   <section id="multi" data-sid="multi" data-title="Projects: link to the Projects page and the projects still running"></section>
   <nav id="seats"></nav>
@@ -26,24 +26,24 @@
   <section id="settings" data-sid="settings" data-title="Settings: what is set up and what is turned on"></section>
   <header id="head" dir="auto"></header>
   <div id="ctxscrim" hidden></div>
-  <div id="ctxpanel" role="dialog" aria-label="Context window" hidden></div>
-  <div id="banner" hidden><span></span><button type="button" id="resume">Resume</button></div>
+  <div id="ctxpanel" role="dialog" aria-label="Context window" data-i18n-aria-label="ctx.title" hidden></div>
+  <div id="banner" hidden><span></span><button type="button" id="resume" data-i18n="conv.resume">Resume</button></div>
   <div id="pins" data-sid="pins" data-title="Pinned: questions, links and errors waiting for the user" hidden></div>
   <section id="log" aria-live="polite"></section>
-  <p id="readonly" role="note" hidden><span>Read-only: this run lives on a remote server. Nothing can be sent from here.</span></p>
+  <p id="readonly" role="note" hidden><span data-i18n="conv.readonly">Read-only: this run lives on a remote server. Nothing can be sent from here.</span></p>
   <form id="composer" data-sid="composer" data-title="Message composer">
     <div id="quota" role="status" dir="auto" hidden></div>
-    <div id="suggest" aria-label="Suggested replies" hidden></div>
-    <textarea id="text" rows="2" dir="auto" placeholder="Message this seat. Enter sends, Shift+Enter adds a line."></textarea>
+    <div id="suggest" aria-label="Suggested replies" data-i18n-aria-label="composer.suggestions" hidden></div>
+    <textarea id="text" rows="2" dir="auto" placeholder="Message this seat. Enter sends, Shift+Enter adds a line." data-i18n-placeholder="composer.placeholder"></textarea>
     <div id="thumbs" hidden></div>
     <div class="row">
-      <input id="cwd" dir="auto" aria-label="Working folder" spellcheck="false">
-      <select id="mode" aria-label="Permission mode"><option value="auto">auto</option><option value="ask">ask</option><option value="bypass">bypass</option></select>
-      <select id="model" aria-label="Model"><option value="">default model</option><option value="claude-opus-5-5">Opus 5.5</option><option value="claude-fable-5-1">Fable 5.1</option><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-haiku-5-5">Haiku 5.5</option><optgroup label="More models"><option value="claude-haiku-4-5">Haiku 4.5</option><option value="claude-sonnet-5">Sonnet 5</option><option value="claude-opus-5">Opus 5</option><option value="claude-fable-5">Fable 5</option><option value="claude-opus-4-8">Opus 4.8</option><option value="claude-opus-4-7">Opus 4.7</option><option value="claude-opus-4-6">Opus 4.6</option><option value="claude-sonnet-4-6">Sonnet 4.6</option></optgroup></select>
-      <label class="effort">effort <input id="effort" type="range" min="0" max="6" step="1" value="0" aria-label="Effort"> <output id="effortOut">default</output></label>
-      <button type="button" id="attach" title="Attach images or files">Attach</button><input type="file" id="file" multiple hidden>
-      <button type="button" id="stop">Stop</button>
-      <button type="submit" id="go" class="primary">Send</button>
+      <input id="cwd" dir="ltr" aria-label="Working folder" data-i18n-aria-label="composer.folder" spellcheck="false">
+      <select id="mode" aria-label="Permission mode" data-i18n-aria-label="composer.mode"><option value="auto" data-i18n="mode.auto">auto</option><option value="ask" data-i18n="mode.ask">ask</option><option value="bypass" data-i18n="mode.bypass">bypass</option></select>
+      <select id="model" aria-label="Model" data-i18n-aria-label="composer.model"><option value="" data-i18n="composer.defaultModel">default model</option><option value="claude-opus-5-5">Opus 5.5</option><option value="claude-fable-5-1">Fable 5.1</option><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-haiku-5-5">Haiku 5.5</option><optgroup label="More models" data-i18n-label="composer.moreModels"><option value="claude-haiku-4-5">Haiku 4.5</option><option value="claude-sonnet-5">Sonnet 5</option><option value="claude-opus-5">Opus 5</option><option value="claude-fable-5">Fable 5</option><option value="claude-opus-4-8">Opus 4.8</option><option value="claude-opus-4-7">Opus 4.7</option><option value="claude-opus-4-6">Opus 4.6</option><option value="claude-sonnet-4-6">Sonnet 4.6</option></optgroup></select>
+      <label class="effort"><span data-i18n="composer.effort">effort</span> <input id="effort" type="range" min="0" max="6" step="1" value="0" aria-label="Effort" data-i18n-aria-label="composer.effort"> <output id="effortOut" data-i18n="composer.effortDefault">default</output></label>
+      <button type="button" id="attach" title="Attach images or files" data-i18n-title="composer.attachTitle" data-i18n="composer.attach">Attach</button><input type="file" id="file" multiple hidden>
+      <button type="button" id="stop" data-i18n="composer.stop">Stop</button>
+      <button type="submit" id="go" class="primary" data-i18n="composer.send">Send</button>
     </div>
   </form>
 </main>

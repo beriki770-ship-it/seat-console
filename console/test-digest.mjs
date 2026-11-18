@@ -100,7 +100,7 @@ const BASE = 'http://100.64.0.1:4850';
 const seats = [{ name: 'studio', usage: 0.31, resetsAt: at(2026, 10, 14, 8, 20) }, { name: 'dev', usage: 0.62, resetsAt: NOW - 1000 }, { name: 'render', usage: null }, { name: 'info', usage: 0.9, resetsAt: at(2026, 10, 14, 9, 0) }, { name: 'ops', usage: 0, resetsAt: at(2026, 10, 14, 7, 0) }];
 const d = buildMorningDigest({ seats, ...k, errors: { count: 3, last: '[host] a <b> & "q"' }, sinceLabel: '20:00', routines: digestRoutines(rs, NOW) }, NOW, BASE);
 checkHtml(d.text);
-for (const part of ['☀️ <b>Good morning</b> · <i>Wednesday 14.10</i>', '<b>🎨 studio</b>', '🟢 ▰▰▰▱▱▱▱▱▱▱ 31%', '🔁 reset', '<i>no data</i>', '⚠️ <b>Stuck</b> (3)', 'idle 3 h', 'waiting for approval 16 min', '🌙 <b>Finished overnight</b> (2)', '<blockquote>עשיתי.</blockquote>', '<b>Errors and warnings since 20:00</b>: 3', '<code>[host] a &lt;b&gt; &amp; "q"</code>', '<s>07:00 · render · ep</s>', '20:00 · ⚙️ <b>ops</b> · nightly'])
+for (const part of ['☀️ <b>Good morning</b> · <i>Wednesday 14/10</i>', '<b>🎨 studio</b>', '🟢 ▰▰▰▱▱▱▱▱▱▱ 31%', '🔁 reset', '<i>no data</i>', '⚠️ <b>Stuck</b> (3)', 'idle 3 h', 'waiting for approval 16 min', '🌙 <b>Finished overnight</b> (2)', '<blockquote>עשיתי.</blockquote>', '<b>Errors and warnings since 20:00</b>: 3', '<code>[host] a &lt;b&gt; &amp; "q"</code>', '<s>07:00 · render · ep</s>', '20:00 · ⚙️ <b>ops</b> · nightly'])
   assert.ok(d.text.includes(part) || d.text.replace(/<\/?b>/g, '').includes(part.replace(/<\/?b>/g, '')), 'missing: ' + part + '\n' + d.text);
 assert.equal(d.rows.length, 3); assert.equal(d.rows[0][0].url, `${BASE}/#${k.stuck[0].id}`); assert.ok(d.rows[0][0].text.startsWith('↗ ops'));
 // quiet morning: nothing stuck, nothing finished, no errors, no routines
@@ -122,7 +122,7 @@ const tomorrow = digestRoutines(rs, EVE + 24 * 3600e3);
 assert.deepEqual(tomorrow.map((x) => [x.id, viennaYmd(x.at)]), [['ep', '2026-10-15'], ['nightly', '2026-10-15']], 'Thursday 15.10');
 const e = buildEveningDigest({ seats, ...ek, errors: scanLog(elog, DAY0), sinceLabel: '08:00', routines: tomorrow, slot: { kind: 'evening', at: EVE, late: false, skipped: null } }, EVE + MIN, BASE);
 checkHtml(e.text);
-assert.ok(e.text.startsWith('🌆 <b>Good evening</b> · <i>Wednesday 14.10</i>'), e.text);
+assert.ok(e.text.startsWith('🌆 <b>Good evening</b> · <i>Wednesday 14/10</i>'), e.text);
 for (const part of ['⚠️ <b>Stuck</b> (1)', 'waiting for approval 20 min', '✅ <b>Finished today</b> (1)', '<blockquote>נגמר.</blockquote>', '<b>Errors and warnings since 08:00</b>: 1', '⏰ <b>Routines tomorrow</b>', '07:00 · 🎬 <b>render</b> · ep', '20:00 · ⚙️ <b>ops</b> · nightly'])
   assert.ok(e.text.includes(part), 'missing: ' + part + '\n' + e.text);
 assert.ok(!e.text.includes('Quota') && !e.text.includes('<s>') && !e.text.includes('Late'), 'no usage block, tomorrow is not struck through, on time = no late line');

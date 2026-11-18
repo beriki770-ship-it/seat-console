@@ -52,7 +52,7 @@ assert.deepEqual(parseRoutines(example).map((r) => r.id), ['weekly-review']);
 
 // ---- when() ----
 const NOW = at('2026-10-13 18:26');
-assert.equal(when(at('2026-10-13 20:00'), NOW), 'today 20:00'); assert.equal(when(at('2026-10-14 07:30'), NOW), 'tomorrow 07:30'); assert.equal(when(at('2026-10-21 10:00'), NOW), 'Wed 10:00 (21.10)'); assert.equal(when(null, NOW), '—');
+assert.equal(when(at('2026-10-13 20:00'), NOW), 'today 20:00'); assert.equal(when(at('2026-10-14 07:30'), NOW), 'tomorrow 07:30'); assert.equal(when(at('2026-10-21 10:00'), NOW), 'Wed 10:00 (21/10)'); assert.equal(when(null, NOW), '—');
 
 // ---- scheduler with a fake clock and fake outside world ----
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'routines-'));

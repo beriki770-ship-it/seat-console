@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { parseCron } from './cron.mjs';
 import { parseRemotes } from './remote.mjs';
 import { retry } from './hardening.mjs';
+import { LANGS } from './i18n.mjs';
 
 export const SEAT_NAME = /^[a-z][a-z0-9-]{1,20}$/;
 const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests'];
@@ -13,7 +14,7 @@ const MODEL_ID = /^[A-Za-z0-9._:/-]{1,80}$/;
 // The defaults, in one place. Optional features are off unless the install already uses them (a codex seat, a disciplines.json).
 export function defaults({ seats = {}, disciplines = false, autoArchiveDays = 3, idleReapMinutes = 5 } = {}) {
   return { usageMeters: true, claudeResets: false, codexResets: Object.values(seats).some((s) => s.agent === 'codex'), multiProjects: !!disciplines,
-    quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, models: {} };
+    quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, models: {}, language: '' };   // language '' = the browser's (the page) / English (the bot)
 }
 
 // Known keys with the right type only; the first bad one throws (the page shows the message).
@@ -24,6 +25,7 @@ export function validateSettings(input, seats) {
     if (BOOLS.includes(k)) { if (typeof v !== 'boolean') throw new Error(`${k} must be true or false`); out[k] = v; }
     else if (k === 'autoArchiveDays') { if (!Number.isInteger(v) || v < 0 || v > 365) throw new Error('autoArchiveDays must be a whole number 0-365 (0 = never)'); out[k] = v; }
     else if (k === 'idleReapMinutes') { if (!Number.isInteger(v) || v < 1 || v > 1440) throw new Error('idleReapMinutes must be a whole number 1-1440'); out[k] = v; }
+    else if (k === 'language') { if (v !== '' && !Object.hasOwn(LANGS, v)) throw new Error('unknown language ' + v); out[k] = v; }
     else if (k === 'models') {
       if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('models must be an object seat -> model id');
       out.models = {};

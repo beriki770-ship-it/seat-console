@@ -30,6 +30,7 @@ A 3-minute walkthrough: one console for every agent, crash recovery, approvals a
 - **Daily digests** at 08:00 and 21:00: quota per seat, stuck conversations, what finished, errors in the server log, today's routines.
 - **Phone-friendly, installable (PWA).** Works over Tailscale with Basic auth; with `tailscale serve` you get HTTPS and can install it as an app.
 - **Handy extras.** Attachments of any file type, per-seat usage bars (5-hour and weekly window, with the reset day and time), context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
+- **Languages.** The page and the Telegram bot speak English, עברית, العربية, Español, Português (Brasil), Français, Deutsch, Italiano, Русский, Türkçe, 简体中文, 日本語, 한국어, हिन्दी and Bahasa Indonesia (Settings > Language; default: the browser's language; Hebrew and Arabic right-to-left). Translations were machine-assisted, corrections welcome (PR to `console/public/locales/<code>.json`).
 - **Zero npm dependencies.** Plain Node.js modules and static files. No build step.
 
 ## Requirements

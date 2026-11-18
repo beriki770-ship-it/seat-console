@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { t, tn, hm, num, pct, lang } from './i18n.mjs';
 
 const PLACEHOLDER = /^PASTE/i;
 // Counted and cut in characters (code points), never in UTF-16 units: slicing through the middle of an emoji leaves a lone surrogate that Telegram rejects.
@@ -18,11 +19,10 @@ export const escClip = (s, n) => { let r = clip(s, n); while (r.length > 1 && es
 export const toPlain = (h) => String(h).replace(/<a href="([^"]*)">([^<]*)<\/a>/g, '$2 $1').replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 
 // Usage window as a 10-cell bar, with a colour hint: 🟢 <50, 🟡 50-80, 🔴 >80.
-export const bar = (u) => { const p = Math.max(0, Math.min(1, +u || 0)), n = Math.round(p * 10); return `${p < 0.5 ? '🟢' : p <= 0.8 ? '🟡' : '🔴'} ${'▰'.repeat(n)}${'▱'.repeat(10 - n)} ${Math.round(p * 100)}%`; };
+export const bar = (u) => { const p = Math.max(0, Math.min(1, +u || 0)), n = Math.round(p * 10); return `${p < 0.5 ? '🟢' : p <= 0.8 ? '🟡' : '🔴'} ${'▰'.repeat(n)}${'▱'.repeat(10 - n)} ${pct(p)}`; };
 // Reset time of the 5 h window (resetsAt = epoch ms, local clock). A reset already in the past reads "reset": the usage is 0 until a new event arrives.
-const p2 = (n) => String(n).padStart(2, '0');
-export const clock = (ms) => { const d = new Date(ms); return `${p2(d.getHours())}:${p2(d.getMinutes())}`; };
-export const resetTag = (resetsAt, now = Date.now()) => (resetsAt == null ? '' : resetsAt <= now ? '🔁 reset' : `🔁 resets ${clock(resetsAt)}`);
+export const clock = (ms) => hm(ms);
+export const resetTag = (resetsAt, now = Date.now()) => (resetsAt == null ? '' : resetsAt <= now ? '🔁 ' + t('bot.reset') : '🔁 ' + t('bot.resetsAt', { time: clock(resetsAt) }));
 // From 50 % a seat is marked in the picker; from 80 % the console warns before you pick it.
 export const seatMark = (u) => (u == null || u < 0.5 ? '' : u < 0.8 ? '🟡' : '🔴');
 // At most ONE warning per seat per 5 h window: warned[seat] holds the resetsAt (seconds) of the window already warned about.
@@ -33,10 +33,10 @@ export function quotaWarnDue(warned, seat, util, resetsAtSec) {
 }
 // No "another seat has quota left" line: each seat's limit is its own, and the console never moves work to another seat to dodge it.
 export const buildQuotaWarning = ({ seat, util, resetsAt }, now = Date.now()) => [
-  `🔴 <b>${esc(seat)}</b> at ${Math.round(util * 100)}% of the 5-hour quota`, resetTag(resetsAt, now)].filter(Boolean).join('\n');
+  '🔴 ' + t('bot.quotaWarning', { seat: `<b>${esc(seat)}</b>`, pct: pct(util) }), resetTag(resetsAt, now)].filter(Boolean).join('\n');
 export const SEAT_EMOJI = { studio: '🎨', dev: '🧑‍💻', render: '🎬', info: '💼', ops: '⚙️' };
 const quote = (h, expandable) => `<blockquote${expandable ? ' expandable' : ''}>${h}</blockquote>`;
-const link = (url) => `<a href="${escAttr(url)}">Open in console ↗</a>`;
+const link = (url) => `<a href="${escAttr(url)}">${t('bot.openInConsole')} ↗</a>`;
 const errLine = (what, m) => `❌ <b>${what}</b> · <code>${escClip(m, 200)}</code>`;
 
 // Allow approves the WHOLE input, so the approval message must show all of it (never a clipped preview).
@@ -53,36 +53,36 @@ export function buildMessage(kind, { seat, title, text, tool, input, convId, fil
   const head = (e) => `${e} <b>${esc(seat)}</b> · <i>${esc(clip(title, 40))}</i>`;
   const foot = ['', link(`${base}/#${convId}`)];
   if (kind === 'perm') {
-    const full = fullInput(input), ask = `Asks for approval: <b>${esc(tool)}</b>`;
-    if (permTooLong(input)) return [head('⏳'), '', ask, `<pre>${escClip(full, 500)}</pre>`, 'Too long to review here, so no buttons. Approve it in the console.', ...foot].join('\n');
+    const full = fullInput(input), ask = t('bot.perm.asks', { tool: `<b>${esc(tool)}</b>` });
+    if (permTooLong(input)) return [head('⏳'), '', ask, `<pre>${escClip(full, 500)}</pre>`, t('bot.perm.tooLong'), ...foot].join('\n');
     return [head('⏳'), '', ask, `<pre>${esc(full)}</pre>`, ...foot].join('\n');
   }
-  const t = String(text || '').trim(), sum = summaryText(t);
-  const body = sum ? quote(escClip(sum, 400)) : kind === 'error' ? `<code>${escClip(t, 300)}</code>` : quote(escClip(t, 300));
-  const more = sum ? t !== extractSummary(t) : t.length > 300;   // the full text hides in an expandable quote so nothing is lost
+  const tx = String(text || '').trim(), sum = summaryText(tx);
+  const body = sum ? quote(escClip(sum, 400)) : kind === 'error' ? `<code>${escClip(tx, 300)}</code>` : quote(escClip(tx, 300));
+  const more = sum ? tx !== extractSummary(tx) : tx.length > 300;   // the full text hides in an expandable quote so nothing is lost
   const fl = files && files.length ? `📄 ${files.slice(0, 5).map((f) => `<code>${esc(f)}</code>`).join(' ')}${files.length > 5 ? ` +${files.length - 5}` : ''}` : null;
   // needsAnswer: the turn ended with a question / decision for the user (marks.mjs), shown right under the summary
-  return [head(kind === 'error' ? '❌' : '✅'), body, needsAnswer && kind === 'done' ? '❓ <b>Waiting for your answer</b>' : null, fl, more ? quote(escClip(t, 1800), true) : null, usage != null ? [`${bar(usage)} · 5 h`, resetTag(resetsAt)].filter(Boolean).join(' · ') : null, ctxPct != null ? `🧠 ${ctxPct}%` : null, ...foot].filter((x) => x !== null).join('\n');
+  return [head(kind === 'error' ? '❌' : '✅'), body, needsAnswer && kind === 'done' ? `❓ <b>${t('bot.waitingAnswer')}</b>` : null, fl, more ? quote(escClip(tx, 1800), true) : null, usage != null ? [`${bar(usage)} · ${t('bot.fiveHours')}`, resetTag(resetsAt)].filter(Boolean).join(' · ') : null, ctxPct != null ? `🧠 ${pct(ctxPct / 100)}` : null, ...foot].filter((x) => x !== null).join('\n');
 }
 // ---- files of a finished turn (sendFiles below): Bot API limits are 10 MB for a photo and 50 MB for any other upload ----
 export const FILES_MAX = 5, PHOTO_MAX = 10 * 1024 * 1024, UPLOAD_MAX = 50 * 1024 * 1024;
-const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+const mb = (n) => num(n / 1048576, { maximumFractionDigits: 1, minimumFractionDigits: 1 }) + ' MB';
 // files = [{ path, name, size }] -> { send: [{ method, field, file }], lines: [plain text] }. Photos show inline (svg/gif/large images go as documents), mp4 plays inline,
 // anything over 50 MB is a text line; at most FILES_MAX files are handled, the rest are counted.
 export function planFiles(files) {
   const send = [], lines = [];
   for (const f of files.slice(0, FILES_MAX)) {
     const ext = path.extname(f.name).slice(1).toLowerCase();
-    if (f.size > UPLOAD_MAX) lines.push(`📎 ${f.name} (${mb(f.size)}): too big for Telegram, open in console`);
+    if (f.size > UPLOAD_MAX) lines.push('📎 ' + t('bot.files.tooBig', { name: f.name, size: mb(f.size) }));
     else if (/^(png|jpe?g|webp)$/.test(ext) && f.size <= PHOTO_MAX) send.push({ method: 'sendPhoto', field: 'photo', file: f });
     else if (ext === 'mp4') send.push({ method: 'sendVideo', field: 'video', file: f });
     else send.push({ method: 'sendDocument', field: 'document', file: f });
   }
-  if (files.length > FILES_MAX) lines.push(`+${files.length - FILES_MAX} more in console`);
+  if (files.length > FILES_MAX) lines.push(t('bot.files.more', { n: files.length - FILES_MAX }));
   return { send, lines };
 }
 // One-line confirmation after a reply was delivered.
-export const sentLine = (seat, title) => `↪️ Sent to <b>${esc(seat)}</b> · <i>${esc(clip(title, 40))}</i>`;
+export const sentLine = (seat, title) => '↪️ ' + t('bot.sentTo', { seat: `<b>${esc(seat)}</b>` }) + ` · <i>${esc(clip(title, 40))}</i>`;
 
 // At most one message per key per window (used for "finished", one per conversation per 60 s).
 export class Throttle {
@@ -108,21 +108,21 @@ const DIGEST_MAX = 8, DAY = 24 * 3600 * 1000;
 // ---- crash recovery: conversations the server found interrupted. Buttons are r:all, r:<8-hex conversation prefix>, r:no ----
 // list = [{ id, seat, title, updatedAt }]. crash = true for the message sent after a restart, false for /recover. Resuming spends quota, so only a tap does it.
 export function buildRecover(list, now, crash) {
-  if (!list.length) return { text: '✅ No interrupted conversations.', rows: null };
+  if (!list.length) return { text: '✅ ' + t('bot.recover.none'), rows: null };
   const shown = list.slice(0, DIGEST_MAX);
-  const head = crash ? `🔄 <b>The PC crashed or restarted</b> — ${list.length} conversations were cut off` : `🔄 <b>Interrupted conversations</b> — ${list.length}`;
+  const head = crash ? `🔄 <b>${t('bot.recover.crashed')}</b> — ${tn('bot.recover.cutOff', list.length)}` : `🔄 <b>${t('bot.recover.title')}</b> — ${num(list.length)}`;
   const lines = shown.map((c) => `${SEAT_EMOJI[c.seat] || '🔹'} <b>${esc(c.seat)}</b> · <i>${esc(clip(c.title, 40))}</i> · ${age(now - c.updatedAt)}`);
-  if (list.length > shown.length) lines.push(`<i>+${list.length - shown.length} more</i>`);
-  return { text: [head, '', ...lines].join('\n'), rows: [[{ text: '▶️ Continue all', callback_data: 'r:all' }], ...shown.map((c) => [{ text: `▶️ ${c.seat} · ${clip(c.title, 24)}`, callback_data: `r:${c.id.slice(0, 8)}` }]), [{ text: '✖️ Not now', callback_data: 'r:no' }]] };
+  if (list.length > shown.length) lines.push(`<i>${t('bot.more', { n: list.length - shown.length })}</i>`);
+  return { text: [head, '', ...lines].join('\n'), rows: [[{ text: '▶️ ' + t('bot.recover.all'), callback_data: 'r:all' }], ...shown.map((c) => [{ text: `▶️ ${c.seat} · ${clip(c.title, 24)}`, callback_data: `r:${c.id.slice(0, 8)}` }]), [{ text: '✖️ ' + t('bot.recover.notNow'), callback_data: 'r:no' }]] };
 }
 const EMOJI = { working: '⚙️', waiting: '⏳', idle: '✅', error: '❌' };   // anything else (stopped, interrupted, unknown) is ⏸
-const age = (ms) => { const m = Math.max(0, Math.round(ms / 60000)); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`; };
+const age = (ms) => { const m = Math.max(0, Math.round(ms / 60000)); return m < 1 ? t('bot.age.now') : m < 60 ? tn('bot.age.min', m) : tn('bot.age.h', Math.round(m / 60)); };
 // data = { seats: [{ name, usage: 0..1 | null, convs: [{ id, title, status, updatedAt, result }] }] } -> { text (HTML), rows } (rows = inline keyboard, one open-button per conversation)
 export function buildDigest(data, now, base) {
-  const title = '<b>📊 Status</b> · <i>last 24 hours</i>';
+  const title = `<b>📊 ${t('bot.status.title')}</b> · <i>${t('bot.status.last24')}</i>`;
   const recent = [];
   for (const s of data.seats) for (const c of s.convs) if (now - c.updatedAt < DAY) recent.push({ ...c, seat: s.name });
-  if (!recent.length) return { text: `${title}\n\n😴 No activity in the last 24 hours.`, rows: null };
+  if (!recent.length) return { text: `${title}\n\n😴 ${t('bot.status.noActivity')}`, rows: null };
   recent.sort((a, b) => b.updatedAt - a.updatedAt);
   const shown = recent.slice(0, DIGEST_MAX), waiting = recent.filter((c) => c.status === 'waiting').length;
   const blocks = [], rows = [];
@@ -130,17 +130,17 @@ export function buildDigest(data, now, base) {
     const lines = [`<b>${SEAT_EMOJI[s.name] || '🔹'} ${esc(s.name)}</b>${s.usage == null ? '' : `  ${bar(s.usage)}${s.resetsAt == null ? '' : ' · ' + resetTag(s.resetsAt, now)}`}`];
     for (const c of shown.filter((x) => x.seat === s.name)) {
       const e = EMOJI[c.status] || '⏸', sum = summaryText(c.result);
-      lines.push(`${e} <b>${esc(clip(c.title, 40))}</b> · <i>${age(now - c.updatedAt)}</i>${c.bg ? ` · ${c.bg} in background` : ''}${c.ctxPct != null ? ` · 🧠 ${c.ctxPct}%` : ''}`);
+      lines.push(`${e} <b>${esc(clip(c.title, 40))}</b> · <i>${age(now - c.updatedAt)}</i>${c.bg ? ' · ' + tn('bot.status.background', c.bg) : ''}${c.ctxPct != null ? ` · 🧠 ${pct(c.ctxPct / 100)}` : ''}`);
       if (sum) lines.push(quote(escClip(sum, 160)));
       rows.push([{ text: `${e} ${clip(c.title, 28)}`, url: `${base}/#${c.id}` }]);
     }
     blocks.push(lines.join('\n'));
   }
   const tail = [];
-  if (recent.length > shown.length) tail.push(`<i>+${recent.length - shown.length} more</i>`);
-  if (waiting) tail.push(`⏳ Waiting for approval: <b>${waiting}</b>`);
+  if (recent.length > shown.length) tail.push(`<i>${t('bot.more', { n: recent.length - shown.length })}</i>`);
+  if (waiting) tail.push('⏳ ' + t('bot.status.waiting', { n: `<b>${num(waiting)}</b>` }));
   const quiet = data.seats.filter((s) => !recent.some((c) => c.seat === s.name)).map((s) => esc(s.name));
-  if (quiet.length) tail.push(`😴 Quiet: ${quiet.join(', ')}`);
+  if (quiet.length) tail.push('😴 ' + t('bot.status.quiet', { seats: quiet.join(', ') }));
   return { text: [title, '', blocks.join('\n\n'), ...(tail.length ? ['', ...tail] : [])].join('\n'), rows };
 }
 
@@ -151,7 +151,7 @@ export function buildDigest(data, now, base) {
 // Uploads of every conversation share ONE serial queue (see sendFiles).
 let fileQueue = Promise.resolve();
 export const TG_FILE_MAX = 20 * 1024 * 1024;   // Telegram's own limit for a bot's getFile download
-export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error('compact is not available'); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: 'routines are off' }), onRoutineList = null, onMulti = null, onMultiApprove = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000 }) {
+export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000 }) {
   let warned = false;
   const base = () => (typeof phoneBase === 'function' ? phoneBase() : phoneBase); // a function when the console URL can change after start (Tailscale coming up late)
   const readCfg = () => {
@@ -222,11 +222,12 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       .catch((e) => log('telegram file note failed: ' + e.message));
   }
   const sendFiles = (replyTo, files) => (fileQueue = fileQueue.then(() => sendFilesNow(replyTo, files)).catch((e) => log('telegram files failed: ' + e.message)));
-  const compactButton = (convId) => [{ text: '🗜️ Compact', callback_data: `k:${convId.slice(0, 8)}` }];
-  const permButtons = (convId, requestId) => [{ text: '✅ Allow', callback_data: callbackData(convId, requestId, true) }, { text: '🚫 Deny', callback_data: callbackData(convId, requestId, false) }];
+  const compactButton = (convId) => [{ text: '🗜️ ' + t('bot.compact.button'), callback_data: `k:${convId.slice(0, 8)}` }];
+  const permButtons = (convId, requestId) => [{ text: '✅ ' + t('bot.perm.allow'), callback_data: callbackData(convId, requestId, true) }, { text: '🚫 ' + t('bot.perm.deny'), callback_data: callbackData(convId, requestId, false) }];
 
   // ---- starting work from the bot: a plain message opens seat -> model -> mode keyboards (mode never offers bypass), or /<seat> text skips them ----
-  const MODELS = [['Opus 5.5', 'claude-opus-5-5'], ['Fable 5.1', 'claude-fable-5-1'], ['Sonnet 5.5', 'claude-sonnet-5-5'], ['Haiku 5.5', 'claude-haiku-5-5'], ['Default', null]];
+  const MODELS = [['Opus 5.5', 'claude-opus-5-5'], ['Fable 5.1', 'claude-fable-5-1'], ['Sonnet 5.5', 'claude-sonnet-5-5'], ['Haiku 5.5', 'claude-haiku-5-5'], [null, null]];   // null name = the seat's default model
+  const modelName = (m) => m?.[0] ?? t('bot.pick.defaultModel');
   const PICKER_TTL = 15 * 60 * 1000;
   const pickers = new Map();           // short id -> { text, seat, model, at }; text stays here because callback_data holds 64 bytes
   let cont = null;                     // { convId, label, at }: set by "continue" in /list, taken by the next plain message
@@ -234,9 +235,9 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
   const kb = (rows) => ({ inline_keyboard: rows });
   // u = { seat: 0..1 }: a seat at 50 % or more is marked with its percentage, so the picker shows where the quota is left.
   const seatKb = (pid, u = {}) => kb(seats.map((s) => [{ text: `${seatMark(u[s]) ? seatMark(u[s]) + ' ' : ''}${SEAT_EMOJI[s] || '🔹'} ${s}${seatMark(u[s]) ? ' ' + Math.round(u[s] * 100) + '%' : ''}`, callback_data: `s:${pid}:${s}` }]));
-  const modelKb = (pid) => kb(MODELS.map(([t], i) => [{ text: t, callback_data: `m:${pid}:${i}` }]));
-  const modeKb = (pid) => kb([[{ text: 'auto', callback_data: `d:${pid}:auto` }, { text: 'ask', callback_data: `d:${pid}:ask` }]]);
-  const startedLine = (seat, model, mode) => `🚀 <b>${esc(seat)}</b> · ${MODELS.find((m) => m[1] === model)?.[0] || 'Default'} · ${mode} — started`;
+  const modelKb = (pid) => kb(MODELS.map((m, i) => [{ text: modelName(m), callback_data: `m:${pid}:${i}` }]));
+  const modeKb = (pid) => kb([[{ text: t('mode.auto'), callback_data: `d:${pid}:auto` }, { text: t('mode.ask'), callback_data: `d:${pid}:ask` }]]);
+  const startedLine = (seat, model, mode) => `🚀 <b>${esc(seat)}</b> · ${esc(modelName(MODELS.find((m) => m[1] === model)))} · ${t('mode.' + mode)} — ${t('bot.pick.started')}`;
   const taskQuote = (t) => quote(escClip(t, 120));
 
   async function handleMessage(cfg, msg) {
@@ -255,58 +256,58 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     // 1. a reply to one of our notifications goes into THAT conversation
     const convId = msg.reply_to_message && Object.hasOwn(msgMap, msg.reply_to_message.message_id) ? msgMap[msg.reply_to_message.message_id] : undefined;
     // 🖥️ messages come from desktop-app sessions (the telegram-app-notify hook, same bot): the console cannot drive those, so say so instead of "unknown conversation".
-    if (msg.reply_to_message && !convId && String(msg.reply_to_message.text || msg.reply_to_message.caption || '').trimStart().startsWith('🖥️')) return void (await say('🖥️ This is a Claude desktop app session — the bot cannot continue it. Open it in the Claude app instead.'));
-    if (msg.reply_to_message && !convId) return void (await say('🤷 I do not know which conversation this message belongs to. Reply to a newer message.'));
+    if (msg.reply_to_message && !convId && String(msg.reply_to_message.text || msg.reply_to_message.caption || '').trimStart().startsWith('🖥️')) return void (await say('🖥️ ' + t('bot.desktopSession')));
+    if (msg.reply_to_message && !convId) return void (await say('🤷 ' + t('bot.unknownConversation')));
     // "/compact [what to keep]" as a reply shrinks THAT conversation's context (idle only); it is never delivered as a chat message.
     const cm = convId && /^\/compact(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
-    if (cm) { let out; try { await onCompact(convId, cm[1]); out = '🗜️ Compacting the context…'; } catch (e) { out = errLine('Not compacted', e.message); } return void (await say(out)); }
+    if (cm) { let out; try { await onCompact(convId, cm[1]); out = '🗜️ ' + t('bot.compact.running'); } catch (e) { out = errLine(t('bot.compact.failed'), e.message); } return void (await say(out)); }
     if (convId) return void (await deliver(convId, text, msg, say, reqs));
     // 2. commands
     if (/^\/(start|help)\b/i.test(text)) return void (await say([
       '<b>🤖 Seat Console</b>', '',
-      '✍️ Plain message: I ask which seat gets it',
-      `⚡ <code>/${esc(seats[0] || 'seat')} text</code>: straight to a seat, default model, auto (${seats.map((s) => '/' + esc(s)).join(' ')})`,
-      '📊 /status: what happened in the last 24 hours', '☀️ /digest: morning digest (also sent on its own at 08:00)', '🌆 /evening: evening digest (also sent on its own at 21:00)','🧩 /multi: multi-sided project (name | folder, the brief on the next lines)', '🗂 /list: recent conversations', '🔄 /recover: conversations cut off by a crash', '⏰ /routines: scheduled routines (run only after your tap)', '↩️ Reply to a notification: continues that conversation', '🗜️ Reply to a notification with <code>/compact</code>: compacts the conversation context'].join('\n')));
+      '✍️ ' + t('bot.help.plain'),
+      '⚡ ' + t('bot.help.direct', { cmd: `<code>/${esc(seats[0] || 'seat')} ${t('bot.help.text')}</code>`, seats: seats.map((s) => '/' + esc(s)).join(' ') }),
+      '📊 /status: ' + t('bot.cmd.status'), '☀️ /digest: ' + t('bot.help.digest', { time: hm(new Date(2000, 0, 1, 8).getTime()) }), '🌆 /evening: ' + t('bot.help.evening', { time: hm(new Date(2000, 0, 1, 21).getTime()) }), '🧩 /multi: ' + t('bot.cmd.multi'), '🗂 /list: ' + t('bot.cmd.list'), '🔄 /recover: ' + t('bot.cmd.recover'), '⏰ /routines: ' + t('bot.cmd.routines'), '↩️ ' + t('bot.help.reply'), '🗜️ ' + t('bot.help.compact', { cmd: '<code>/compact</code>' })].join('\n')));
     if (isStatusRequest(text)) { const d = buildDigest(await onStatus(), Date.now(), base()); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }
     if (/^\/digest(@\w+)?$/i.test(text) && onDigest) { const d = await onDigest('morning'); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }   // the morning digest on demand
     if (/^\/(evening(@\w+)?|digest(@\w+)?\s+evening)$/i.test(text) && onDigest) { const d = await onDigest('evening'); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }   // the evening digest on demand
     if (/^\/list\b/i.test(text)) {
       const rows = (await onList()).slice(0, 8);
-      if (!rows.length) return void (await say('🗂 No conversations yet.'));
-      return void (await say(['<b>🗂 Recent conversations</b>', '', ...rows.map((c, i) => `${i + 1}. ${EMOJI[c.status] || '⏸'} <b>${esc(c.seat)}</b> · <i>${esc(clip(c.title, 40))}</i>`)].join('\n'),
-        { reply_markup: kb(rows.map((c, i) => [{ text: `↪️ Continue ${i + 1}`, callback_data: `c:${c.id.slice(0, 8)}` }, { text: `↗ Open ${i + 1}`, url: `${base()}/#${c.id}` }])) }));
+      if (!rows.length) return void (await say('🗂 ' + t('bot.list.none')));
+      return void (await say([`<b>🗂 ${t('bot.list.title')}</b>`, '', ...rows.map((c, i) => `${i + 1}. ${EMOJI[c.status] || '⏸'} <b>${esc(c.seat)}</b> · <i>${esc(clip(c.title, 40))}</i>`)].join('\n'),
+        { reply_markup: kb(rows.map((c, i) => [{ text: '↪️ ' + t('bot.list.continue', { n: i + 1 }), callback_data: `c:${c.id.slice(0, 8)}` }, { text: '↗ ' + t('bot.list.open', { n: i + 1 }), url: `${base()}/#${c.id}` }])) }));
     }
     if (/^\/recover(@\w+)?$/i.test(text)) { const d = buildRecover(await onRecoverList(), Date.now(), false); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }
     if (/^\/routines(@\w+)?$/i.test(text) && onRoutineList) { const d = onRoutineList(); return void (await say(d.text, { reply_markup: kb(d.rows) })); }
     const sc = new RegExp(`^/(${seats.join('|')})(?:@\\w+)?\\s+([\\s\\S]+)`, 'i').exec(text);
-    if (sc) { let out; try { const seat = sc[1].toLowerCase(); await onNewTask({ seat, model: null, mode: 'auto', text: sc[2].trim() }); out = startedLine(seat, null, 'auto'); } catch (e) { out = errLine('Not started', e.message); } return void (await say(out)); }
+    if (sc) { let out; try { const seat = sc[1].toLowerCase(); await onNewTask({ seat, model: null, mode: 'auto', text: sc[2].trim() }); out = startedLine(seat, null, 'auto'); } catch (e) { out = errLine(t('bot.notStarted'), e.message); } return void (await say(out)); }
     const mp = /^\/multi(?:@\w+)?(?:[ \t]+([^\n]*))?(?:\n([\s\S]*))?$/i.exec(text);   // /multi Name | /folder (optional) + the brief on the next lines
     if (mp && onMulti) {
       const [name, dir] = String(mp[1] || '').split('|').map((x) => x.trim()), brief = String(mp[2] || '').trim();
-      if (!name || !brief) return void (await say('🧩 <code>/multi Project name | /optional/folder</code>\nThen the brief on the next lines.'));
-      let out; try { const p = await onMulti({ name, dir, brief }); out = `🧩 <b>${esc(p.name)}</b>: planning started on <b>${esc(p.owner)}</b> · <code>${esc(p.dir)}</code>\nWhen the plan is ready you get a message with an approve button.`; } catch (e) { out = errLine('Not started', e.message); }
+      if (!name || !brief) return void (await say(`🧩 <code>/multi ${t('bot.multi.usageName')} | /${t('bot.multi.usageFolder')}</code>\n${t('bot.multi.usageBrief')}`));
+      let out; try { const p = await onMulti({ name, dir, brief }); out = `🧩 <b>${esc(p.name)}</b>: ${t('bot.multi.planning', { seat: `<b>${esc(p.owner)}</b>` })} · <code>${esc(p.dir)}</code>\n${t('bot.multi.planReadyNote')}`; } catch (e) { out = errLine(t('bot.notStarted'), e.message); }
       return void (await say(out));
     }
-    if (text.startsWith('/')) return void (await say('🤷 Unknown command. <code>/help</code> shows what there is.'));
+    if (text.startsWith('/')) return void (await say('🤷 ' + t('bot.unknownCommand', { help: '<code>/help</code>' })));
     // 3. a plain message: continues the conversation picked with "continue", else becomes a new task
     if (live(cont)) { const c = cont; cont = null; return void (await deliver(c.convId, text, msg, say, reqs)); }
-    if (msg.photo?.length || doc) return void (await say('📎 Photos and files: reply to the notification of the conversation they belong to.'));
+    if (msg.photo?.length || doc) return void (await say('📎 ' + t('bot.filesReply')));
     if (!text) return;
     const pid = Math.random().toString(16).slice(2, 8);
     for (const [k, v] of pickers) if (!live(v)) pickers.delete(k);
     pickers.set(pid, { text, at: Date.now() });
-    await say(`${taskQuote(text)}\nWhich seat?`, { reply_markup: seatKb(pid, await onUsage().catch(() => ({}))) });
+    await say(`${taskQuote(text)}\n${t('bot.pick.seat')}`, { reply_markup: seatKb(pid, await onUsage().catch(() => ({}))) });
   }
   async function deliver(convId, text, msg, say, reqs) {
     let images = [], files = [];
     const isDoc = !msg.photo?.length && !!(msg.document || msg.video || msg.audio || msg.voice);
     if (msg.photo?.length || isDoc) {
-      if (!onReply.acceptsImages) return void (await say('📷 Photos can only be sent through the console.'));
-      let got; try { got = await reqs(); } catch (e) { return void (await say(e.tooBig ? '📎 <b>File too big for the bot</b> · Telegram lets a bot download up to 20 MB. Send it through the console (Attach).' : `❌ <b>Could not download the ${isDoc ? 'file' : 'photo'}</b>`)); }
+      if (!onReply.acceptsImages) return void (await say('📷 ' + t('bot.photosConsoleOnly')));
+      let got; try { got = await reqs(); } catch (e) { return void (await say(e.tooBig ? `📎 <b>${t('bot.file.tooBigTitle')}</b> · ${t('bot.file.tooBig')}` : `❌ <b>${t(isDoc ? 'bot.file.downloadFailed' : 'bot.photo.downloadFailed')}</b>`)); }
       if (isDoc) files = got; else images = got;
     }
-    if (!text && !images.length && !files.length) return void (await say('✍️ Nothing to send. Reply with text' + (onReply.acceptsImages ? ', a photo or a file.' : '.')));
-    let out; try { out = await onReply(convId, { text: text || (files.length ? 'See the attached file.' : 'See the attached image.'), images, files }); } catch (e) { out = errLine('Not sent', e.message); }
+    if (!text && !images.length && !files.length) return void (await say('✍️ ' + t(onReply.acceptsImages ? 'bot.nothingToSendMedia' : 'bot.nothingToSend')));
+    let out; try { out = await onReply(convId, { text: text || (files.length ? 'See the attached file.' : 'See the attached image.'), images, files }); } catch (e) { out = errLine(t('bot.notSent'), e.message); }
     await say(out);
   }
 
@@ -314,15 +315,15 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
   async function pickerStep(cfg, cb) {
     const [kind, a, b] = cb.data.split(':');
     if (kind === 'r') {
-      if (a !== 'no' && a !== 'all' && !/^[0-9a-f]{8}$/.test(a)) return 'unknown button';
+      if (a !== 'no' && a !== 'all' && !/^[0-9a-f]{8}$/.test(a)) return t('bot.toast.unknownButton');
       const left = async () => { const d = buildRecover(await onRecoverList(), Date.now(), true); return d.rows || []; };
       const setKb = async (rows) => call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: rows } }).catch(() => {});
-      if (a === 'no') { await setKb([]); return 'ok, not now'; }
+      if (a === 'no') { await setKb([]); return t('bot.toast.notNow'); }
       const res = await onRecover(a);
       await setKb(await left());   // buttons of conversations already resumed disappear, so a second tap has nothing to press
       const lines = [...res.resumed.map((c) => `▶️ <b>${esc(c.seat)}</b> · <i>${esc(clip(c.title, 40))}</i>`), ...res.failed.map((c) => `⚠️ <b>${esc(c.seat)}</b> · <i>${esc(clip(c.title, 40))}</i> · <code>${escClip(c.error, 120)}</code>`)];
-      if (lines.length) await callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text: [`<b>Resumed ${res.resumed.length}</b>`, ...lines].join('\n'), reply_to_message_id: cb.message.message_id, allow_sending_without_reply: true }).catch(() => {});
-      return res.resumed.length ? `resumed ${res.resumed.length}` : res.failed.length ? 'failed, see message' : 'already resumed';
+      if (lines.length) await callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text: [`<b>${t('bot.recover.resumed', { n: num(res.resumed.length) })}</b>`, ...lines].join('\n'), reply_to_message_id: cb.message.message_id, allow_sending_without_reply: true }).catch(() => {});
+      return res.resumed.length ? t('bot.toast.resumed', { n: num(res.resumed.length) }) : res.failed.length ? t('bot.toast.failedSee') : t('bot.toast.alreadyResumed');
     }
     const edit =(text, markup) => callH(cfg, 'editMessageText', { chat_id: cfg.chatId, message_id: cb.message.message_id, text, ...(markup ? { reply_markup: markup } : {}) }).catch(() => {});
     if (kind === 'q') {   // routine ask / run-now buttons: routines.mjs decides, we only show its answer
@@ -331,34 +332,34 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       return out.toast;
     }
     if (kind === 'x' && onMultiApprove) {   // "approve and dispatch" under a multi-sided plan; the button goes, one tap
-      if (!/^[0-9a-f]{8}$/.test(a)) return 'unknown button';
+      if (!/^[0-9a-f]{8}$/.test(a)) return t('bot.toast.unknownButton');
       let out; try { out = await onMultiApprove(a); } catch (e) { return String(e.message || e).slice(0, 190); }
       await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
       return out;
     }
     if (kind === 'k') {   // "Compact" button on a finished-message
-      if (!/^[0-9a-f]{8}$/.test(a)) return 'unknown button';
+      if (!/^[0-9a-f]{8}$/.test(a)) return t('bot.toast.unknownButton');
       await onCompact(a);
       await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});   // one tap, one compaction
-      return 'compacting…';
+      return t('bot.toast.compacting');
     }
     if (kind === 'c') {
-      const c = findConv(a); if (!c) return 'conversation not found';
+      const c = findConv(a); if (!c) return t('bot.toast.convNotFound');
       cont = { convId: c.id, at: Date.now() };
-      await callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text: `↪️ Your next message goes to <b>${esc(c.seat)}</b> · <i>${esc(clip(c.title, 40))}</i>` }).catch(() => {});
-      return 'next message continues it';
+      await callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text: '↪️ ' + t('bot.list.nextGoesTo', { seat: `<b>${esc(c.seat)}</b>` }) + ` · <i>${esc(clip(c.title, 40))}</i>` }).catch(() => {});
+      return t('bot.toast.nextContinues');
     }
     const p = pickers.get(a);
-    if (!live(p)) { pickers.delete(a); await edit('⌛ <b>Expired</b> · send the task again.'); return 'expired, send the task again'; }
-    if (kind === 's') { p.seat = b; await edit(`${taskQuote(p.text)}\n<b>${esc(p.seat)}</b> · which model?`, modelKb(a)); return p.seat; }
-    if (kind === 'm') { p.model = MODELS[+b]?.[1] ?? null; await edit(`${taskQuote(p.text)}\n<b>${esc(p.seat)}</b> · ${MODELS[+b]?.[0]} · which mode?`, modeKb(a)); return 'model set'; }
+    if (!live(p)) { pickers.delete(a); await edit(`⌛ <b>${t('bot.pick.expired')}</b> · ${t('bot.pick.sendAgain')}`); return t('bot.toast.expired'); }
+    if (kind === 's') { p.seat = b; await edit(`${taskQuote(p.text)}\n<b>${esc(p.seat)}</b> · ${t('bot.pick.model')}`, modelKb(a)); return p.seat; }
+    if (kind === 'm') { p.model = MODELS[+b]?.[1] ?? null; await edit(`${taskQuote(p.text)}\n<b>${esc(p.seat)}</b> · ${esc(modelName(MODELS[+b]))} · ${t('bot.pick.mode')}`, modeKb(a)); return t('bot.toast.modelSet'); }
     if (kind === 'd') {
-      if (b !== 'auto' && b !== 'ask') return 'unknown mode';   // bypass is deliberately not reachable from a phone chat
+      if (b !== 'auto' && b !== 'ask') return t('bot.toast.unknownMode');   // bypass is deliberately not reachable from a phone chat
       pickers.delete(a);
-      let out; try { await onNewTask({ seat: p.seat, model: p.model, mode: b, text: p.text }); out = startedLine(p.seat, p.model, b); } catch (e) { out = errLine('Not started', e.message); }
-      await edit(`${taskQuote(p.text)}\n${out}`); return 'ok';
+      let out; try { await onNewTask({ seat: p.seat, model: p.model, mode: b, text: p.text }); out = startedLine(p.seat, p.model, b); } catch (e) { out = errLine(t('bot.notStarted'), e.message); }
+      await edit(`${taskQuote(p.text)}\n${out}`); return t('bot.toast.ok');
     }
-    return 'unknown button';
+    return t('bot.toast.unknownButton');
   }
 
   async function handleUpdate(cfg, u) {
@@ -371,22 +372,22 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       const next = { ...cfg, chatId: String(msg.chat.id) };
       fs.writeFileSync(cfgFile, JSON.stringify(next, null, 2));
       log('telegram chat linked'); linkCode = null; if (linkCodeFile) fs.rmSync(linkCodeFile, { force: true });
-      await callH(next, 'sendMessage', { chat_id: next.chatId, text: '🔗 <b>Seat Console</b> linked. You will get finished, failed and approval messages here. <code>/help</code> shows what you can send.' }).catch(() => {});
+      await callH(next, 'sendMessage', { chat_id: next.chatId, text: '🔗 ' + t('bot.linked', { name: '<b>Seat Console</b>', help: '<code>/help</code>' }) }).catch(() => {});
       return;
     }
     if (msg && cfg.chatId && String(msg.chat?.id) === String(cfg.chatId)) return handleMessage(cfg, msg).catch((e) => log('telegram message failed: ' + e.message));
     const cb = u.callback_query;
     if (!cb || !cfg.chatId) return;
     if (String(cb.message?.chat?.id) !== String(cfg.chatId)) { await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {}); return; } // strangers are ignored
-    if (/^[smdcrqkx]:/.test(cb.data || '')) { let t; try { t = await pickerStep(cfg, cb); } catch (e) { t = 'failed: ' + e.message; } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(t, 190) }).catch(() => {}); return; }
+    if (/^[smdcrqkx]:/.test(cb.data || '')) { let toast; try { toast = await pickerStep(cfg, cb); } catch (e) { toast = t('bot.toast.failed', { error: e.message }); } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(toast, 190) }).catch(() => {}); return; }
     const p = parseCallback(cb.data);
     let outcome;
-    if (!p) outcome = 'unknown button';
-    else { try { outcome = await onDecision(p.convShort, p.requestId, p.allow); } catch (e) { outcome = 'not applied: ' + e.message; } }
-    await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(outcome, 190) }).catch(() => {});
+    if (!p) outcome = t('bot.toast.unknownButton');
+    else { try { outcome = await onDecision(p.convShort, p.requestId, p.allow); } catch (e) { outcome = t('bot.toast.notApplied', { error: e.message }); } }
+    await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(outcome === 'Allowed' ? t('bot.perm.allowed') : outcome === 'Denied' ? t('bot.perm.denied') : outcome, 190) }).catch(() => {});
     // The original keeps its formatting (editing the text would flatten the <pre>): drop the buttons and answer under it.
     await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
-    const line = outcome === 'Allowed' ? '✅ <b>Allowed</b>' : outcome === 'Denied' ? '🚫 <b>Denied</b>' : `⚠️ <b>Not done</b> · <code>${escClip(outcome, 200)}</code>`;
+    const line = outcome === 'Allowed' ? `✅ <b>${t('bot.perm.allowed')}</b>` : outcome === 'Denied' ? `🚫 <b>${t('bot.perm.denied')}</b>` : `⚠️ <b>${t('bot.perm.notDone')}</b> · <code>${escClip(outcome, 200)}</code>`;
     await callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text: line, reply_to_message_id: cb.message.message_id, allow_sending_without_reply: true }).catch(() => {});
   }
 
@@ -409,8 +410,8 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       if (!cfg) { if (!warned) { warned = true; log('telegram: not configured'); } await new Promise((r) => setTimeout(r, idleMs)); continue; }
       try {
         if (!cfg.chatId) ensureLinkCode();
-        if (commandsFor && commandsFor !== cfg.botToken) { offset = 0; setOffset(0); } // the token changed while running: another bot's update ids start over
-        if (commandsFor !== cfg.botToken) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: 'status: the last 24 hours' }, ...seats.map((s) => ({ command: s, description: `new task on ${s} : default model, auto mode` })), { command: 'digest', description: 'morning digest: usage, stuck, finished overnight, errors' }, { command: 'evening', description: 'evening digest: finished today, stuck, errors, tomorrow' }, { command: 'list', description: 'recent conversations: continue or open' }, { command: 'recover', description: 'conversations cut off by a crash: resume them' }, { command: 'routines', description: 'scheduled routines: next due, run now' }, { command: 'multi', description: 'multi-sided project: name | folder, the brief on the next lines' }] }); commandsFor = cfg.botToken; }
+        if (commandsFor && commandsFor.split('|')[0] !== cfg.botToken) { offset = 0; setOffset(0); } // the token changed while running: another bot's update ids start over
+        if (commandsFor !== cfg.botToken + '|' + lang()) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: t('bot.cmd.status') }, ...seats.map((s) => ({ command: s, description: t('bot.cmd.seat', { seat: s }) })), { command: 'digest', description: t('bot.cmd.digest') }, { command: 'evening', description: t('bot.cmd.evening') }, { command: 'list', description: t('bot.cmd.list') }, { command: 'recover', description: t('bot.cmd.recover') }, { command: 'routines', description: t('bot.cmd.routines') }, { command: 'multi', description: t('bot.cmd.multi') }] }); commandsFor = cfg.botToken + '|' + lang(); }   // the menu follows a language change too
         const ups = await call(cfg, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }, 45000);
         for (const u of ups) { offset = u.update_id + 1; setOffset(offset); await handleUpdate(readCfg() || cfg, u); }
       } catch (e) { log('telegram poll failed: ' + e.message); await new Promise((r) => setTimeout(r, 30000)); }

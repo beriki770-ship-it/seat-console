@@ -12,13 +12,37 @@ const api = (path, body) => fetch(path, body ? { method: 'POST', headers: { 'Con
 const div = (cls, html) => { const d = document.createElement('div'); d.className = cls; d.innerHTML = html; return d; };
 const allConvs = () => seats.flatMap((s) => s.conversations);
 const curConv = () => allConvs().find((c) => c.id === cur.id);
-const label = { idle: 'idle', working: 'working', waiting: 'needs approval', error: 'error', stopped: 'stopped', interrupted: 'interrupted' };
+// ---- language: strings in /locales/<code>.json (en.json is the source; the bot uses the same files). The server writes the chosen language into <html lang dir>.
+// t(key, vars): locale -> English -> the key. tn(): plural by the language's rules (key.one / key.few / key.other ...). Dates and numbers: Intl, same locale.
+const RTL = ['he', 'ar'];
+let LANG = document.documentElement.lang || 'en', L = {}, EN = {};
+const intl = () => (LANG === 'en' ? 'en-GB' : LANG);   // English is written day-first on a 24-hour clock, as the console always did
+const fill = (s, v) => (v ? s.replace(/\{(\w+)\}/g, (m, n) => (Object.hasOwn(v, n) ? v[n] : m)) : s);
+const t = (k, v) => fill(L[k] ?? EN[k] ?? k, v);
+const tk = (prefix, k) => { const s = t(prefix + k); return s === prefix + k ? k : s; };   // a value from the server (status, window name): its label, or the value itself
+const tn = (k, n, v) => { const p = (d, code) => d[`${k}.${new Intl.PluralRules(code).select(n)}`] ?? d[`${k}.other`]; return fill(p(L, LANG) ?? p(EN, 'en') ?? k, { n: num(n), ...v }); };
+const num = (n, o) => new Intl.NumberFormat(intl(), o).format(n);
+const pct = (u) => num(Math.round(u * 100) / 100, { style: 'percent', maximumFractionDigits: 0 });
+const usd = (n) => num(n, { style: 'currency', currency: 'USD', currencyDisplay: 'narrowSymbol', minimumFractionDigits: 2, maximumFractionDigits: 2 });
+async function loadLang(code) {
+  const get = (c) => fetch(`/locales/${c}.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  if (!EN.__loaded) EN = { ...(await get('en')), __loaded: 1 };
+  L = code === 'en' ? EN : await get(code);
+  LANG = code; document.documentElement.lang = code; document.documentElement.dir = RTL.includes(code) ? 'rtl' : 'ltr';
+  applyStatic();
+}
+// index.html's own text: data-i18n (text), data-i18n-title / -placeholder / -aria-label / -label (attributes).
+function applyStatic(root = document) {
+  for (const el of root.querySelectorAll('[data-i18n]')) el.textContent = t(el.dataset.i18n);
+  for (const a of ['title', 'placeholder', 'aria-label', 'label']) for (const el of root.querySelectorAll(`[data-i18n-${a}]`)) el.setAttribute(a, t(el.getAttribute('data-i18n-' + a)));
+}
+const label = (s) => tk('status.', s);
 
 // Minimal markdown: fenced code, lists, paragraphs, inline code, bold, links. Everything is escaped first.
 // A code block gets a Copy button (raw text, see copyText) and ONE direction for the whole block (blockDir): per-line bidi broke the indentation of code with Hebrew comments.
 function md(src) {
   const parts = src.split(/```[^\n]*\n?/);
-  return parts.map((p, i) => i % 2 ? `<div class="code"><button type="button" class="copy" data-copy aria-label="Copy code">Copy</button><pre dir="${blockDir(p)}"><code>${esc(p.replace(/\n$/, ''))}</code></pre></div>` : p.split(/\n{2,}/).map((blk) => {
+  return parts.map((p, i) => i % 2 ? `<div class="code"><button type="button" class="copy" data-copy aria-label="${t('code.copyLabel')}">${t('code.copy')}</button><pre dir="${blockDir(p)}"><code>${esc(p.replace(/\n$/, ''))}</code></pre></div>` : p.split(/\n{2,}/).map((blk) => {
     if (!blk.trim()) return '';
     const inline = (t) => esc(t).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
       .replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
@@ -42,11 +66,11 @@ function previews(text) {
   for (const p of paths) {
     const src = `/api/file?conv=${encodeURIComponent(cur.id || '')}&path=${encodeURIComponent(p)}`, name = p.split(/[\\/]/).pop(), kind = fileKind(p);
     const card = div('pcard', `<small dir="auto">${esc(name)}</small>`);
-    const gone = () => { card.className = 'pcard gone'; card.innerHTML = `<small dir="auto">${esc(name)}: not available</small>`; };
+    const gone = () => { card.className = 'pcard gone'; card.innerHTML = `<small dir="auto">${t('file.notAvailable', { name: `<bdi>${esc(name)}</bdi>` })}</small>`; };
     let el;
     if (kind === 'video') { el = document.createElement('video'); el.controls = true; el.preload = 'metadata'; el.playsInline = true; whenVisible(card, () => { el.src = src; }); }
     else if (kind === 'image') { el = document.createElement('a'); el.href = src; el.target = '_blank'; el.rel = 'noopener'; el.innerHTML = `<img loading="lazy" alt="${esc(name)}" src="${src}">`; el.firstChild.onerror = gone; }
-    else { el = document.createElement('a'); el.href = src; el.target = '_blank'; el.rel = 'noopener'; el.className = 'open'; el.textContent = 'Open ' + name; whenVisible(card, () => fetch(src, { method: 'HEAD' }).then((r) => { if (!r.ok) gone(); }, gone)); }
+    else { el = document.createElement('a'); el.href = src; el.target = '_blank'; el.rel = 'noopener'; el.className = 'open'; el.textContent = t('file.open', { name }); whenVisible(card, () => fetch(src, { method: 'HEAD' }).then((r) => { if (!r.ok) gone(); }, gone)); }
     if (kind === 'video') el.onerror = gone;
     card.prepend(el); box.appendChild(card);
   }
@@ -60,7 +84,7 @@ let run = null, loading = null, showTools = (() => { try { return localStorage.g
 function runSummary(r) {
   const n = Object.values(r._count).reduce((a, b) => a + b, 0);
   const parts = Object.entries(r._count).sort((a, b) => b[1] - a[1]), top = parts.slice(0, 4).map(([k, v]) => v > 1 ? `${esc(k)} ×${v}` : esc(k)).join(', ') + (parts.length > 4 ? ', …' : '');
-  r.firstChild.innerHTML = `🔧 ${n === 1 ? '1 action' : n + ' actions'} · ${top}` + (r._err ? ` <span class="runerr">· ⚠ ${r._err} errors</span>` : '');
+  r.firstChild.innerHTML = `🔧 ${tn('run.actions', n)} · <bdi>${top}</bdi>` + (r._err ? ` <span class="runerr">· ⚠ ${tn('run.errors', r._err)}</span>` : '');
 }
 function newRun() {
   const r = document.createElement('details'); r.className = 'toolrun'; r.open = showTools; r._count = {}; r._err = 0;
@@ -70,21 +94,21 @@ function render(ev, st, target = $('log')) {
   const out = [];
   if (ev.type === 'console_user') {
     const u = div('msg user', esc(ev.text)); u.dir = 'auto'; u.appendChild(pinBtn());
-    if (ev.images?.length) { const t = div('thumbs', ''); for (const n of ev.images) { const src = `/api/file?conv=${encodeURIComponent(cur.id)}&upload=${encodeURIComponent(n)}`; t.insertAdjacentHTML('beforeend', `<a href="${src}" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="attached image" src="${src}"></a>`); } u.appendChild(t); }
-    if (ev.files?.length) { const t = div('thumbs', ''); for (const f of ev.files) t.insertAdjacentHTML('beforeend', `<a class="fchip" dir="ltr" href="/api/file?conv=${encodeURIComponent(cur.id)}&upload=${encodeURIComponent(f.name)}" target="_blank" rel="noopener">📎 <bdi>${esc(f.label)}</bdi> · ${sizeText(f.size)}</a>`); u.appendChild(t); }
+    if (ev.images?.length) { const th = div('thumbs', ''); for (const n of ev.images) { const src = `/api/file?conv=${encodeURIComponent(cur.id)}&upload=${encodeURIComponent(n)}`; th.insertAdjacentHTML('beforeend', `<a href="${src}" target="_blank" rel="noopener"><img class="thumb" loading="lazy" alt="${t('composer.attachedImage')}" src="${src}"></a>`); } u.appendChild(th); }
+    if (ev.files?.length) { const th = div('thumbs', ''); for (const f of ev.files) th.insertAdjacentHTML('beforeend', `<a class="fchip" dir="ltr" href="/api/file?conv=${encodeURIComponent(cur.id)}&upload=${encodeURIComponent(f.name)}" target="_blank" rel="noopener">📎 <bdi>${esc(f.label)}</bdi> · ${sizeText(f.size)}</a>`); u.appendChild(th); }
     out.push(u);
   }
   else if (ev.type === 'console_error') out.push(div('msg note err', esc(ev.text)));
-  else if (ev.type === 'console_spawn') out.push(div('msg note', `started · ${esc(ev.mode)} mode · pid ${ev.pid}`));
+  else if (ev.type === 'console_spawn') out.push(div('msg note', t('log.started', { mode: esc(tk('mode.', ev.mode)), pid: ev.pid })));
   else if (ev.type === 'console_perm') {
     const live = st.pending.has(ev.requestId);
-    const card = div('msg perm', `<b>${esc(ev.tool)} wants to run</b><pre dir="auto">${esc(ev.input.command || ev.blockedPath || JSON.stringify(ev.input, null, 2))}</pre>`
+    const card = div('msg perm', `<b>${t('perm.wants', { tool: `<bdi>${esc(ev.tool)}</bdi>` })}</b><pre dir="auto">${esc(ev.input.command || ev.blockedPath || JSON.stringify(ev.input, null, 2))}</pre>`
       + (ev.description ? `<small dir="auto">${esc(ev.description)}</small>` : '')
-      + `<div class="acts">${live ? '<button class="primary" data-a="1">Allow once</button><button data-a="0">Deny</button>' : '<em>expired</em>'}</div>`);
+      + `<div class="acts">${live ? `<button class="primary" data-a="1">${t('perm.allow')}</button><button data-a="0">${t('perm.deny')}</button>` : `<em>${t('perm.expired')}</em>`}</div>`);
     card.dataset.req = ev.requestId; permCards[ev.requestId] = card; out.push(card);
   } else if (ev.type === 'console_perm_done') {
     const card = permCards[ev.requestId];
-    if (card) card.querySelector('.acts').innerHTML = `<em>${ev.allow ? 'allowed' : 'denied'}</em>`;
+    if (card) card.querySelector('.acts').innerHTML = `<em>${t(ev.allow ? 'perm.allowed' : 'perm.denied')}</em>`;
   } else if (ev.type === 'assistant') {
     for (const c of ev.message.content || []) {
       if (c.type === 'text' && c.text.trim()) { run = null; const a = div('msg assistant', md(c.text)); a.appendChild(pinBtn()); out.push(a); const pv = previews(c.text); if (pv) out.push(pv); }
@@ -107,19 +131,19 @@ function render(ev, st, target = $('log')) {
       }
     }
   } else if (ev.type === 'system' && ev.subtype === 'permission_denied') {
-    out.push(div('msg note err', `blocked: ${esc(ev.tool_name)}. ${esc(ev.message || '')}`));
+    out.push(div('msg note err', t('log.blocked', { tool: `<bdi>${esc(ev.tool_name)}</bdi>` }) + ` <bdi>${esc(ev.message || '')}</bdi>`));
   } else if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
     const m = ev.compact_metadata || {};
-    out.push(div('msg note', `compacted (${esc(m.trigger || 'manual')}): ${kfmt(m.pre_tokens || 0)} → ${kfmt(m.post_tokens || 0)} tokens`));
+    out.push(div('msg note', t('log.compacted', { trigger: esc(m.trigger || 'manual'), from: kfmt(m.pre_tokens || 0), to: kfmt(m.post_tokens || 0) })));
   } else if (ev.type === 'result' && ev.local_command) {
     // reply of a /context or /compact the console sent itself: the numbers live in the meter, nothing to show here
   } else if (ev.type === 'result') {
-    const res = div('msg result', `${ev.is_error ? 'error · ' : ''}done · ~$${(ev.total_cost_usd || 0).toFixed(2)} API value · ${Math.round((ev.duration_ms || 0) / 1000)}s `);
+    const res = div('msg result', `${ev.is_error ? t('log.errorPrefix') + ' · ' : ''}${t('log.done', { cost: '<bdi dir="ltr">~' + usd(ev.total_cost_usd || 0) + '</bdi>', secs: num(Math.round((ev.duration_ms || 0) / 1000)) })} `);
     if (!ev.is_error && ev.result) {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'hand'; b.textContent = 'Send to seat…';
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'hand'; b.textContent = t('result.sendTo');
       b.onclick = () => {
-        const sel = document.createElement('select'); sel.setAttribute('aria-label', 'Target seat');
-        sel.innerHTML = '<option value="">Send to seat…</option>' + seats.filter((s) => !s.remote).map((s) => `<option>${esc(s.name)}</option>`).join('');
+        const sel = document.createElement('select'); sel.setAttribute('aria-label', t('result.targetSeat'));
+        sel.innerHTML = `<option value="">${t('result.sendTo')}</option>` + seats.filter((s) => !s.remote).map((s) => `<option>${esc(s.name)}</option>`).join('');
         sel.onchange = () => sel.value && handoff(sel.value, ev.result);
         b.replaceWith(sel); sel.focus();
       };
@@ -150,13 +174,13 @@ $('log').addEventListener('toggle', async (e) => {
 const CLAUDE_MODELS = $('model').innerHTML, agentModelCache = {};
 async function setModels(s, c) {
   const sel = $('model'), want = c ? c.model || '' : '';
-  if (!s?.agent) { if (sel.dataset.agent) { sel.innerHTML = CLAUDE_MODELS; delete sel.dataset.agent; delete sel.dataset.seat; } if (c) sel.value = want; return; }
-  if (sel.dataset.agent !== s.agent) { sel.innerHTML = '<option value="">default model</option>'; sel.dataset.agent = s.agent; }
+  if (!s?.agent) { if (sel.dataset.agent) { sel.innerHTML = CLAUDE_MODELS; applyStatic(sel); delete sel.dataset.agent; delete sel.dataset.seat; } if (c) sel.value = want; return; }
+  if (sel.dataset.agent !== s.agent) { sel.innerHTML = `<option value="">${t('composer.defaultModel')}</option>`; sel.dataset.agent = s.agent; }
   sel.dataset.seat = s.name;
   const list = agentModelCache[s.name] || await api('/api/models?seat=' + encodeURIComponent(s.name)).then((r) => (r.error ? r.models || [] : (agentModelCache[s.name] = r.models || []))).catch(() => []);   // a failed read is retried next time
   if (sel.dataset.agent !== s.agent || sel.dataset.seat !== s.name) return;   // the user moved on to another seat meanwhile
   const def = list.find((m) => m.default);
-  sel.innerHTML = '<option value="">default model' + (def ? ' (' + esc(def.name) + ')' : '') + '</option>' + list.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+  sel.innerHTML = `<option value="">${def ? t('composer.defaultModelNamed', { name: esc(def.name) }) : t('composer.defaultModel')}</option>` + list.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
   sel.value = want;
 }
 async function showConversation() {
@@ -175,27 +199,27 @@ async function showConversation() {
     for (const d of buf) applyEvent(d, st0, false);
   }
   const st = cur.id && convo[cur.id], c = curConv();
-  if (!st || !st.events.length) log.appendChild(div('empty', 'New conversation. Write a task below.'));
+  if (!st || !st.events.length) log.appendChild(div('empty', t('conv.empty')));
   else {
     // The server sends the last 500 events; the ones before are fetched on demand (index = position in the server's list).
-    if (st.from > 0) log.appendChild(div('note', `<button type="button" data-earlier="1">Load earlier (${st.from} more)</button>`));
+    if (st.from > 0) log.appendChild(div('note', `<button type="button" data-earlier="1">${t('conv.loadEarlier', { n: num(st.from) })}</button>`));
     const frag = document.createDocumentFragment();   // one DOM insert for the whole window, not one per event
     st.events.forEach((e) => render(e, st, frag));
     log.appendChild(frag);
   }
   log.scrollTop = log.scrollHeight;
-  $('head').innerHTML = `<button id="menu" aria-label="Seats">☰</button><span id="htitle" dir="auto" ${c ? 'title="Double-click to rename"' : ''}>${esc(c ? c.title : s.name + ': new conversation')}</span>`
-    + (c ? '<button type="button" id="renamebtn" aria-label="Rename conversation">✎</button>' : '')
-    + `<small>${esc(s.name)} · ${esc(s.email)}</small>` + (c ? `<span class="badge ${c.mode}">${c.mode}</span>` : '') + ctxBtnHtml(c)
-    + `<button type="button" id="toolsbtn" aria-pressed="${showTools}">Show actions</button>`;
+  $('head').innerHTML = `<button id="menu" aria-label="${t('side.seats')}">☰</button><span id="htitle" dir="auto" ${c ? `title="${t('conv.renameHint')}"` : ''}>${c ? esc(c.title) : t('conv.newTitle', { seat: `<bdi>${esc(s.name)}</bdi>` })}</span>`
+    + (c ? `<button type="button" id="renamebtn" aria-label="${t('conv.rename')}">✎</button>` : '')
+    + `<small dir="ltr">${esc(s.name)} · ${esc(s.email)}</small>` + (c ? `<span class="badge ${c.mode}">${esc(tk('mode.', c.mode))}</span>` : '') + ctxBtnHtml(c)
+    + `<button type="button" id="toolsbtn" aria-pressed="${showTools}">${t('conv.showActions')}</button>`;
   closeCtx();
   $('cwd').value = c ? c.cwd : s.cwd;
   // An existing conversation's model and effort come from the conversation: left on whatever the last one used, the next message would silently restart it with those.
   setModels(s, c);   // an agent seat (Codex, Antigravity) shows ITS models; a Claude seat the Claude list
-  if (c) { $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || 'default'; }
+  if (c) { $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || t('composer.effortDefault'); }
   if (c) $('mode').value = c.mode || 'auto';   // a remote run has no mode; changeable on an existing conversation too: the next message restarts it in the new mode (server send())
   $('banner').hidden = !(c && (c.status === 'interrupted' || c.status === 'stopped'));
-  $('banner').firstElementChild.textContent = c && c.status === 'interrupted' ? 'Interrupted: the server restarted while this turn was running. Resume continues the same session.' : 'Stopped. Sending a message resumes this conversation.';
+  $('banner').firstElementChild.textContent = t(c && c.status === 'interrupted' ? 'conv.interrupted' : 'conv.stopped');
   $('menu').onclick = () => document.body.classList.toggle('drawer');
   // A remote run (server: remote.mjs) of a read-only remote: no composer, no pins; the server refuses every POST for it anyway.
   // A remote with "control": true: its run gets the composer, and the first message continues the run's session in a NEW conversation there (composer submit).
@@ -204,21 +228,21 @@ async function showConversation() {
 }
 
 // ---- context window meter: header chip + panel (breakdown, "until auto-compact", Refresh, Compact session). Numbers come from the server (c.ctx), the CLI's own output. ----
-const kfmt = (n) => (n = Number(n) || 0, n >= 1e6 ? +(n / 1e6).toFixed(2) + 'M' : n >= 1000 ? +(n / 1000).toFixed(1) + 'k' : String(n));
-const ctxText = (x) => x.window ? `${kfmt(x.used)} / ${kfmt(x.window)} (${Math.round(x.pct)}%)` : kfmt(x.used);
+const kfmt = (n) => num(Number(n) || 0, { notation: 'compact', maximumFractionDigits: n >= 1e6 ? 2 : 1 });
+const ctxText = (x) => x.window ? `${kfmt(x.used)} / ${kfmt(x.window)} (${pct(x.pct / 100)})` : kfmt(x.used);
 const ctxBtnHtml = (c) => {
   const x = c?.ctx; if (!x) return '';
-  return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="Context window"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span>${x.compacting ? 'compacting…' : ctxText(x)}</span></button>`;
+  return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="${t('ctx.title')}"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span>${x.compacting ? t('ctx.compacting') : ctxText(x)}</span></button>`;
 };
 const ctxBusy = (c) => c.remote || c.status === 'working' || c.status === 'waiting' || c.status === 'interrupted' || c.ctx?.compacting;
 function ctxPanelHtml(c) {
   const x = c.ctx, b = x.breakdown;
-  const rows = b ? b.categories.map((k) => `<tr class="${/deferred/.test(k.name) || k.derived ? 'def' : ''}"><td>${esc(k.name)}</td><td>${kfmt(k.tokens)}</td><td>${k.pct}%</td></tr>`).join('') : '';
-  return `<h3>Context window</h3><div><b>${esc(ctxText(x))}</b></div>`
+  const rows = b ? b.categories.map((k) => `<tr class="${/deferred/.test(k.name) || k.derived ? 'def' : ''}"><td>${esc(k.name)}</td><td>${kfmt(k.tokens)}</td><td>${pct(k.pct / 100)}</td></tr>`).join('') : '';
+  return `<h3>${t('ctx.title')}</h3><div><b dir="ltr">${esc(ctxText(x))}</b></div>`
     + (x.window ? `<span class="cxbar cx-${x.level}"><i style="width:${Math.min(100, x.pct)}%"></i></span>` : '')
-    + (x.left != null ? `<small>${x.left ? kfmt(x.left) + ' until auto-compact' : 'at the auto-compact threshold'}</small>` : '')
-    + (b ? `<table>${rows}</table><small>breakdown from ${clock(b.at)}</small>` : '<small>No breakdown yet. Refresh reads it from the CLI (/context) while the conversation is idle.</small>')
-    + `<div class="cxacts"><button type="button" id="cxrefresh" ${ctxBusy(c) ? 'disabled' : ''}>Refresh</button><button type="button" id="cxcompact" class="primary" ${ctxBusy(c) ? 'disabled' : ''}>${x.compacting ? 'Compacting…' : 'Compact session'}</button></div><small id="cxmsg" role="status"></small>`;
+    + (x.left != null ? `<small>${x.left ? t('ctx.left', { n: kfmt(x.left) }) : t('ctx.atThreshold')}</small>` : '')
+    + (b ? `<table>${rows}</table><small>${t('ctx.breakdownAt', { time: clock(b.at) })}</small>` : `<small>${t('ctx.noBreakdown', { cmd: '<code>/context</code>' })}</small>`)
+    + `<div class="cxacts"><button type="button" id="cxrefresh" ${ctxBusy(c) ? 'disabled' : ''}>${t('common.refresh')}</button><button type="button" id="cxcompact" class="primary" ${ctxBusy(c) ? 'disabled' : ''}>${x.compacting ? t('ctx.compactingBtn') : t('ctx.compact')}</button></div><small id="cxmsg" role="status"></small>`;
 }
 // Redraws the chip and, when open, the panel; called when the conversation opens and on every server update of it.
 function refreshCtx() {
@@ -244,33 +268,32 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeCtx()
 $('ctxpanel').addEventListener('click', async (e) => {
   const act = e.target.closest('#cxrefresh') ? 'context' : e.target.closest('#cxcompact') ? 'compact' : null; if (!act) return;
   let instructions;
-  if (act === 'compact') { instructions = prompt('Compact this conversation. What should be kept? (optional)', ''); if (instructions === null) return; }
-  $('cxmsg').textContent = act === 'compact' ? 'Compacting…' : 'Reading…';
+  if (act === 'compact') { instructions = prompt(t('ctx.compactPrompt'), ''); if (instructions === null) return; }
+  $('cxmsg').textContent = t(act === 'compact' ? 'ctx.compactingBtn' : 'ctx.reading');
   const r = await api('/api/' + act, { conversationId: cur.id, instructions: instructions || undefined });
   if (r.error) $('cxmsg').textContent = r.error;
 });
 
 // Usage meter: the CLI reports the account's rate-limit windows with each turn (rate_limit_event); a window already past its reset is stale and hidden.
 // The 5 h window stays visible after its reset as "reset" at 0 % (until a new event arrives); other windows past their reset are hidden.
-const p2 = (n) => String(n).padStart(2, '0');
-const clock = (ms) => { const d = new Date(ms); return p2(d.getHours()) + ':' + p2(d.getMinutes()); };
-const until = (ms) => { const m = Math.ceil((ms - Date.now()) / 60000); return m > 0 && m < 180 ? ` · in ${Math.floor(m / 60)}:${p2(m % 60)}` : ''; };
-// The day too when the reset is not today (the weekly window): "resets tomorrow 12:00", "resets Fri 14.11 12:00".
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const dayOf = (ms) => { const d = new Date(ms), t = new Date(); t.setHours(0, 0, 0, 0); const n = Math.round((new Date(d).setHours(0, 0, 0, 0) - t) / 864e5);
-  return n === 0 ? '' : n === 1 ? 'tomorrow ' : `${DAYS[d.getDay()]} ${d.getDate()}.${d.getMonth() + 1} `; };
-const resetText = (ms) => ms <= Date.now() ? 'reset' : 'resets ' + dayOf(ms) + clock(ms) + until(ms);
+const dfmt = (ms, o) => new Intl.DateTimeFormat(intl(), o).format(ms);
+const clock = (ms) => dfmt(ms, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+const until = (ms) => { const m = Math.ceil((ms - Date.now()) / 60000); return m > 0 && m < 180 ? ' · ' + t('usage.in', { time: `${num(Math.floor(m / 60))}:${num(m % 60, { minimumIntegerDigits: 2 })}` }) : ''; };
+// The day too when the reset is not today (the weekly window): "resets tomorrow 12:00", "resets Fri 14/11 12:00".
+const daysFromToday = (ms) => { const d0 = new Date(); d0.setHours(0, 0, 0, 0); return Math.round((new Date(ms).setHours(0, 0, 0, 0) - d0) / 864e5); };
+const dayOf = (ms) => { const n = daysFromToday(ms); return n === 0 ? '' : n === 1 ? t('time.tomorrow') + ' ' : dfmt(ms, { weekday: 'short', day: 'numeric', month: 'numeric' }) + ' '; };
+const resetText = (ms) => ms <= Date.now() ? t('usage.reset') : t('usage.resets', { when: dayOf(ms) + clock(ms) }) + until(ms);
 // Free limit resets of the seat's own account: each with its expiry and a "Use" button that spends it after a confirm.
 const resetsBox = (s) => {
   const r = s.resets, n = Number(r?.available) || 0; if (!n) return '';
-  const day = (t) => t ? esc(new Date(t * 1000).toLocaleDateString()) : '';
-  const rows = (r.list?.length ? r.list : [{ id: '', title: r.title || 'Reset', expiresAt: r.nextExpiry, usableNow: true }]).map((c) => `<span class="reset1" title="${esc(c.label || c.title)}">${esc(c.title)}${c.expiresAt ? ' · until ' + day(c.expiresAt) : ''}${r.usable && c.usableNow ? ` <button type="button" data-usereset="${esc(s.name)}" data-credit="${esc(c.id)}" data-ctitle="${esc(c.title)}">Use</button>` : ''}</span>`).join('');
-  return `<small class="resets">🔄 ${n} reset${n > 1 ? 's' : ''}: ${rows}</small>`;
+  const day = (s) => s ? esc(dfmt(s * 1000, { dateStyle: 'medium' })) : '';
+  const rows = (r.list?.length ? r.list : [{ id: '', title: r.title || t('usage.resetDefault'), expiresAt: r.nextExpiry, usableNow: true }]).map((c) => `<span class="reset1" title="${esc(c.label || c.title)}"><bdi>${esc(c.title)}</bdi>${c.expiresAt ? ' · ' + t('usage.until', { date: day(c.expiresAt) }) : ''}${r.usable && c.usableNow ? ` <button type="button" data-usereset="${esc(s.name)}" data-credit="${esc(c.id)}" data-ctitle="${esc(c.title)}">${t('usage.use')}</button>` : ''}</span>`).join('');
+  return `<small class="resets">🔄 ${tn('usage.resetsCount', n)}: ${rows}</small>`;
 };
 const meter = (u) => !u ? '' : Object.entries(u.windows).filter(([k, v]) => k === 'five_hour' || v.resetsAt * 1000 > Date.now()).map(([k, v]) => {
-  const gone = v.resetsAt * 1000 <= Date.now(), pct = gone ? 0 : Math.round(v.utilization * 100);
-  const old = u.at && Date.now() - u.at > 30 * 60000 ? ` · read ${clock(u.at)}` : '';   // a stale reading says when it was taken
-  return `<small class="meter" title="resets ${esc(new Date(v.resetsAt * 1000).toLocaleString())}">${esc(k.replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, pct)}%"></i></span> ${pct}% <span class="reset" dir="auto">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
+  const gone = v.resetsAt * 1000 <= Date.now(), p = gone ? 0 : Math.round(v.utilization * 100);
+  const old = u.at && Date.now() - u.at > 30 * 60000 ? ' · ' + t('usage.readAt', { time: clock(u.at) }) : '';   // a stale reading says when it was taken
+  return `<small class="meter" title="${esc(t('usage.resets', { when: dfmt(v.resetsAt * 1000, { dateStyle: 'medium', timeStyle: 'short' }) }))}">${esc(tk('usage.window.', k).replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, p)}%"></i></span> ${pct(p / 100)} <span class="reset">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
 }).join('');
 // Composer warning at 80 % or more of the 5 h window: this seat's own state ("ops at 85% · resets 14:00", plus its own free resets if any).
 // It never names another seat: each seat's limit is its own, work is not moved to dodge it.
@@ -280,7 +303,7 @@ function showQuota() {
   if (u == null || u < 0.8) { box.hidden = true; return; }
   const iso = (n) => '\u2068' + n + '\u2069';   // FSI/PDI: a Latin seat name inside a right-to-left sentence keeps its place
   const at = me.usage.windows.five_hour.resetsAt * 1000, rs = me.resets?.available;
-  box.textContent = `${iso(me.name)} at ${Math.round(u * 100)}% · ${resetText(at)}` + (rs ? ` · ${rs} free reset${rs > 1 ? 's' : ''} available` : '');
+  box.textContent = t('quota.at', { seat: iso(me.name), pct: pct(u) }) + ` · ${resetText(at)}` + (rs ? ' · ' + tn('quota.free', rs) : '');
   box.hidden = false;
 }
 const showArch = (() => { try { return JSON.parse(localStorage.getItem('showArch') || '{}'); } catch { return {}; } })();
@@ -290,25 +313,25 @@ const saveFold = () => { try { localStorage.setItem('fold', JSON.stringify(fold)
 const showMore = {};   // per seat: list every live conversation, not only the newest 12
 let menuFor = null;   // conversation id whose ⋯ menu is open
 const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}" data-id="${c.id}" data-seat="${seat}">
-      <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${c.keep ? '<span class="kept" title="Kept: never auto-archived, stays visible when the seat is folded">★</span> ' : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="Context window ${esc(ctxText(c.ctx))}">${Math.round(c.ctx.pct)}%</span>` : ''}
-      <span class="cost" title="API-price estimate, not billed (subscription)">~$${(c.cost || 0).toFixed(2)}</span>
-      <small>${c.mode === 'bypass' ? '<span class="badge bypass">bypass</span> ' : ''}${label[c.status] || c.status}${c.background ? ' · ' + c.background : ''}${c.pending ? ' · ' + c.pending + ' waiting' : ''}</small>${c.quotaWait ? `<span class="qwait" title="Stopped on the usage limit. The console sends it a continue message at this time.">⏸ resumes ${clock(c.quotaWait)}<span class="dismiss" data-unwait="${c.id}" role="button" title="Do not resume automatically">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ waiting for your answer<span class="dismiss" data-dismiss="${c.id}" role="button" title="Close this question without answering">✕</span></span>` : ''}</button>
-      ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="Conversation menu">⋯</button>`}</div>`
-  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">Rename</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">Close question</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${c.keep ? 'Let it auto-archive after 3 idle days and fold with its seat' : 'Never auto-archive it, and keep it visible when its seat is folded'}">${c.keep ? 'Unkeep' : 'Keep (no auto-archive)'}</button><button data-archive="${c.id}" data-to="${!c.archived}">${c.archived ? 'Unarchive' : 'Archive'}</button><button class="danger" data-del="${c.id}">Delete</button></div>` : '');
+      <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${c.keep ? `<span class="kept" title="${t('conv.keptTitle')}">★</span> ` : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="${t('ctx.title')} ${esc(ctxText(c.ctx))}">${pct(c.ctx.pct / 100)}</span>` : ''}
+      <span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span>
+      <small>${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}</button>
+      ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
+  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
 
 function showSeats() {
   showQuota(); menuMark();
   const allFolded = seats.every((s) => fold[s.name]);
-  $('foldall').textContent = allFolded ? 'Expand all' : 'Fold all'; $('foldall').dataset.to = String(!allFolded);
+  $('foldall').textContent = t(allFolded ? 'side.expandAll' : 'side.foldAll'); $('foldall').dataset.to = String(!allFolded);
   $('seats').innerHTML = seats.map((s) => {
     const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = !!fold[s.name];
     const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.keep || c.pending || c.needsAnswer || c.quotaWait))) : (showMore[s.name] ? live : live.slice(0, 12)), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0, more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
-    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${f ? 'Show' : 'Fold'} this seat's conversations">${f ? '▸' : '▾'}</button>${esc(s.name)}</b><small>${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>
-    ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="New conversation">+ new</button>`}</div>`
+    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${t(f ? 'side.unfoldSeat' : 'side.foldSeat')}">${f ? (RTL.includes(LANG) ? '◂' : '▸') : '▾'}</button>${esc(s.name)}</b><small dir="ltr">${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>
+    ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="${t('side.newConversation')}">+ ${t('side.new')}</button>`}</div>`
     + shown.map((c) => convRow(c, s.name)).join('')
-    + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${hidden} more conversation${hidden > 1 ? 's' : ''}</button>` : '')
-    + (more > 0 || (!f && showMore[s.name] && live.length > 12) ? `<button class="archtoggle" data-showmore="${esc(s.name)}">${showMore[s.name] ? 'Show fewer' : `Show ${more} more`}</button>` : '')
-    + (!f && arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${showArch[s.name] ? 'Hide' : 'Show'} archived (${arch.length})</button>` : '')
+    + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${tn('side.moreConversations', hidden)}</button>` : '')
+    + (more > 0 || (!f && showMore[s.name] && live.length > 12) ? `<button class="archtoggle" data-showmore="${esc(s.name)}">${showMore[s.name] ? t('side.showFewer') : t('side.showMore', { n: num(more) })}</button>` : '')
+    + (!f && arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${t(showArch[s.name] ? 'side.hideArchived' : 'side.showArchived', { n: num(arch.length) })}</button>` : '')
     + (!f && showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
   }).join('');
 }
@@ -356,6 +379,7 @@ function flush() {
 }
 
 async function init() {
+  try { await loadLang(LANG); } finally { document.documentElement.dataset.ready = '1'; }   // the page stays hidden until its words are in (app.css), never longer than this
   seats = await api('/api/seats');
   if (!seats.find((s) => s.name === cur.seat && (!s.remote || s.control))) cur.seat = seats[0].name;   // a read-only remote group has no "new conversation" draft
   await pick(cur.seat, null);
@@ -400,13 +424,13 @@ function onEvent(m) {
 }
 
 // ---- what a finished turn leaves for the user (server: marks.mjs): the pin bar over the conversation, suggestion chips over the input, the "waiting for your answer" mark ----
-const pinBtn = () => { const b = document.createElement('button'); b.type = 'button'; b.className = 'pinbtn'; b.dataset.pin = '1'; b.setAttribute('aria-label', 'Pin this message'); b.textContent = '📌'; return b; };
+const pinBtn = () => { const b = document.createElement('button'); b.type = 'button'; b.className = 'pinbtn'; b.dataset.pin = '1'; b.setAttribute('aria-label', t('pins.pin')); b.textContent = '📌'; return b; };
 const PIN_ICON = { question: '❓', link: '🔗', error: '⚠️', manual: '📌' };
 function showMarks() {
   const c = curConv(), pins = c?.pins || [], sug = c && c.status !== 'working' && c.status !== 'waiting' ? c.suggest || [] : [];
   $('pins').hidden = !pins.length;
-  $('pins').innerHTML = pins.map((p) => `<span class="pin ${p.kind}"><button type="button" class="pjump" data-jump="${p.i}" dir="auto" title="Show the message">${PIN_ICON[p.kind] || '📌'} ${esc(p.text)}</button>`
-    + (p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener" aria-label="Open link">↗</a>` : '') + `<button type="button" class="pdone" data-done="${esc(p.id)}" aria-label="Done, release this pin">✓</button></span>`).join('');
+  $('pins').innerHTML = pins.map((p) => `<span class="pin ${p.kind}"><button type="button" class="pjump" data-jump="${p.i}" dir="auto" title="${t('pins.show')}">${PIN_ICON[p.kind] || '📌'} ${esc(p.text)}</button>`
+    + (p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener" aria-label="${t('pins.openLink')}">↗</a>` : '') + `<button type="button" class="pdone" data-done="${esc(p.id)}" aria-label="${t('pins.done')}">✓</button></span>`).join('');
   $('suggest').hidden = !sug.length;
   $('suggest').innerHTML = sug.map((t) => `<button type="button" class="chip" dir="auto" data-sug="${esc(t)}">↩ ${esc(t)}</button>`).join('');
 }
@@ -417,7 +441,7 @@ $('pins').onclick = async (e) => {
   const j = e.target.closest('[data-jump]'); if (!j) return;
   // the message the pin points at = the last message at or before its event index (a question pin points at the turn's result, the reply text sits just before it)
   const at = +j.dataset.jump, el = [...$('log').querySelectorAll('.msg.assistant[data-i], .msg.user[data-i], .msg.note.err[data-i]')].filter((x) => +x.dataset.i <= at).pop();
-  if (!el) return alert('That message is older than the loaded part: use "Load earlier" at the top.');
+  if (!el) return alert(t('pins.tooOld'));
   el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600);
 };
 $('suggest').onclick = (e) => { const b = e.target.closest('[data-sug]'); if (!b) return; $('text').value = b.dataset.sug; $('text').focus(); };   // into the input, never sent by itself
@@ -433,7 +457,7 @@ async function copyText(text, btn) {
     const caret = was && 'selectionStart' in was ? [was.selectionStart, was.selectionEnd] : null;   // an input's caret is not part of the document selection
     sel.removeAllRanges(); ranges.forEach((r) => sel.addRange(r)); was?.focus?.({ preventScroll: true }); if (caret) was.setSelectionRange(...caret);
   }
-  btn.textContent = done ? '✓ copied' : 'copy failed'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  btn.textContent = done ? '✓ ' + t('code.copied') : t('code.copyFailed'); setTimeout(() => { btn.textContent = t('code.copy'); }, 1500);
 }
 
 // Rename: double-click the title or ✎ (header), or Rename in the row's ⋯ menu. Enter saves, Esc or leaving the field cancels.
@@ -463,21 +487,20 @@ async function resync() {
 
 // ---- routines: recurring prompts. At their due time the console only ASKS on Telegram; a run starts on a tap there, or on "Run now" here (that click is the approval). ----
 let routineList = [];
-const DECISION = { pending: 'asked, waiting for a tap', blocked: 'asked, seat busy', run: 'started', skip: 'skipped', expired: 'expired', initial: 'past at first start, not asked' };
-const when = (ms) => (new Date(ms).toDateString() === new Date().toDateString() ? 'today' : new Date(ms).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'numeric' })) + ' ' + clock(ms);
+const when = (ms) => (daysFromToday(ms) === 0 ? t('time.today') : dfmt(ms, { weekday: 'short', day: 'numeric', month: 'numeric' })) + ' ' + clock(ms);
 async function loadRoutines() { try { routineList = await api('/api/routines'); } catch { return; } showRoutines(); }
 function showRoutines() {
-  $('routines').innerHTML = '<h2>⏰ Routines</h2>' + routineList.map((r) => {
+  $('routines').innerHTML = `<h2>⏰ ${t('routines.title')}</h2>` + routineList.map((r) => {
     const run = r.conversationId || r.lastRun?.conversationId;
-    const last = r.lastAskedFor ? `last ask ${when(r.lastAskedFor)}: ${DECISION[r.decision] || r.decision}` : r.lastRun ? `last run ${when(r.lastRun.at)} (${r.lastRun.by})` : 'never asked';
-    return `<div class="routine ${r.enabled ? '' : 'off'}"><div><b dir="auto">${esc(r.id)}</b><small>${esc(r.seat)} · ${r.enabled ? 'next ' + (r.nextDue ? when(r.nextDue) : '-') : 'disabled'}</small>`
-      + `<small>${esc(last)}${run ? ` · <a href="#${esc(run)}">open run</a>` : ''}</small></div>`
-      + `<div class="racts"><button data-rrun="${esc(r.id)}" data-seat="${esc(r.seat)}">Run now</button><button data-rtoggle="${esc(r.id)}" data-to="${r.enabled ? 'disable' : 'enable'}">${r.enabled ? 'Disable' : 'Enable'}</button></div></div>`;
+    const last = r.lastAskedFor ? t('routines.lastAsk', { when: when(r.lastAskedFor), what: tk('routines.decision.', r.decision || '') }) : r.lastRun ? t('routines.lastRun', { when: when(r.lastRun.at), by: r.lastRun.by }) : t('routines.neverAsked');
+    return `<div class="routine ${r.enabled ? '' : 'off'}"><div><b dir="auto">${esc(r.id)}</b><small><bdi>${esc(r.seat)}</bdi> · ${r.enabled ? t('routines.next', { when: r.nextDue ? when(r.nextDue) : '-' }) : t('routines.disabled')}</small>`
+      + `<small>${esc(last)}${run ? ` · <a href="#${esc(run)}">${t('routines.openRun')}</a>` : ''}</small></div>`
+      + `<div class="racts"><button data-rrun="${esc(r.id)}" data-seat="${esc(r.seat)}">${t('routines.runNow')}</button><button data-rtoggle="${esc(r.id)}" data-to="${r.enabled ? 'disable' : 'enable'}">${t(r.enabled ? 'common.disable' : 'common.enable')}</button></div></div>`;
   }).join('');
 }
 $('routines').onclick = async (e) => {
   const run = e.target.closest('[data-rrun]'), tog = e.target.closest('[data-rtoggle]');
-  if (run && !confirm(`Start ${run.dataset.rrun} now on ${run.dataset.seat}?`)) return;
+  if (run && !confirm(t('routines.confirmRun', { id: run.dataset.rrun, seat: run.dataset.seat }))) return;
   const r = run ? await api('/api/routine', { id: run.dataset.rrun, action: 'run' }) : tog ? await api('/api/routine', { id: tog.dataset.rtoggle, action: tog.dataset.to }) : null;
   if (!r) return;
   if (r.error) alert(r.error);
@@ -486,8 +509,7 @@ $('routines').onclick = async (e) => {
 };
 // ---- Projects page (#projects) + multi-sided projects (multi.mjs): a brief -> plan on the owner seat -> one tap approves -> each task on the seat fixed for its discipline ----
 let multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
-const MSTATUS = { cancelled: 'cancelled', planning: 'planning', 'plan-ready': 'plan ready, approve', 'plan-error': 'plan failed', running: 'running', integrating: 'integrating', 'integrate-error': 'integration failed', done: 'done',
-  pending: 'waiting', 'needs-answer': 'needs your answer', stuck: 'stopped without .multi/out file', error: 'error' };
+const mstatus = (s) => tk('mstatus.', s);
 const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
 const onProjects = () => document.body.classList.contains('projects');
 async function loadMulti() {
@@ -497,41 +519,41 @@ async function loadMulti() {
 // Sidebar: one entry to the page + the projects still going, each a link to its card.
 function showMultiSide() {
   const act = multiData.projects.filter(ACTIVE), ask = act.filter((p) => p.status === 'plan-ready' || p.status.endsWith('error') || p.tasks.some((t) => ['error', 'stuck', 'needs-answer'].includes(t.status))).length;
-  $('multi').innerHTML = `<h2>🧩 Projects</h2><button type="button" data-mopen class="${onProjects() ? 'primary' : ''}">Open projects${ask ? ` · ${ask} need you` : ''}</button>`
-    + act.map((p) => `<a class="mline" href="#multi-${esc(p.id)}"><span dir="auto">${esc(p.name)}</span><small>${esc(MSTATUS[p.status] || p.status)}${p.tasks.length ? ` · ${p.tasks.filter((t) => t.status === 'done').length}/${p.tasks.length}` : ''}</small></a>`).join('');
+  $('multi').innerHTML = `<h2>🧩 ${t('projects.title')}</h2><button type="button" data-mopen class="${onProjects() ? 'primary' : ''}">${t('projects.open')}${ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''}</button>`
+    + act.map((p) => `<a class="mline" href="#multi-${esc(p.id)}"><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('');
 }
 function card(p) {
-  const wait = (x, seat) => x.waitUntil ? ` · waits for ${esc(seat)} limit reset ${when(x.waitUntil)}` : '';
-  const retry = (task, label = 'Retry') => `<button data-mretry="${esc(p.id)}" data-task="${esc(task)}">${label}</button>`;
-  const tasks = p.tasks.map((t) => `<div class="mtask st-${esc(t.status)}"><div><span>${esc(t.title)}</span><small>${esc(t.discipline)} → ${esc(t.seat)} · ${esc(MSTATUS[t.status] || t.status)}${t.status === 'pending' ? wait(t, t.seat) : ''}${t.deps.length ? ' · after ' + esc(t.deps.join(', ')) : ''}${t.conv ? ` · <a href="#${esc(t.conv)}">open</a>` : ''}</small>`
-    + `${t.error || t.sendError ? `<small class="err">${esc(t.error || t.sendError)}</small>` : ''}</div>${['error', 'stuck', 'needs-answer', 'running'].includes(t.status) && p.status === 'running' ? `<div class="racts">${retry(t.id, t.status === 'running' ? 'Continue' : 'Retry')}</div>` : ''}</div>`).join('');
-  const acts = (p.status === 'plan-ready' ? `<button class="primary" data-mapprove="${esc(p.id)}">Approve plan and dispatch</button>` : '')
-    + (p.status === 'plan-error' ? retry('plan', 'Ask the planner again') : '') + (p.status === 'integrate-error' ? retry('integrate', 'Retry integration') : '')
-    + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">Cancel project</button>` : '');
-  const done = p.tasks.filter((t) => t.status === 'done').length;
-  return `<div class="mproj" id="multi-${esc(p.id)}"><b dir="auto">${esc(p.name)}</b><small>${esc(MSTATUS[p.status] || p.status)}${p.tasks.length ? ` · ${done}/${p.tasks.length} tasks` : ''} · owner ${esc(p.owner)} · started ${when(p.createdAt)}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr">${esc(p.dir)}</small>`
-    + `<small>${p.planConv ? `<a href="#${esc(p.planConv)}">plan conversation</a>` : ''}${p.integrateConv ? ` · <a href="#${esc(p.integrateConv)}">integration</a>` : ''}</small>`
+  const wait = (x, seat) => x.waitUntil ? ' · ' + t('projects.waitsFor', { seat: `<bdi>${esc(seat)}</bdi>`, when: when(x.waitUntil) }) : '';
+  const retry = (task, label = t('projects.retry')) => `<button data-mretry="${esc(p.id)}" data-task="${esc(task)}">${label}</button>`;
+  const tasks = p.tasks.map((k) => `<div class="mtask st-${esc(k.status)}"><div><span dir="auto">${esc(k.title)}</span><small><bdi>${esc(k.discipline)} → ${esc(k.seat)}</bdi> · ${esc(mstatus(k.status))}${k.status === 'pending' ? wait(k, k.seat) : ''}${k.deps.length ? ' · ' + t('projects.after', { tasks: `<bdi>${esc(k.deps.join(', '))}</bdi>` }) : ''}${k.conv ? ` · <a href="#${esc(k.conv)}">${t('projects.openTask')}</a>` : ''}</small>`
+    + `${k.error || k.sendError ? `<small class="err" dir="auto">${esc(k.error || k.sendError)}</small>` : ''}</div>${['error', 'stuck', 'needs-answer', 'running'].includes(k.status) && p.status === 'running' ? `<div class="racts">${retry(k.id, k.status === 'running' ? t('projects.continue') : t('projects.retry'))}</div>` : ''}</div>`).join('');
+  const acts = (p.status === 'plan-ready' ? `<button class="primary" data-mapprove="${esc(p.id)}">${t('projects.approve')}</button>` : '')
+    + (p.status === 'plan-error' ? retry('plan', t('projects.retryPlan')) : '') + (p.status === 'integrate-error' ? retry('integrate', t('projects.retryIntegration')) : '')
+    + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">${t('projects.cancel')}</button>` : '');
+  const done = p.tasks.filter((k) => k.status === 'done').length;
+  return `<div class="mproj" id="multi-${esc(p.id)}"><b dir="auto">${esc(p.name)}</b><small>${esc(mstatus(p.status))}${p.tasks.length ? ' · ' + t('projects.tasksDone', { done: num(done), n: num(p.tasks.length) }) : ''} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr">${esc(p.dir)}</small>`
+    + `<small>${p.planConv ? `<a href="#${esc(p.planConv)}">${t('projects.planConv')}</a>` : ''}${p.integrateConv ? ` · <a href="#${esc(p.integrateConv)}">${t('projects.integration')}</a>` : ''}</small>`
     + `${p.error ? `<small class="err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="racts">${acts}</div>` : ''}${tasks}</div>`;
 }
 function folderList() {
   const q = folderQ.trim().toLowerCase(), all = multiData.folders || [], hits = q ? all.filter((f) => f.name.toLowerCase().includes(q)) : all;
-  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><span dir="ltr">${esc(f.name)}</span><small>${f.mtime ? 'touched ' + when(f.mtime) : ''}</small></div><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">Start</button></div>`).join('')
-    + (hits.length > 40 ? `<small>${hits.length - 40} more: type to filter</small>` : '') + (!hits.length ? '<small>No folder matches.</small>' : '');
+  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><span dir="ltr">${esc(f.name)}</span><small>${f.mtime ? t('projects.touched', { when: when(f.mtime) }) : ''}</small></div><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">${t('projects.start')}</button></div>`).join('')
+    + (hits.length > 40 ? `<small>${t('projects.moreFolders', { n: num(hits.length - 40) })}</small>` : '') + (!hits.length ? `<small>${t('projects.noFolder')}</small>` : '');
 }
 function showProjects() {
   const old = $('mform'), keep = old && { name: old.name.value, dir: old.dir.value, owner: old.owner.value, brief: old.brief.value };   // a re-render never loses a half-typed project
   const seatsOpt = [...new Set([multiData.owner, ...Object.values(multiData.disciplines)])];
   const act = multiData.projects.filter(ACTIVE), done = multiData.projects.filter((p) => !ACTIVE(p));
-  $('projects').innerHTML = `<header class="phead"><h2>🧩 Projects</h2><small>One brief, split into tasks; each task runs on the seat fixed for its discipline. A seat at its limit waits, it is never swapped.</small></header>`
+  $('projects').innerHTML = `<header class="phead"><h2>🧩 ${t('projects.title')}</h2><small>${t('projects.intro')}</small></header>`
     + `<div class="pgrid"><div class="pcol">`
-    + (multiData.off ? `<p class="err">Multi-sided projects are off: ${esc(multiData.off)}</p>` : '')
-    + `<form id="mform"${multiData.off ? ' hidden' : ''}><h3>Start a project</h3><input name="name" placeholder="Project name" required dir="auto"><input name="dir" placeholder="Folder (empty = new under projects/)" dir="ltr" spellcheck="false">`
-    + `<label>Planner + integration on <select name="owner">${seatsOpt.map((s) => `<option${s === multiData.owner ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></label>`
-    + `<textarea name="brief" rows="7" placeholder="Brief: what the whole project must deliver" required dir="auto"></textarea>`
-    + `<small>${Object.entries(multiData.disciplines).map(([d, s]) => `${esc(d)}→${esc(s)}`).join(' · ')}</small><div class="racts"><button type="submit" class="primary">Plan it</button></div></form>`
-    + `<h3>Your project folders</h3><input id="mfq" type="search" placeholder="Filter folders" value="${esc(folderQ)}" dir="ltr" spellcheck="false"><div id="mfolders">${folderList()}</div></div>`
-    + `<div class="pcol"><h3>Running (${act.length})</h3>${act.map(card).join('') || '<small>Nothing running. Pick a folder or write a brief.</small>'}`
-    + (done.length ? `<h3>Finished</h3>${done.map(card).join('')}` : '') + `</div></div>`;
+    + (multiData.off ? `<p class="err">${t('projects.off')} <bdi>${esc(multiData.off)}</bdi></p>` : '')
+    + `<form id="mform"${multiData.off ? ' hidden' : ''}><h3>${t('projects.startTitle')}</h3><input name="name" placeholder="${t('projects.namePh')}" required dir="auto"><input name="dir" placeholder="${t('projects.dirPh')}" dir="auto" spellcheck="false">`
+    + `<label>${t('projects.ownerLabel')} <select name="owner">${seatsOpt.map((s) => `<option${s === multiData.owner ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></label>`
+    + `<textarea name="brief" rows="7" placeholder="${t('projects.briefPh')}" required dir="auto"></textarea>`
+    + `<small dir="ltr">${Object.entries(multiData.disciplines).map(([d, s]) => `${esc(d)}→${esc(s)}`).join(' · ')}</small><div class="racts"><button type="submit" class="primary">${t('projects.plan')}</button></div></form>`
+    + `<h3>${t('projects.folders')}</h3><input id="mfq" type="search" placeholder="${t('projects.filterPh')}" value="${esc(folderQ)}" dir="auto" spellcheck="false"><div id="mfolders">${folderList()}</div></div>`
+    + `<div class="pcol"><h3>${t('projects.running', { n: num(act.length) })}</h3>${act.map(card).join('') || `<small>${t('projects.nothingRunning')}</small>`}`
+    + (done.length ? `<h3>${t('projects.finished')}</h3>${done.map(card).join('')}` : '') + `</div></div>`;
   const f = $('mform'); if (keep) for (const k of ['name', 'dir', 'owner', 'brief']) if (keep[k]) f[k].value = keep[k];
 }
 function openProjects(id) {
@@ -552,8 +574,8 @@ $('projects').onclick = async (e) => {
   const st = e.target.closest('[data-mstart]');
   if (st) { const f = $('mform'); f.dir.value = st.dataset.mstart; if (!f.name.value) f.name.value = st.dataset.mname; f.scrollIntoView({ block: 'start' }); f.brief.focus(); return; }
   const ap = e.target.closest('[data-mapprove]'), rt = e.target.closest('[data-mretry]'), cp = e.target.closest('[data-mcancelp]');
-  if (ap && !confirm('Start every task now, each on the seat fixed for its discipline?')) return;
-  if (cp && !confirm('Cancel this project? Nothing new starts; running conversations keep running until you stop them.')) return;
+  if (ap && !confirm(t('projects.confirmApprove'))) return;
+  if (cp && !confirm(t('projects.confirmCancel'))) return;
   const r = cp ? await api('/api/multi', { action: 'cancel', id: cp.dataset.mcancelp }) : ap ? await api('/api/multi', { action: 'approve', id: ap.dataset.mapprove }) : rt ? await api('/api/multi', { action: 'retry', id: rt.dataset.mretry, task: rt.dataset.task }) : null;
   if (r?.error) alert(r.error); if (r) { document.activeElement?.blur(); await loadMulti(); }   // loadMulti re-renders (showProjects keeps the form's values)
 };
@@ -566,8 +588,8 @@ $('projects').onsubmit = async (e) => {
 $('seats').onclick = async (e) => {
   const ur = e.target.closest('[data-usereset]');
   if (ur) {   // spends one free reset of THIS seat's account, only after the confirm
-    const s = seats.find((x) => x.name === ur.dataset.usereset), what = ur.dataset.ctitle || 'reset';
-    if (!confirm(`Use the ${what} on ${s.name}? ${/fable/i.test(what) ? 'It refills the 5-hour limit and the Fable allowance (not the whole week).' : 'Its 5-hour and weekly windows start from zero.'} This cannot be undone.`)) return;
+    const s = seats.find((x) => x.name === ur.dataset.usereset), what = ur.dataset.ctitle || t('usage.resetDefault');
+    if (!confirm(t('usage.confirmUse', { what, seat: s.name, effect: t(/fable/i.test(what) ? 'usage.effectFable' : 'usage.effectAll') }))) return;
     ur.disabled = true; const r = await api('/api/reset', { seat: s.name, creditId: ur.dataset.credit || undefined }); ur.disabled = false;
     if (r.error) return alert(r.error); s.resets = r.resets; if (r.windows) s.usage = { windows: r.windows, at: Date.now() }; return showSeats();
   }
@@ -579,7 +601,7 @@ $('seats').onclick = async (e) => {
   const de = e.target.closest('[data-del]');
   if (de) {
     menuFor = null; showSeats();
-    if (!confirm('Delete this conversation, its log and its uploaded images? This cannot be undone.')) return;
+    if (!confirm(t('conv.confirmDelete'))) return;
     const r = await api('/api/delete', { conversationId: de.dataset.del }); if (r.error) alert(r.error); return;
   }
   const fo = e.target.closest('[data-fold]'); if (fo) { fold[fo.dataset.fold] = !fold[fo.dataset.fold]; saveFold(); return showSeats(); }
@@ -605,7 +627,7 @@ $('log').onclick = async (e) => {
   }
   const b = e.target.closest('button[data-a]'); if (!b) return;
   const card = b.closest('.perm');
-  b.parentElement.innerHTML = '<em>sending…</em>';
+  b.parentElement.innerHTML = `<em>${t('perm.sending')}</em>`;
   const r = await api('/api/permission', { conversationId: cur.id, requestId: card.dataset.req, allow: b.dataset.a === '1' });
   if (r.error) card.querySelector('.acts').innerHTML = `<em>${esc(r.error)}</em>`;
 };
@@ -613,7 +635,7 @@ $('composer').onsubmit = async (e) => {
   e.preventDefault();
   const text = $('text').value.trim() || (pending.length ? (pending.some((p) => p.file) ? 'See the attached file.' : 'See the attached image.') : ''); if (!text) return;
   const run = curConv()?.remote ? cur.id : null;   // writing into a remote run continues its session in a new conversation
-  if ($('mode').value === 'bypass' && (!cur.id || run || curConv()?.mode !== 'bypass') && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Start it?')) return;
+  if ($('mode').value === 'bypass' && (!cur.id || run || curConv()?.mode !== 'bypass') && !confirm(t('composer.confirmBypassStart'))) return;
   $('text').value = '';
   if (run) {
     const k = await api('/api/remote-continue', { id: run, mode: $('mode').value });
@@ -628,7 +650,7 @@ $('composer').onsubmit = async (e) => {
 };
 // On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
 const TOUCH = matchMedia('(pointer: coarse)').matches;
-if (TOUCH) { $('text').placeholder = 'Message this seat. Tap Send to send.'; $('text').enterKeyHint = 'enter'; }
+if (TOUCH) { $('text').dataset.i18nPlaceholder = 'composer.placeholderTouch'; $('text').enterKeyHint = 'enter'; }
 // A new line inside a list continues it: "1. x" -> "2. ", "- x" -> "- "; Enter on an empty item ends the list.
 function continueList(t) {
   const s = t.selectionStart; if (s !== t.selectionEnd) return false;
@@ -653,7 +675,7 @@ $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id })
 $('mode').onchange = async () => {
   const c = curConv(); if (!c || c.remote) return;
   const m = $('mode').value;
-  if (m === 'bypass' && !confirm('Bypass mode: this conversation runs EVERY tool without asking. Switch it?')) { $('mode').value = c.mode; return; }
+  if (m === 'bypass' && !confirm(t('composer.confirmBypassSwitch'))) { $('mode').value = c.mode; return; }
   const r = await api('/api/mode', { conversationId: c.id, mode: m });
   if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('mode').value = c.mode; }
 };
@@ -672,20 +694,20 @@ async function handoff(seat, result) {
   const c = curConv(); if (!c) return;
   await pick(seat, null);
   $('cwd').value = c.cwd;
-  $('text').value = `Continuation from ${c.seat} (${c.title}):\n\n${result}\n\n`;
+  $('text').value = t('result.continuation', { seat: c.seat, title: c.title }) + `\n\n${result}\n\n`;
   $('text').focus();
 }
 
 // ---- attachments (button: any file; clipboard paste: images). Uploaded at once, referenced by id when the message is sent. The server decides image or file by magic bytes. ----
 const pending = [];          // { id, url } image / { id, file: true, name, size } other file, uploaded but not yet sent
-const sizeText = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+const sizeText = (n) => (n < 1024 ? num(n, { style: 'unit', unit: 'byte' }) : n < 1048576 ? num(Math.round(n / 1024), { style: 'unit', unit: 'kilobyte' }) : num(n / 1048576, { style: 'unit', unit: 'megabyte', maximumFractionDigits: 1, minimumFractionDigits: 1 }));
 // Random per draft, sent with upload and send: the server only lets a send claim staged files that carry its own draft id.
 // getRandomValues, not randomUUID: the page is plain http over Tailscale, where randomUUID does not exist.
 const newDraftId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
 let draftId = newDraftId();
 function showThumbs() {
-  const t = $('thumbs'); t.hidden = !pending.length;
-  t.innerHTML = pending.map((p, i) => `<span class="thumbwrap">${p.file ? `<span class="fchip" dir="ltr">📎 <bdi>${esc(p.name)}</bdi> · ${sizeText(p.size)}</span>` : `<img class="thumb" alt="attached image" src="${p.url}">`}<button type="button" data-rm="${i}" aria-label="Remove ${p.file ? 'file' : 'image'}">×</button></span>`).join('');
+  const box = $('thumbs'); box.hidden = !pending.length;
+  box.innerHTML = pending.map((p, i) => `<span class="thumbwrap">${p.file ? `<span class="fchip" dir="ltr">📎 <bdi>${esc(p.name)}</bdi> · ${sizeText(p.size)}</span>` : `<img class="thumb" alt="${t('composer.attachedImage')}" src="${p.url}">`}<button type="button" data-rm="${i}" aria-label="${t(p.file ? 'composer.removeFile' : 'composer.removeImage')}">×</button></span>`).join('');
 }
 // The API refuses images over 5 MB, so big phone photos are re-encoded smaller in the browser first.
 async function shrink(f) {
@@ -702,7 +724,7 @@ async function attach(files) {
     const name = f.name;
     if (f.type.startsWith('image/')) f = await shrink(f);
     const r = await fetch('/api/upload' + (cur.id ? '?conv=' + cur.id : '?draft=' + draftId) + '&name=' + encodeURIComponent(name || 'file'), { method: 'POST', headers: { 'X-Seat-Token': TOKEN }, body: f })
-      .then((x) => x.json(), () => ({ error: 'upload failed' }));
+      .then((x) => x.json(), () => ({ error: t('composer.uploadFailed') }));
     if (r.error) { $('log').appendChild(div('msg note err', esc(`${name}: ${r.error}`))); continue; }
     pending.push(r.file ? { id: r.id, file: true, name: r.name, size: r.size } : { id: r.id, url: URL.createObjectURL(f) });
   }
@@ -715,7 +737,7 @@ $('text').addEventListener('paste', (e) => { const fs = [...(e.clipboardData?.fi
 // ---- Settings page (#settings, server: settings.mjs + /api/settings*): what is set up, what is turned on. First run (no settings.json) opens it with a checklist. ----
 let setData = null, setTab = 'start', draft = null, setNote = null;   // setNote: { tab, html } the last action's result (a login command, an error)
 const onSettings = () => document.body.classList.contains('settings');
-const STABS = [['start', 'Start'], ['seats', 'Seats'], ['telegram', 'Telegram'], ['access', 'Phone access'], ['usage', 'Usage & limits'], ['projects', 'Projects'], ['routines', 'Routines'], ['remotes', 'Remotes'], ['models', 'Models']];
+const STABS = ['start', 'seats', 'telegram', 'access', 'usage', 'projects', 'routines', 'remotes', 'models'];
 const yes = (ok, a, b) => `<span class="${ok ? 'sok' : 'sno'}">${ok ? '✓ ' + a : '✗ ' + b}</span>`;
 const cmd = (c) => `<code class="scmd" dir="ltr">${esc(c)}</code>`;
 const tog = (k, title, text) => `<label class="stog"><input type="checkbox" data-set="${k}"${draft[k] ? ' checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
@@ -724,98 +746,103 @@ const dirty = () => JSON.stringify(draft) !== JSON.stringify(setData.settings);
 async function loadSettings() {
   const r = await api('/api/settings').catch(() => null); if (!r?.settings) return;   // a failed read keeps what the page had
   const keep = draft && setData && dirty();   // an action elsewhere on the page never wipes toggles not saved yet
-  setData = r; if (!keep) draft = JSON.parse(JSON.stringify(r.settings)); if (onSettings()) showSettings();
+  setData = r; if (!keep) { draft = JSON.parse(JSON.stringify(r.settings)); if (r.firstRun && !draft.language) draft.language = LANG; }   // first run: the language the page opened in, kept by Save (the bot uses it too)
+  if (onSettings()) showSettings();
 }
 function checklist() {
-  const d = setData.detected, sts = d.seats, inn = sts.filter((s) => s.signedIn).length, t = setData.telegram, a = setData.access;
+  const d = setData.detected, sts = d.seats, inn = sts.filter((s) => s.signedIn).length, tg = setData.telegram, a = setData.access, mods = Object.keys(setData.settings.models);
   const rows = [
-    ['seats', 'Seats', sts.length && inn === sts.length, `${sts.length} seat${sts.length === 1 ? '' : 's'}, ${inn} signed in`],
-    ['telegram', 'Telegram', t.linked, t.linked ? 'linked' : t.configured ? 'bot set, chat not linked yet' : 'not set up (optional)'],
-    ['access', 'Phone access', !!(a.tailscale.ip), a.test ? 'test instance: never on Tailscale' : a.tailscale.ip ? 'Tailscale on' : 'only this computer (Tailscale not found)'],
-    ['usage', 'Usage & limits', !setData.firstRun, setData.firstRun ? 'choose, then Save' : 'chosen'],
-    ['projects', 'Projects (optional)', setData.settings.multiProjects, setData.settings.multiProjects ? 'on' : 'off'],
-    ['routines', 'Routines (optional)', setData.routines.length > 0, `${setData.routines.length} routine${setData.routines.length === 1 ? '' : 's'}`],
-    ['remotes', 'Remote servers (optional)', setData.remotes.length > 0, `${setData.remotes.length} remote${setData.remotes.length === 1 ? '' : 's'}`],
-    ['models', 'Default models (optional)', Object.keys(setData.settings.models).length > 0, Object.keys(setData.settings.models).length ? 'set for ' + Object.keys(setData.settings.models).join(', ') : 'each seat uses its CLI default']];
-  return `<ol class="scheck">${rows.map(([tab, title, ok, text]) => `<li class="${ok ? 'done' : ''}"><span class="smark">${ok ? '✓' : ''}</span><span><b>${title}</b><small>${esc(text)}</small></span><button type="button" data-stab="${tab}">Open</button></li>`).join('')}</ol>`;
+    ['seats', t('set.tab.seats'), sts.length && inn === sts.length, t('set.check.seats', { seats: tn('set.nSeats', sts.length), signed: num(inn) })],
+    ['telegram', t('set.tab.telegram'), tg.linked, t(tg.linked ? 'set.check.tgLinked' : tg.configured ? 'set.check.tgNotLinked' : 'set.check.tgNone')],
+    ['access', t('set.tab.access'), !!(a.tailscale.ip), t(a.test ? 'set.check.accessTest' : a.tailscale.ip ? 'set.check.accessOn' : 'set.check.accessLocal')],
+    ['usage', t('set.tab.usage'), !setData.firstRun, t(setData.firstRun ? 'set.check.usageChoose' : 'set.check.usageChosen')],
+    ['projects', t('set.check.projects'), setData.settings.multiProjects, t(setData.settings.multiProjects ? 'common.on' : 'common.off')],
+    ['routines', t('set.check.routines'), setData.routines.length > 0, tn('set.nRoutines', setData.routines.length)],
+    ['remotes', t('set.check.remotes'), setData.remotes.length > 0, tn('set.nRemotes', setData.remotes.length)],
+    ['models', t('set.check.models'), mods.length > 0, mods.length ? t('set.check.modelsFor', { seats: mods.join(', ') }) : t('set.check.modelsNone')]];
+  return `<ol class="scheck">${rows.map(([tab, title, ok, text]) => `<li class="${ok ? 'done' : ''}"><span class="smark">${ok ? '✓' : ''}</span><span><b>${title}</b><small>${esc(text)}</small></span><button type="button" data-stab="${tab}">${t('set.open')}</button></li>`).join('')}</ol>`;
 }
+// Settings > Language: the language's own name; '' = the browser's language (the bot then speaks English).
+const langRow = () => `<label class="snum"><span><b>${t('set.lang.title')}</b><small>${t('set.lang.hint')}</small></span><select data-set="language" data-str="1"><option value="">${t('set.lang.auto')}</option>`
+  + Object.entries(setData.languages || {}).map(([c, n]) => `<option value="${c}" lang="${c}"${draft.language === c ? ' selected' : ''}>${esc(n)}</option>`).join('') + '</select></label>';
 function seatRow(s) {
   const kind = s.agent === 'codex' ? 'Codex' : s.agent === 'agy' ? 'Antigravity' : 'Claude';
-  return `<div class="srow"><div><b>${esc(s.name)}</b> <span class="badge">${kind}</span>${s.active ? '' : ' <span class="badge">after restart</span>'}<small>${esc([s.email, s.role].filter(Boolean).join(' · '))}${s.home ? ` · own login folder <span dir="ltr">${esc(s.home)}</span>` : ''}</small>`
-    + `<small>${yes(s.signedIn, 'signed in', 'not signed in')} · ${s.conversations} conversation${s.conversations === 1 ? '' : 's'}</small>${s.signedIn ? '' : `<small>Sign in once, in a terminal in the Seat Console folder: ${cmd(s.login)}</small>`}</div>`
-    + `<div class="racts"><button type="button" data-rmseat="${esc(s.name)}"${s.conversations ? ' disabled title="Delete its conversations first (archived ones count too)"' : ''}>Remove</button></div></div>`;
+  return `<div class="srow"><div><b>${esc(s.name)}</b> <span class="badge">${kind}</span>${s.active ? '' : ` <span class="badge">${t('set.afterRestart')}</span>`}<small><bdi>${esc([s.email, s.role].filter(Boolean).join(' · '))}</bdi>${s.home ? ` · ${t('set.ownLogin')} <span dir="ltr">${esc(s.home)}</span>` : ''}</small>`
+    + `<small>${yes(s.signedIn, t('set.signedIn'), t('set.notSignedIn'))} · ${tn('set.nConversations', s.conversations)}</small>${s.signedIn ? '' : `<small>${t('set.signInOnce', { cmd: cmd(s.login) })}</small>`}</div>`
+    + `<div class="racts"><button type="button" data-rmseat="${esc(s.name)}"${s.conversations ? ` disabled title="${t('set.removeBlocked')}"` : ''}>${t('common.remove')}</button></div></div>`;
 }
-const agentRow = (key, name, d, hint) => `<div class="srow"><div><b>${name}</b><small>${d.installed ? yes(true, 'installed' + (typeof d.installed === 'string' && d.installed !== 'ok' ? ' (' + esc(d.installed) + ')' : ''), '') + ' · ' + yes(d.signedIn, 'signed in', 'not signed in') : yes(false, '', 'not installed')}</small>`
-  + `<small>${d.installed ? (d.signedIn ? 'Add it as a seat to give it work like a Claude seat. A second account gets its own login folder.' : `Sign in: ${cmd(d.login)}`) : hint}</small></div>`
-  + `<form class="sinline" data-form="addagent"><input type="hidden" name="agent" value="${key}"><input name="name" placeholder="seat name" required pattern="[a-z][a-z0-9\\-]{1,20}" value="${esc(key === 'agy' ? 'antigravity' : 'codex')}${setData.detected.seats.some((s) => s.agent === key) ? '2' : ''}" dir="ltr" spellcheck="false" aria-label="${name} seat name"><button type="submit"${d.installed ? '' : ' disabled'}>Add as a seat</button></form></div>`;
+const agentRow = (key, name, d, hint) => `<div class="srow"><div><b>${name}</b><small>${d.installed ? yes(true, t('set.installed') + (typeof d.installed === 'string' && d.installed !== 'ok' ? ' (' + esc(d.installed) + ')' : ''), '') + ' · ' + yes(d.signedIn, t('set.signedIn'), t('set.notSignedIn')) : yes(false, '', t('set.notInstalled'))}</small>`
+  + `<small>${d.installed ? (d.signedIn ? t('set.agentAdd') : t('set.signIn', { cmd: cmd(d.login) })) : hint}</small></div>`
+  + `<form class="sinline" data-form="addagent"><input type="hidden" name="agent" value="${key}"><input name="name" placeholder="${t('set.seatNamePh')}" required pattern="[a-z][a-z0-9\\-]{1,20}" value="${esc(key === 'agy' ? 'antigravity' : 'codex')}${setData.detected.seats.some((s) => s.agent === key) ? '2' : ''}" dir="ltr" spellcheck="false" aria-label="${t('set.agentSeatName', { name })}"><button type="submit"${d.installed ? '' : ' disabled'}>${t('set.addAsSeat')}</button></form></div>`;
 const TABS = {
-  start: () => checklist() + `<p class="smuted">Everything here is optional except one signed-in seat. Nothing optional runs until you turn it on; the defaults are shown in each section.</p>`,
+  start: () => checklist() + langRow() + `<p class="smuted">${t('set.start.note')}</p>`,
   seats: () => {
     const d = setData.detected;
-    return `<h3>Seats</h3>${d.seats.map(seatRow).join('') || '<small>No seats yet.</small>'}`
-      + `<h3>Add a Claude seat</h3><form class="sform" data-form="addseat"><input name="name" placeholder="name, e.g. dev" required pattern="[a-z][a-z0-9\\-]{1,20}" dir="ltr" spellcheck="false"><input name="email" type="email" placeholder="the account's e-mail (shown on the card)" dir="ltr"><input name="role" placeholder="its area, e.g. Application code" dir="auto"><small>One seat = one Claude account you are entitled to use. After adding: sign it in with the command shown, then restart.</small><div class="racts"><button type="submit" class="primary">Add seat</button></div></form>`
-      + `<h3>Other agents</h3>` + agentRow('codex', 'Codex (OpenAI)', d.codex, `Install the Codex CLI: ${cmd('npm install -g @openai/codex')}, then ${cmd('codex login --device-auth')}.`)
-      + agentRow('agy', 'Antigravity (Google)', d.agy, 'Install the Antigravity CLI (agy) to ~/.local/bin, or point AGY_BIN at it, then run it once to sign in.');
+    return `<h3>${t('set.tab.seats')}</h3>${d.seats.map(seatRow).join('') || `<small>${t('set.noSeats')}</small>`}`
+      + `<h3>${t('set.addClaude')}</h3><form class="sform" data-form="addseat"><input name="name" placeholder="${t('set.namePh')}" required pattern="[a-z][a-z0-9\\-]{1,20}" dir="ltr" spellcheck="false"><input name="email" type="email" placeholder="${t('set.emailPh')}" dir="ltr"><input name="role" placeholder="${t('set.rolePh')}" dir="auto"><small>${t('set.seatNote')}</small><div class="racts"><button type="submit" class="primary">${t('set.addSeat')}</button></div></form>`
+      + `<h3>${t('set.otherAgents')}</h3>` + agentRow('codex', 'Codex (OpenAI)', d.codex, t('set.codexHint', { install: cmd('npm install -g @openai/codex'), login: cmd('codex login --device-auth') }))
+      + agentRow('agy', 'Antigravity (Google)', d.agy, t('set.agyHint', { dir: '<span dir="ltr">~/.local/bin</span>', env: '<code dir="ltr">AGY_BIN</code>' }));
   },
   telegram: () => {
-    const t = setData.telegram;
-    return `<h3>Status</h3><div class="srow"><div><small>${yes(t.configured, 'bot set' + (t.bot ? ' (@' + esc(t.bot) + ')' : ''), 'no bot yet')} · ${yes(t.linked, 'chat linked', 'chat not linked')}</small><small>Telegram sends finished, failed and approval messages to your phone, and takes new tasks and replies from it.</small></div>`
-      + `${t.linked ? '<div class="racts"><button type="button" data-tgtest>Send test message</button></div>' : ''}</div>`
-      + `<h3>1. Bot token</h3><form class="sform" data-form="tgtoken"><small>In Telegram, open @BotFather, send /newbot, and copy the token it gives you. It is stored in the console's secrets file and never shown again.</small><input name="token" type="password" autocomplete="off" placeholder="${t.configured ? 'a token is saved; paste a new one to replace it' : '123456789:AA...'}" required dir="ltr" spellcheck="false"><div class="racts"><button type="submit" class="primary">Save token</button></div></form>`
-      + `<h3>2. Link your chat</h3><div class="srow"><div>${t.linked ? '<small>Linked. Only this chat can talk to the console.</small>' : !t.configured ? '<small>Save the token first.</small>' : !t.polling ? '<small>A test instance never talks to Telegram.</small>' : t.linkCode ? `<small>Open your bot${t.bot ? ' (@' + esc(t.bot) + ')' : ''} in Telegram and send:</small>${cmd('/start ' + t.linkCode)}<small>This page shows "chat linked" once it arrives (Refresh).</small>` : '<small>The one-time link code appears here a few seconds after the token is saved (Refresh).</small>'}</div><div class="racts"><button type="button" data-sreload>Refresh</button></div></div>`
-      + `<h3>Messages</h3>` + tog('digests', 'Morning and evening digest', 'At 08:00 and 21:00 Telegram gets a short summary of what each seat did, built from the console\'s own state (no model call).');
+    const tg = setData.telegram, bot = tg.bot ? ` <span dir="ltr">(@${esc(tg.bot)})</span>` : '';
+    return `<h3>${t('set.tg.status')}</h3><div class="srow"><div><small>${yes(tg.configured, t('set.tg.botSet') + bot, t('set.tg.noBot'))} · ${yes(tg.linked, t('set.tg.linked'), t('set.tg.notLinked'))}</small><small>${t('set.tg.about')}</small></div>`
+      + `${tg.linked ? `<div class="racts"><button type="button" data-tgtest>${t('set.tg.test')}</button></div>` : ''}</div>`
+      + `<h3>${t('set.tg.step1')}</h3><form class="sform" data-form="tgtoken"><small>${t('set.tg.tokenHow', { father: '<span dir="ltr">@BotFather</span>', cmd: '<code dir="ltr">/newbot</code>' })}</small><input name="token" type="password" autocomplete="off" placeholder="${tg.configured ? t('set.tg.tokenReplacePh') : '123456789:AA...'}" required dir="ltr" spellcheck="false"><div class="racts"><button type="submit" class="primary">${t('set.tg.saveToken')}</button></div></form>`
+      + `<h3>${t('set.tg.step2')}</h3><div class="srow"><div>${tg.linked ? `<small>${t('set.tg.linkedOnly')}</small>` : !tg.configured ? `<small>${t('set.tg.tokenFirst')}</small>` : !tg.polling ? `<small>${t('set.tg.testInstance')}</small>` : tg.linkCode ? `<small>${t('set.tg.sendThis', { bot })}</small>${cmd('/start ' + tg.linkCode)}<small>${t('set.tg.linkedShows')}</small>` : `<small>${t('set.tg.codeSoon')}</small>`}</div><div class="racts"><button type="button" data-sreload>${t('common.refresh')}</button></div></div>`
+      + `<h3>${t('set.tg.messages')}</h3>` + tog('digests', t('set.tg.digests'), t('set.tg.digestsHint', { morning: clock(new Date(2000, 0, 1, 8)), evening: clock(new Date(2000, 0, 1, 21)) }));
   },
   access: () => {
     const a = setData.access, ts = a.tailscale;
-    if (a.test) return `<h3>Phone access</h3><div class="srow"><div><small>A test instance is never bound to Tailscale and keeps the real page login: nothing to set here.</small></div></div>`;
-    return `<h3>Phone access</h3><div class="srow"><div><small>${yes(!!ts.ip, 'Tailscale on' + (ts.name ? ' (' + esc(ts.name) + ')' : ''), 'Tailscale not found: the console answers on this computer only')}</small>`
-      + (ts.ip ? `<small>Open on your phone (same Tailscale account): <a href="${esc(a.phone)}" dir="ltr">${esc(a.phone)}</a></small>` : '<small>Install Tailscale on this computer and on the phone and sign both in to one account; the console finds it by itself within a minute (README: Phone access via Tailscale).</small>')
-      + `${ts.warn ? `<small class="sno">${esc(ts.warn)}</small>` : ''}</div></div>`
-      + `<h3>Page login</h3><div class="srow"><div><small>From anything but this computer the page asks for a login. User: <b dir="ltr">${esc(a.user)}</b>. The page token (token.txt) is never shown here.</small></div></div>`
-      + `<form class="sform" data-form="password"><input name="current" type="password" autocomplete="current-password" placeholder="current password" required><input name="next" type="password" autocomplete="new-password" placeholder="new password (12 characters or more)" required minlength="12"><input name="again" type="password" autocomplete="new-password" placeholder="new password again" required><div class="racts"><button type="submit" class="primary">Change password</button></div></form>`;
+    if (a.test) return `<h3>${t('set.tab.access')}</h3><div class="srow"><div><small>${t('set.access.test')}</small></div></div>`;
+    return `<h3>${t('set.tab.access')}</h3><div class="srow"><div><small>${yes(!!ts.ip, t('set.access.tsOn') + (ts.name ? ` <span dir="ltr">(${esc(ts.name)})</span>` : ''), t('set.access.tsOff'))}</small>`
+      + (ts.ip ? `<small>${t('set.access.openOnPhone')} <a href="${esc(a.phone)}" dir="ltr">${esc(a.phone)}</a></small>` : `<small>${t('set.access.install')}</small>`)
+      + `${ts.warn ? `<small class="sno" dir="auto">${esc(ts.warn)}</small>` : ''}</div></div>`
+      + `<h3>${t('set.access.login')}</h3><div class="srow"><div><small>${t('set.access.loginNote', { user: `<b dir="ltr">${esc(a.user)}</b>` })}</small></div></div>`
+      + `<form class="sform" data-form="password"><input name="current" type="password" autocomplete="current-password" placeholder="${t('set.access.currentPh')}" required><input name="next" type="password" autocomplete="new-password" placeholder="${t('set.access.newPh')}" required minlength="12"><input name="again" type="password" autocomplete="new-password" placeholder="${t('set.access.againPh')}" required><div class="racts"><button type="submit" class="primary">${t('set.access.change')}</button></div></form>`;
   },
-  usage: () => `<h3>Usage</h3>` + tog('usageMeters', 'Usage meters', 'Every 3 minutes the console asks Anthropic for each Claude seat\'s 5-hour and weekly usage, with that seat\'s own sign-in (read-only), and shows it on the seat card.')
-    + tog('quotaWarning', '90 % warning', 'One Telegram message when a seat passes 90 % of its 5-hour window. It never suggests another seat.')
-    + `<h3>Limit resets</h3>` + tog('claudeResets', 'Claude limit resets', 'Reads the free limit resets a Claude account holds, from an undocumented endpoint that only answers the Claude CLI: the request identifies itself as the Claude CLI. Off: the plain usage request, no reset buttons.')
-    + tog('codexResets', 'Codex reset credits', 'Reads a Codex account\'s free reset credits through its own CLI (codex app-server) and shows a Use button. Nothing is ever spent without your tap.')
-    + `<h3>Housekeeping</h3><label class="snum"><span><b>Auto-archive after</b><small>A conversation untouched this many days moves to the archive (★ Keep excepted). 0 = never.</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> days</label>`
-    + `<label class="snum"><span><b>Stop idle processes after</b><small>An idle conversation's process is stopped to free memory; the next message starts it again.</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> min</label>`,
+  usage: () => `<h3>${t('set.usage.title')}</h3>` + tog('usageMeters', t('set.usage.meters'), t('set.usage.metersHint'))
+    + tog('quotaWarning', t('set.usage.warn', { pct: pct(0.9) }), t('set.usage.warnHint', { pct: pct(0.9) }))
+    + `<h3>${t('set.usage.resets')}</h3>` + tog('claudeResets', t('set.usage.claudeResets'), t('set.usage.claudeResetsHint'))
+    + tog('codexResets', t('set.usage.codexResets'), t('set.usage.codexResetsHint', { cmd: '<code dir="ltr">codex app-server</code>' }))
+    + `<h3>${t('set.usage.housekeeping')}</h3><label class="snum"><span><b>${t('set.usage.archive')}</b><small>${t('set.usage.archiveHint')}</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> ${t('set.usage.days')}</label>`
+    + `<label class="snum"><span><b>${t('set.usage.reap')}</b><small>${t('set.usage.reapHint')}</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> ${t('set.usage.min')}</label>`,
   projects: () => {
     const d = setData.disciplines || { owner: setData.detected.seats[0]?.name, disciplines: {} };
-    return `<h3>Multi-sided projects</h3>` + tog('multiProjects', 'Projects page', 'One brief is split into tasks by the owner seat; each task runs on the seat fixed for its discipline. Off hides the page; projects already running finish.')
-      + `<h3>Disciplines</h3><form class="sform" data-form="disc"><small><b>Each discipline has ONE fixed seat. A seat at its usage limit makes its tasks wait for the reset; they are never moved to another seat.</b></small>`
-      + `<label>Owner (writes the plan, runs the integration) <select name="owner">${seatOpts(d.owner)}</select></label><div id="discrows">${Object.entries(d.disciplines).map(([k, v]) => discRow(k, v)).join('') || discRow()}</div>`
-      + `<div class="racts"><button type="button" data-discadd>Add discipline</button><button type="submit" class="primary">Save disciplines</button></div>${setData.disciplines?.off ? `<small class="sno">Now off: ${esc(setData.disciplines.off)}</small>` : ''}</form>`;
+    return `<h3>${t('set.proj.title')}</h3>` + tog('multiProjects', t('set.proj.page'), t('set.proj.pageHint'))
+      + `<h3>${t('set.proj.disciplines')}</h3><form class="sform" data-form="disc"><small><b>${t('set.proj.rule')}</b></small>`
+      + `<label>${t('set.proj.owner')} <select name="owner">${seatOpts(d.owner)}</select></label><div id="discrows">${Object.entries(d.disciplines).map(([k, v]) => discRow(k, v)).join('') || discRow()}</div>`
+      + `<div class="racts"><button type="button" data-discadd>${t('set.proj.add')}</button><button type="submit" class="primary">${t('set.proj.save')}</button></div>${setData.disciplines?.off ? `<small class="sno">${t('set.proj.nowOff')} <bdi>${esc(setData.disciplines.off)}</bdi></small>` : ''}</form>`;
   },
-  routines: () => `<h3>Routines</h3><small class="smuted">At the due time the console only asks on Telegram; a run starts on your tap there or on Run now in the sidebar.</small>`
-    + (setData.routines.map((r) => `<div class="srow"><div><b>${esc(r.id)}</b> <span class="badge">${r.enabled ? 'on' : 'off'}</span><small>${esc(r.seat)} · <span dir="ltr">${esc(r.cron)}</span>${r.enabled && r.nextDue ? ' · next ' + when(r.nextDue) : ''}</small><small dir="ltr">${esc(r.cwd)}</small></div>`
-      + `<div class="racts"><button type="button" data-rtog="${esc(r.id)}" data-to="${r.enabled ? 'disable' : 'enable'}">${r.enabled ? 'Disable' : 'Enable'}</button><button type="button" data-redit="${esc(r.id)}">Edit</button></div></div>`).join('') || '<small>No routines yet.</small>')
-    + `<h3>Add or edit a routine</h3><form class="sform" data-form="routine"><input name="id" placeholder="id, e.g. weekly-review" required pattern="[a-z0-9][a-z0-9\\-]{0,40}" dir="ltr" spellcheck="false"><label>Seat <select name="seat">${seatOpts()}</select></label>`
-    + `<input name="cron" placeholder="cron: minute hour day month weekday, e.g. 0 9 * * 1 = Mondays 09:00" required dir="ltr" spellcheck="false"><input name="cwd" placeholder="folder (absolute path)" required dir="ltr" spellcheck="false">`
-    + `<label>Mode <select name="mode"><option>auto</option><option>ask</option><option>bypass</option></select></label><textarea name="prompt" rows="4" placeholder="What the seat should do" required dir="auto"></textarea><div class="racts"><button type="submit" class="primary">Save routine</button></div></form>`,
-  remotes: () => `<h3>Remote servers</h3><small class="smuted">A Linux machine reached over ssh with a key. Read-only: the console follows its run files. "May start conversations" also runs new conversations there (needs ${cmd('node console/rhost.mjs setup <name>')} once).</small>`
-    + (setData.remotes.map((r) => `<div class="srow"><div><b>${esc(r.name)}</b> <span class="badge">${r.control ? 'control' : 'read-only'}</span>${r.active ? '' : ' <span class="badge">after restart</span>'}${r.down ? ' <span class="badge sno">unreachable</span>' : ''}<small dir="ltr">${esc(r.target)}${r.account ? ' · account ' + esc(r.account) : ''}</small></div>`
-      + `<div class="racts"><button type="button" data-rtest="${esc(r.name)}">Test connection</button><button type="button" data-rrm="${esc(r.name)}">Remove</button></div></div>`).join('') || '<small>No remotes.</small>')
-    + `<h3>Add a remote</h3><form class="sform" data-form="remote"><input name="name" placeholder="name, e.g. build-box" required pattern="[a-z0-9\\-]{1,40}" dir="ltr" spellcheck="false"><input name="target" placeholder="ssh target: user@host" required dir="ltr" spellcheck="false"><input name="identity" value="~/.ssh/id_ed25519" required dir="ltr" spellcheck="false" aria-label="ssh key file">`
-    + `<label class="stog"><input type="checkbox" name="control"><span><b>May start conversations</b><small>Otherwise read-only: only ls and tail run there.</small></span></label><input name="paths" placeholder="run files to follow, e.g. ~/runs/*-run.jsonl (read-only remotes)" dir="ltr" spellcheck="false">`
-    + `<label>Its Claude login is the account of seat <select name="account">${seatOpts('', 'none')}</select></label><div class="racts"><button type="submit" class="primary">Add remote</button></div></form>`,
-  models: () => `<h3>Default model per seat</h3><small class="smuted">Used when a new conversation (also from Telegram, a routine or a project) is started with "default model". Each list is that seat's own.</small>`
-    + setData.detected.seats.filter((s) => s.active).map((s) => `<label class="snum"><span><b>${esc(s.name)}</b></span><select data-model="${esc(s.name)}"><option value="">CLI default</option>${(setData.models[s.name] || []).map((m) => `<option value="${esc(m.id)}"${draft.models[s.name] === m.id ? ' selected' : ''}>${esc(m.name || m.id)}</option>`).join('')}</select></label>`).join(''),
+  routines: () => `<h3>${t('routines.title')}</h3><small class="smuted">${t('set.rt.note')}</small>`
+    + (setData.routines.map((r) => `<div class="srow"><div><b>${esc(r.id)}</b> <span class="badge">${t(r.enabled ? 'common.on' : 'common.off')}</span><small><bdi>${esc(r.seat)}</bdi> · <span dir="ltr">${esc(r.cron)}</span>${r.enabled && r.nextDue ? ' · ' + t('routines.next', { when: when(r.nextDue) }) : ''}</small><small dir="ltr">${esc(r.cwd)}</small></div>`
+      + `<div class="racts"><button type="button" data-rtog="${esc(r.id)}" data-to="${r.enabled ? 'disable' : 'enable'}">${t(r.enabled ? 'common.disable' : 'common.enable')}</button><button type="button" data-redit="${esc(r.id)}">${t('common.edit')}</button></div></div>`).join('') || `<small>${t('set.rt.none')}</small>`)
+    + `<h3>${t('set.rt.addTitle')}</h3><form class="sform" data-form="routine"><input name="id" placeholder="${t('set.rt.idPh')}" required pattern="[a-z0-9][a-z0-9\\-]{0,40}" dir="ltr" spellcheck="false"><label>${t('set.rt.seat')} <select name="seat">${seatOpts()}</select></label>`
+    + `<input name="cron" placeholder="${t('set.rt.cronPh')}" required dir="ltr" spellcheck="false"><input name="cwd" placeholder="${t('set.rt.cwdPh')}" required dir="ltr" spellcheck="false">`
+    + `<label>${t('set.rt.mode')} <select name="mode">${['auto', 'ask', 'bypass'].map((m) => `<option value="${m}">${t('mode.' + m)}</option>`).join('')}</select></label><textarea name="prompt" rows="4" placeholder="${t('set.rt.promptPh')}" required dir="auto"></textarea><div class="racts"><button type="submit" class="primary">${t('set.rt.save')}</button></div></form>`,
+  remotes: () => `<h3>${t('set.rem.title')}</h3><small class="smuted">${t('set.rem.note', { cmd: cmd('node console/rhost.mjs setup <name>') })}</small>`
+    + (setData.remotes.map((r) => `<div class="srow"><div><b>${esc(r.name)}</b> <span class="badge">${t(r.control ? 'set.rem.control' : 'set.rem.readOnly')}</span>${r.active ? '' : ` <span class="badge">${t('set.afterRestart')}</span>`}${r.down ? ` <span class="badge sno">${t('set.rem.unreachable')}</span>` : ''}<small dir="ltr">${esc(r.target)}</small>${r.account ? `<small>${t('set.rem.accountOf', { seat: `<bdi>${esc(r.account)}</bdi>` })}</small>` : ''}</div>`
+      + `<div class="racts"><button type="button" data-rtest="${esc(r.name)}">${t('set.rem.test')}</button><button type="button" data-rrm="${esc(r.name)}">${t('common.remove')}</button></div></div>`).join('') || `<small>${t('set.rem.none')}</small>`)
+    + `<h3>${t('set.rem.addTitle')}</h3><form class="sform" data-form="remote"><input name="name" placeholder="${t('set.rem.namePh')}" required pattern="[a-z0-9\\-]{1,40}" dir="ltr" spellcheck="false"><input name="target" placeholder="${t('set.rem.targetPh')}" required dir="ltr" spellcheck="false"><input name="identity" value="~/.ssh/id_ed25519" required dir="ltr" spellcheck="false" aria-label="${t('set.rem.key')}">`
+    + `<label class="stog"><input type="checkbox" name="control"><span><b>${t('set.rem.mayStart')}</b><small>${t('set.rem.mayStartHint')}</small></span></label><input name="paths" placeholder="${t('set.rem.pathsPh')}" dir="ltr" spellcheck="false">`
+    + `<label>${t('set.rem.account')} <select name="account">${seatOpts('', t('common.none'))}</select></label><div class="racts"><button type="submit" class="primary">${t('set.rem.add')}</button></div></form>`,
+  models: () => `<h3>${t('set.models.title')}</h3><small class="smuted">${t('set.models.note')}</small>`
+    + setData.detected.seats.filter((s) => s.active).map((s) => `<label class="snum"><span><b>${esc(s.name)}</b></span><select data-model="${esc(s.name)}"><option value="">${t('set.models.cliDefault')}</option>${(setData.models[s.name] || []).map((m) => `<option value="${esc(m.id)}"${draft.models[s.name] === m.id ? ' selected' : ''}>${esc(m.name || m.id)}</option>`).join('')}</select></label>`).join(''),
 };
-const discRow = (k = '', v = '') => `<div class="sdisc"><input name="dname" value="${esc(k)}" placeholder="discipline, e.g. frontend" dir="ltr" spellcheck="false" aria-label="discipline"><span>→</span><select name="dseat" aria-label="seat">${seatOpts(v)}</select><button type="button" data-discrm aria-label="Remove discipline">✕</button></div>`;
+const discRow = (k = '', v = '') => `<div class="sdisc"><input name="dname" value="${esc(k)}" placeholder="${t('set.proj.discPh')}" dir="ltr" spellcheck="false" aria-label="${t('set.proj.discipline')}"><span>${RTL.includes(LANG) ? '←' : '→'}</span><select name="dseat" aria-label="${t('set.proj.seat')}">${seatOpts(v)}</select><button type="button" data-discrm aria-label="${t('set.proj.remove')}">✕</button></div>`;
 function showSettings() {
   if (!setData) return;
   const box = $('settings'), y = box.scrollTop, sup = setData.detected.supervisor;
-  box.innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-sdrawer aria-label="Seats">☰</button><div><h2>⚙ Settings</h2><small>What is set up on this computer and what is turned on.</small></div><button type="button" data-sclose>Close</button></header>`
-    + (setData.firstRun && setTab === 'start' ? `<p class="sfirst"><b>Choose what to turn on</b><span>Go through the list. Optional features stay off until you turn them on; Save keeps your choices.</span></p>` : '')
-    + (setData.error ? `<p class="sbar err">${esc(setData.error)}</p>` : '')
-    + (setData.restartNeeded ? `<p class="sbar"><span>Saved. Seats, remotes and disciplines change after a restart.${sup ? '' : ' No supervisor is running: Restart stops the console and you start it again yourself.'}</span><button type="button" class="primary" data-restart>Restart now</button></p>` : '')
-    + `<nav class="stabs" role="tablist">${STABS.map(([k, t]) => `<button type="button" role="tab" data-stab="${k}" aria-selected="${k === setTab}">${t}</button>`).join('')}</nav>`
+  box.innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-sdrawer aria-label="${t('side.seats')}">☰</button><div><h2>⚙ ${t('set.title')}</h2><small>${t('set.subtitle')}</small></div><button type="button" data-sclose>${t('common.close')}</button></header>`
+    + (setData.firstRun && setTab === 'start' ? `<p class="sfirst"><b>${t('set.first.title')}</b><span>${t('set.first.text')}</span></p>` : '')
+    + (setData.error ? `<p class="sbar err" dir="auto">${esc(setData.error)}</p>` : '')
+    + (setData.restartNeeded ? `<p class="sbar"><span>${t('set.restartNote')}${sup ? '' : ' ' + t('set.noSupervisor')}</span><button type="button" class="primary" data-restart>${t('set.restartNow')}</button></p>` : '')
+    + `<nav class="stabs" role="tablist">${STABS.map((k) => `<button type="button" role="tab" data-stab="${k}" aria-selected="${k === setTab}">${t('set.tab.' + k)}</button>`).join('')}</nav>`
     + `<div class="spanel">${setNote && setNote.tab === setTab ? `<p class="snote ${setNote.err ? 'err' : ''}">${setNote.html}</p>` : ''}${TABS[setTab]()}</div>`
-    + `<div class="ssave"${setData.firstRun || dirty() ? '' : ' hidden'}><span>${setData.firstRun ? 'Nothing is saved yet.' : 'Unsaved changes.'}</span><button type="button" data-ssave class="primary">Save</button></div>`;
+    + `<div class="ssave"${setData.firstRun || dirty() ? '' : ' hidden'}><span>${t(setData.firstRun ? 'set.nothingSaved' : 'set.unsaved')}</span><button type="button" data-ssave class="primary">${t('common.save')}</button></div>`;
   box.scrollTop = y;
-  const tab = box.querySelector('.stabs [aria-selected=true]'), nav = tab.parentElement;   // phone: the open tab stays in view in the scrolling tab row
-  if (tab.offsetLeft < nav.scrollLeft || tab.offsetLeft + tab.offsetWidth > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = tab.offsetLeft - 24;
+  const tab = box.querySelector('.stabs [aria-selected=true]'), nav = tab.parentElement;   // phone: the open tab stays in view in the scrolling tab row (RTL: scrollLeft runs negative)
+  const tr = tab.getBoundingClientRect(), nr = nav.getBoundingClientRect();   // screen coordinates: the same arithmetic for both directions
+  if (tr.left < nr.left) nav.scrollLeft += tr.left - nr.left - 24; else if (tr.right > nr.right) nav.scrollLeft += tr.right - nr.right + 24;
 }
 async function openSettings(tab) {
   document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
@@ -830,34 +857,46 @@ $('setbtn').onclick = () => { if (location.hash === '#settings') openSettings();
 const note = (html, err) => { setNote = { tab: setTab, html, err }; };
 async function settingsAct(path, body, okHtml) {
   const r = await api(path, body).catch((x) => ({ error: String(x) }));
-  if (r.error) note(esc(r.error), true); else note(okHtml ? okHtml(r) : 'Done.');
+  if (r.error) note(`<bdi>${esc(r.error)}</bdi>`, true); else note(okHtml ? okHtml(r) : t('set.done'));
   await loadSettings(); if (!r.error) { seats = await api('/api/seats'); showSeats(); }
   return r;
 }
-const loginNote = (name) => (r) => `Added ${esc(name)}. Sign it in once, in a terminal in the Seat Console folder: ${cmd(r.login)}${r.home ? ` (its own login folder: <span dir="ltr">${esc(r.home)}</span>)` : ''}. Then restart.`;
+const loginNote = (name) => (r) => t('set.added', { name: `<b dir="ltr">${esc(name)}</b>`, cmd: cmd(r.login) }) + (r.home ? ' ' + t('set.addedHome', { dir: `<span dir="ltr">${esc(r.home)}</span>` }) : '') + ' ' + t('set.thenRestart');
 $('settings').onchange = (e) => {
   const k = e.target.dataset.set, m = e.target.dataset.model;
-  if (k) draft[k] = e.target.type === 'checkbox' ? e.target.checked : Math.max(0, Math.round(+e.target.value || 0));
+  if (k) draft[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.dataset.str ? e.target.value : Math.max(0, Math.round(+e.target.value || 0));
   else if (m != null) { if (e.target.value) draft.models[m] = e.target.value; else delete draft.models[m]; }
   else return;
   $('settings').querySelector('.ssave').hidden = !(setData.firstRun || dirty());
 };
+// A new language applies at once: the page is drawn again in it (no reload). Back to "browser language": a reload, the server picks it from the browser.
+async function relang(code) {
+  if (!code) return location.reload();
+  if (code === LANG) return;
+  await loadLang(code);
+  showSeats(); showRoutines(); showMultiSide(); showQuota(); if (onProjects()) showProjects();
+  $('effortOut').textContent = EFFORTS[$('effort').value] || t('composer.effortDefault');
+  await showConversation(); if (onSettings()) showSettings();
+}
 $('settings').onclick = async (e) => {
-  const t = e.target.closest('button'); if (!t) return; const ds = t.dataset;
+  const b = e.target.closest('button'); if (!b) return; const ds = b.dataset;
   if (ds.sclose != null) return closeSettings();
   if (ds.sdrawer != null) return document.body.classList.add('drawer');
   if (ds.stab) { setTab = ds.stab; setNote = null; showSettings(); $('settings').scrollTop = 0; return; }
   if (ds.sreload != null) { await loadSettings(); return; }
   if (ds.discadd != null) return $('discrows').insertAdjacentHTML('beforeend', discRow());
-  if (ds.discrm != null) return t.parentElement.remove();
+  if (ds.discrm != null) return b.parentElement.remove();
   if (ds.ssave != null) {
-    t.disabled = true; const r = await api('/api/settings', { settings: draft }).catch((x) => ({ error: String(x) })); t.disabled = false;
-    if (r.error) { note(esc(r.error), true); return showSettings(); }
-    note('Saved.'); draft = null; await loadSettings(); seats = await api('/api/seats'); showSeats(); loadMulti(); return;
+    b.disabled = true; const r = await api('/api/settings', { settings: draft }).catch((x) => ({ error: String(x) })); b.disabled = false;
+    if (r.error) { note(`<bdi>${esc(r.error)}</bdi>`, true); return showSettings(); }
+    const lang = draft.language, langChanged = lang !== setData.settings.language;
+    note(t('set.saved')); draft = null; await loadSettings(); seats = await api('/api/seats'); showSeats(); loadMulti();
+    if (langChanged) { await relang(lang); if (onSettings()) { note(t('set.saved')); showSettings(); } }
+    return;
   }
   if (ds.restart != null) {
-    if (!confirm(setData.detected.supervisor ? 'Restart the console now? Running conversations keep running and are picked up again.' : 'No supervisor is running: the console stops and you start it again yourself. Stop it now?')) return;
-    t.disabled = true; await api('/api/restart', {}).catch(() => {});
+    if (!confirm(t(setData.detected.supervisor ? 'set.confirmRestart' : 'set.confirmStop'))) return;
+    b.disabled = true; await api('/api/restart', {}).catch(() => {});
     for (let i = 0, down = false; i < 120; i++) {   // wait until it went away and came back, then load the new page
       await new Promise((r) => setTimeout(r, 1000));
       const up = await fetch('/health').then((r) => r.ok).catch(() => false);
@@ -865,29 +904,29 @@ $('settings').onclick = async (e) => {
     }
     return;
   }
-  if (ds.rmseat) { if (!confirm(`Remove the seat ${ds.rmseat} from seats.json? Its login folder stays on disk.`)) return; await settingsAct('/api/settings/remove-seat', { name: ds.rmseat }, () => `Removed ${esc(ds.rmseat)}. Restart to apply.`); return showSettings(); }
-  if (ds.tgtest != null) { await settingsAct('/api/settings/telegram', { action: 'test' }, () => 'Test message sent.'); return showSettings(); }
-  if (ds.rtog) { const r = await api('/api/routine', { id: ds.rtog, action: ds.to }); if (r.error) note(esc(r.error), true); await loadSettings(); loadRoutines(); return showSettings(); }
+  if (ds.rmseat) { if (!confirm(t('set.confirmRemoveSeat', { name: ds.rmseat }))) return; await settingsAct('/api/settings/remove-seat', { name: ds.rmseat }, () => t('set.removed', { name: `<b dir="ltr">${esc(ds.rmseat)}</b>` })); return showSettings(); }
+  if (ds.tgtest != null) { await settingsAct('/api/settings/telegram', { action: 'test' }, () => t('set.tg.testSent')); return showSettings(); }
+  if (ds.rtog) { const r = await api('/api/routine', { id: ds.rtog, action: ds.to }); if (r.error) note(`<bdi>${esc(r.error)}</bdi>`, true); await loadSettings(); loadRoutines(); return showSettings(); }
   if (ds.redit) {
     const r = setData.routines.find((x) => x.id === ds.redit), f = $('settings').querySelector('[data-form=routine]');
-    for (const k of ['id', 'seat', 'cron', 'cwd', 'mode']) f[k].value = r[k] || ''; f.prompt.value = r.prompt ?? ''; if (r.prompt == null) f.prompt.placeholder = 'This routine reads its prompt from a file: a prompt typed here replaces it.';
+    for (const k of ['id', 'seat', 'cron', 'cwd', 'mode']) f[k].value = r[k] || ''; f.prompt.value = r.prompt ?? ''; if (r.prompt == null) f.prompt.placeholder = t('set.rt.promptFile');
     f.scrollIntoView({ block: 'start' }); return;
   }
-  if (ds.rtest) { t.disabled = true; const r = await api('/api/settings/remote', { action: 'test', name: ds.rtest }).catch((x) => ({ error: String(x) })); note(esc(r.error || r.text), !r.ok); return showSettings(); }
-  if (ds.rrm) { if (!confirm(`Remove the remote ${ds.rrm}? Nothing on the server is touched.`)) return; await settingsAct('/api/settings/remote', { action: 'remove', name: ds.rrm }, () => `Removed ${esc(ds.rrm)}. Restart to apply.`); return showSettings(); }
+  if (ds.rtest) { b.disabled = true; const r = await api('/api/settings/remote', { action: 'test', name: ds.rtest }).catch((x) => ({ error: String(x) })); note(`<bdi>${esc(r.error || r.text)}</bdi>`, !r.ok); return showSettings(); }
+  if (ds.rrm) { if (!confirm(t('set.confirmRemoveRemote', { name: ds.rrm }))) return; await settingsAct('/api/settings/remote', { action: 'remove', name: ds.rrm }, () => t('set.removed', { name: `<b dir="ltr">${esc(ds.rrm)}</b>` })); return showSettings(); }
 };
 $('settings').onsubmit = async (e) => {
   e.preventDefault(); const f = e.target, v = (k) => f[k]?.value ?? '', btn = f.querySelector('[type=submit]'); btn.disabled = true;
   try {
     if (f.dataset.form === 'addseat') await settingsAct('/api/settings/add-seat', { agent: 'claude', name: v('name'), email: v('email'), role: v('role') }, loginNote(v('name')));
     if (f.dataset.form === 'addagent') await settingsAct('/api/settings/add-seat', { agent: v('agent'), name: v('name') }, loginNote(v('name')));
-    if (f.dataset.form === 'tgtoken') await settingsAct('/api/settings/telegram', { token: v('token') }, () => 'Token saved. Now link your chat (step 2).');
-    if (f.dataset.form === 'password') { if (v('next') !== v('again')) { note('The two new passwords differ.', true); return showSettings(); } await settingsAct('/api/settings/password', { current: v('current'), next: v('next') }, () => 'Password changed. Other devices ask for it at their next visit.'); }
-    if (f.dataset.form === 'routine') await settingsAct('/api/settings/routine', { id: v('id'), seat: v('seat'), cron: v('cron'), cwd: v('cwd'), mode: v('mode'), prompt: v('prompt') }, () => `Routine ${esc(v('id'))} saved.`).then(() => loadRoutines());
-    if (f.dataset.form === 'remote') await settingsAct('/api/settings/remote', { action: 'add', name: v('name'), target: v('target'), identity: v('identity'), control: f.control.checked, paths: v('paths'), account: v('account') }, () => `Added ${esc(v('name'))}. Test it, then restart.`);
+    if (f.dataset.form === 'tgtoken') await settingsAct('/api/settings/telegram', { token: v('token') }, () => t('set.tg.tokenSaved'));
+    if (f.dataset.form === 'password') { if (v('next') !== v('again')) { note(t('set.access.differ'), true); return showSettings(); } await settingsAct('/api/settings/password', { current: v('current'), next: v('next') }, () => t('set.access.changed')); }
+    if (f.dataset.form === 'routine') await settingsAct('/api/settings/routine', { id: v('id'), seat: v('seat'), cron: v('cron'), cwd: v('cwd'), mode: v('mode'), prompt: v('prompt') }, () => t('set.rt.saved', { id: `<b dir="ltr">${esc(v('id'))}</b>` })).then(() => loadRoutines());
+    if (f.dataset.form === 'remote') await settingsAct('/api/settings/remote', { action: 'add', name: v('name'), target: v('target'), identity: v('identity'), control: f.control.checked, paths: v('paths'), account: v('account') }, () => t('set.rem.added', { name: `<b dir="ltr">${esc(v('name'))}</b>` }));
     if (f.dataset.form === 'disc') {
       const disciplines = {}; for (const row of f.querySelectorAll('.sdisc')) { const k = row.querySelector('[name=dname]').value.trim(); if (k) disciplines[k] = row.querySelector('[name=dseat]').value; }
-      await settingsAct('/api/settings/disciplines', { owner: v('owner'), disciplines }, () => 'Disciplines saved. Restart to apply.');
+      await settingsAct('/api/settings/disciplines', { owner: v('owner'), disciplines }, () => t('set.proj.saved'));
     }
   } finally { btn.disabled = false; }
   showSettings();
@@ -897,7 +936,7 @@ init();
 
 // Effort slider: stop 0 keeps the seat's default, stops 1-5 are the CLI's --effort levels, stop 6 is ultracode (see server.mjs).
 const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
-$('effort').addEventListener('input', () => { $('effortOut').textContent = EFFORTS[$('effort').value] || 'default'; });
+$('effort').addEventListener('input', () => { $('effortOut').textContent = EFFORTS[$('effort').value] || t('composer.effortDefault'); });
 
 // Installable app (PWA): the service worker only runs on https or 127.0.0.1; on plain http over Tailscale this is skipped silently.
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
@@ -913,10 +952,10 @@ const runSearch = async () => {
   if (seq !== qSeq) return;   // a newer query was typed meanwhile
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   const re = new RegExp('(' + words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
-  const mark = (t) => String(t).split(re).map((p, k) => k % 2 ? `<mark>${esc(p)}</mark>` : esc(p)).join('');
-  $('results').innerHTML = (r.partial ? '<p class="qnote">Index is still being built: some older conversations may be missing for a few minutes.</p>' : '')
-    + (r.hits?.length ? r.hits.map((h) => `<button class="conv qhit ${h.id === cur.id ? 'on' : ''}" data-id="${h.id}" data-seat="${esc(h.seat)}"><span class="dot ${h.status === 'stopped' ? '' : h.status}"></span><span class="t" dir="auto">${h.keep ? '★ ' : ''}${mark(h.title)}</span><span class="qseat">${esc(h.seat)}${h.archived ? ' · archived' : ''}</span>${h.snippet ? `<small dir="auto">${mark(h.snippet)}</small>` : ''}</button>`).join('')
-      : `<p class="qnote">${r.error ? 'Search failed.' : 'Nothing found.'}</p>`);
+  const mark = (s) => String(s).split(re).map((p, k) => k % 2 ? `<mark>${esc(p)}</mark>` : esc(p)).join('');
+  $('results').innerHTML = (r.partial ? `<p class="qnote">${t('search.partial')}</p>` : '')
+    + (r.hits?.length ? r.hits.map((h) => `<button class="conv qhit ${h.id === cur.id ? 'on' : ''}" data-id="${h.id}" data-seat="${esc(h.seat)}"><span class="dot ${h.status === 'stopped' ? '' : h.status}"></span><span class="t" dir="auto">${h.keep ? '★ ' : ''}${mark(h.title)}</span><span class="qseat">${esc(h.seat)}${h.archived ? ' · ' + t('search.archived') : ''}</span>${h.snippet ? `<small dir="auto">${mark(h.snippet)}</small>` : ''}</button>`).join('')
+      : `<p class="qnote">${t(r.error ? 'search.failed' : 'search.none')}</p>`);
 };
 $('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
 $('q').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('q').value = ''; runSearch(); } });

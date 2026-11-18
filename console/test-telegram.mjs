@@ -191,6 +191,7 @@ updates = [{ update_id: 2, callback_query: { id: 'cb1', data: 'p:0123abcd:rq1:1'
 await wait(() => calls.some((c) => c.method === 'editMessageReplyMarkup'));
 assert.deepEqual(decisions, [['0123abcd', 'rq1', true]]);
 assert.deepEqual(calls.find((c) => c.method === 'editMessageReplyMarkup').body.reply_markup, { inline_keyboard: [] });
+await wait(() => calls.some((c) => c.method === 'sendMessage' && /Allowed/.test(c.body.text)));   // the answer goes out after the buttons are dropped
 const okMsg = calls.filter((c) => c.method === 'sendMessage').at(-1).body; assert.equal(okMsg.text, '✅ <b>Allowed</b>'); assert.equal(okMsg.parse_mode, 'HTML');
 
 // reply routing: a reply to a notification reaches that conversation; a plain message gets a hint
@@ -382,6 +383,41 @@ tg.stop(); await new Promise((r) => setTimeout(r, 600));
   assert.deepEqual(offs, [81]); assert.equal(calls.slice(mark).find((c) => c.method === 'getUpdates').body.offset, 77, 'first poll starts at the persisted offset');
   await wait(() => calls.slice(mark).some((c) => c.method === 'getUpdates' && c.body.offset === 81));
   tg2.stop();
+}
+
+// ---- languages (i18n.mjs): the same builders in every shipped language stay valid Telegram HTML, carry that language's words, keep names and numbers ----
+{
+  const { useLanguage, LANGS } = await import('./i18n.mjs');
+  const { buildMorningDigest, buildEveningDigest } = await import('./digest.mjs');
+  const loc = (c) => JSON.parse(fs.readFileSync(new URL(`./public/locales/${c}.json`, import.meta.url), 'utf8'));
+  let lang = 'en'; useLanguage(() => lang);
+  const T1 = new Date(2026, 9, 14, 9, 0).getTime();
+  const sample = () => [
+    buildMessage('done', { seat: 'ops', title: 'T <x>', text: 'Summary: done & dusted', convId: id, files: ['a.png'], usage: 0.42, resetsAt: T1 + 3600000, ctxPct: 61, needsAnswer: true }, BASE),
+    buildMessage('perm', { seat: 'ops', title: 'T', tool: 'Bash', input: { command: 'ls' }, convId: id }, BASE),
+    buildMessage('perm', { seat: 'ops', title: 'T', tool: 'Bash', input: { command: 'z'.repeat(PERM_MAX + 1) }, convId: id }, BASE),
+    buildDigest({ seats: [{ name: 'ops', usage: 0.31, resetsAt: T1 + 600000, convs: [{ id, title: 't', status: 'waiting', updatedAt: T1 - 90 * 60000, result: 'Summary: ok', bg: 2, ctxPct: 40 }] }, { name: 'dev', usage: null, convs: [] }] }, T1, BASE).text,
+    buildDigest({ seats: [{ name: 'ops', usage: 0.31, convs: [] }] }, T1, BASE).text,
+    buildRecover([{ id, seat: 'ops', title: 'x', updatedAt: T1 - 7 * 60000 }, { id, seat: 'dev', title: 'y', updatedAt: T1 }], T1, true).text,
+    buildQuotaWarning({ seat: 'ops', util: 0.92, resetsAt: T1 + 600000 }, T1),
+    buildMorningDigest({ seats: [{ name: 'ops', usage: 0.5, resetsAt: T1 + 60000 }], stuck: [{ id, seat: 'ops', title: 's', kind: 'waiting', quietMs: 20 * 60000 }], finished: [], finishedTotal: 0, errors: { count: 2, last: 'x < y' }, sinceLabel: '20:00', routines: [{ id: 'nightly', seat: 'ops', at: T1 + 3600000 }], slot: { late: true, at: T1 - 3600000 } }, T1, BASE).text,
+    buildEveningDigest({ seats: [], stuck: [], finished: [{ id, seat: 'dev', title: 'f', result: 'Summary: fine' }], finishedTotal: 3, errors: { count: 0 }, sinceLabel: '08:00', routines: [] }, T1, BASE).text,
+  ];
+  const english = sample();
+  for (const c of Object.keys(LANGS)) {
+    lang = c; const out = sample(), d = loc(c);
+    out.forEach((h, i) => { ok(h); assert.ok(i === 4 || h.includes('ops') || h.includes('dev'), `${c} #${i}: seat name kept`); });
+    if (c === 'en') { assert.deepEqual(out, english); continue; }
+    out.forEach((h, i) => assert.notEqual(h, english[i], `${c} #${i} is still English`));
+    assert.ok(out[0].includes(d['bot.waitingAnswer']) && out[0].includes(d['bot.openInConsole']), `${c}: done message words`);
+    assert.ok(out[1].includes(d['bot.perm.asks'].replace('{tool}', '<b>Bash</b>')), `${c}: approval words`);
+    assert.ok(out[7].includes(d['bot.digest.goodMorning']) && out[8].includes(d['bot.digest.goodEvening']), `${c}: digest greeting`);
+  }
+  // the bot's menu and buttons follow the language too
+  lang = 'he'; assert.equal(tg.permButtons(id, 'r')[0].text, '✅ ' + loc('he')['bot.perm.allow']); assert.notEqual(loc('he')['bot.perm.allow'], 'Allow');
+  lang = 'ja'; assert.equal(tg.compactButton(id)[0].text, '🗜️ ' + loc('ja')['bot.compact.button']);
+  lang = 'en'; assert.equal(tg.permButtons(id, 'r')[0].text, '✅ Allow');
+  console.log(`ok bot messages in ${Object.keys(LANGS).length} languages: valid HTML, translated, names kept`);
 }
 
 tg.stop(); api.close(); console.log('telegram tests passed');
