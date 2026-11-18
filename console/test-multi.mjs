@@ -97,7 +97,7 @@ m.retry(p.id, 'site'); await flush();
 assert.equal(sends.at(-1).conversationId, site.conv); assert.equal(sends.at(-1).seat, 'studio'); assert.equal(site.status, 'running');
 fs.writeFileSync(path.join(p.dir, '.multi', 'out', 'site.md'), 'done');
 settle(site.conv, {}); assert.equal(site.status, 'done'); await flush();
-assert.equal(promo.status, 'running'); assert.equal(convs[promo.conv].seat, 'render'); assert.match(sends.at(-1).text, /\.multi\/out\/site\.md/);
+assert.equal(promo.status, 'running'); assert.equal(convs[promo.conv].seat, 'render'); assert.match(sends.at(-1).text, /\.multi[\\/]out[\\/]site\.md/);
 
 // a running task whose process died (no settle): Continue only when its conversation is idle, on the same conversation
 assert.throws(() => m.retry(p.id, 'api'), /task is running/);
