@@ -1095,7 +1095,7 @@ const CLAUDE_MODELS = [{ id: 'claude-opus-5-5', name: 'Opus 5.5 (strongest)' }, 
 let modelsSnap = {};
 const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({ multi: true }), deps: {
   map: DISC.map, owner: DISC.owner, seats: SEATS, root: DEFAULT_CWD, windows: (seat) => state.usage[seat]?.windows, log: console.log,
-  send: (b) => send({ ...b, auto: true }),
+  send: (b) => send({ ...b, auto: true }).then((c) => { if (c.unknownDue && /UNKNOWN OUTCOME/.test(b.text)) { c.unknownDue = undefined; saveState(); } return c; }),   // a task message that carried the open intents: the user's next one need not repeat them
   models: () => modelsSnap,   // per seat, what the planner may pick from for each task (refreshModels below)
   unknown: (convId, prev) => [...(convId ? openOf(convId) : []), ...openElsewhere(prev)],   // a task's open intents (journal.mjs): its own conversation's + those of the earlier ones it replaced
   unknownCount: (ids) => ids.filter(Boolean).reduce((n, id) => n + openOf(id).length, 0),
