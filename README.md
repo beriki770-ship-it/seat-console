@@ -31,6 +31,7 @@
 | **Phone** | Installable PWA over Tailscale, Telegram bot with buttons, replies, photos and files |
 | **Projects** | One brief, many seats, dependencies, a final integration; long task conversations hand over to a fresh one to save quota |
 | **Routines** | Cron prompts that ask first and run on your tap |
+| **Action journal** | A seat that stops after starting a mail, a post or a payment tells the next turn and you that the outcome is unknown, instead of repeating it |
 | **Settings page** | First-run checklist; every optional feature is a switch |
 | **15 languages** | Page and bot, Hebrew and Arabic right-to-left |
 | **Small** | Plain Node.js, no npm install, no build step, offline tests on Windows, Linux and macOS |
@@ -98,6 +99,9 @@ No. They are the calls the official CLIs make (Claude's usage endpoint, Codex's 
 **Which platforms?**
 Windows 11 is used every day. Linux passes the offline tests and the fake-CLI smoke test; macOS passes the offline tests in CI but has not run on real hardware. See [Platforms](#platforms).
 
+**What if a seat stops right after a deploy or a post?**
+A deploy should be safe to re-run, and the seat prompt asks for exactly that (a sync or deploy script you can run twice, a guard file that refuses a second post). For an action that cannot be repeated safely (a mail, a chat message, a post, a payment, a ticket), the seat writes an intent to its [action journal](#action-journal) before and the result after. If it stops in between (usage limit, crash, Stop), the action is shown as unconfirmed: the next turn is told to check whether it happened before trying again, and the page lets you mark it Done or Didn't happen.
+
 **Do I need Telegram or Tailscale?**
 No. Both are optional; without them it is a local web page on `127.0.0.1:4850`.
 
@@ -132,6 +136,7 @@ Pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first (no npm
 - **Usage limits stay per seat.** On Team and Enterprise plans each seat's limit is its own. The console never moves work to another seat to dodge a limit: a task or routine whose seat is at its limit waits for the reset (or you run it there anyway).
 - **Other agents (optional).** A seat can run the Codex CLI or the Antigravity CLI instead of Claude Code, with its own login, its own model menu and (Codex) its own usage meter. Off unless a seat says so. See [Other agents](#other-agents-codex-antigravity).
 - **Limit resets on the seat card.** If a seat's account holds free limit resets (Codex reset credits, Claude limit resets), the card lists them with their expiry. Off until you turn them on in [Settings](#settings) (Codex credits are on by default when a Codex seat exists); one is spent only when you tap its **Use** button and confirm.
+- **Action journal.** External actions that are not safe to repeat are recorded before and after they run; one whose outcome is unknown after a stop is surfaced on resume and on the page. See [Action journal](#action-journal).
 - **Daily digests** at 08:00 and 21:00: quota per seat, stuck conversations, what finished, errors in the server log, today's routines.
 - **Phone-friendly, installable (PWA).** Works over Tailscale with Basic auth; with `tailscale serve` you get HTTPS and can install it as an app.
 - **Handy extras.** Attachments of any file type, per-seat usage bars (5-hour and weekly window, with the reset day and time), context meter with Compact, archive / delete / rename, file previews of paths a reply mentions, "needs your answer" marks, pins and reply suggestions, gzip retention for old logs, `send.ps1` / `get.ps1` for scripting.
@@ -314,9 +319,25 @@ After a crash: `powershell -ExecutionPolicy Bypass -File .\recover.ps1` lists in
 
 The Attach button in the composer takes any file, up to 50 MB (the page holds it in memory). Images go to the model as images; any other file is stored under `console/uploads/<conversation>/` and the message tells the model its path. On a remote-control conversation the file is copied over ssh to the remote first. In Telegram, a document, video or audio sent as a reply to a notification goes into that conversation; Telegram's bot limit is 20 MB, so bigger files must go through the console. Uploads are removed with the conversation.
 
+### Action journal
+
+A seat that stops mid-task (usage limit, crash, Stop, a project task moving to a fresh conversation) is continued later, and the continuation does not know whether the last external action went through. Re-running a deploy is harmless; sending the same mail twice is not.
+
+**Idempotency first.** Every local seat is told to make external actions safe to repeat where it can: deploy with a script that can simply run again, and give a one-shot publish script a guard (a state file that refuses a second post or send). Those need no journal.
+
+**Journal for the rest.** For an action that is not safe to repeat (an email or chat message, a post or comment on a site, a payment, a new issue or ticket, a non-idempotent API write), the seat runs `node <console>/journal.mjs intent "<what>" --check "<how to verify>"` before it and `node <console>/journal.mjs done <id> "<result>"` (or `fail`) after. The seat prompt carries the absolute path, so the command is the same in bash, cmd and PowerShell; the console hands each seat its own file through `SEAT_JOURNAL` (`console/journal/<conversation>.jsonl`, append-only). Claude, Codex and Antigravity seats all get it; remote conversations do not, since their CLI runs on another machine.
+
+**What you see.** An intent with no `done` or `fail` after it is an unconfirmed action:
+
+- The conversation row and the project task card show "⚠️ Unconfirmed actions: N"; the conversation shows each one as a pin with its check and two buttons, **Done** and **Didn't happen**.
+- Every automatic continuation (the resume after a usage limit, `/recover` after a crash, a project task's Retry / Continue, the fresh conversation a long task moves to) and your own first message after an interruption or a limit stop carry an "UNKNOWN OUTCOME" note: what was started, how to check it, and the command that records the result. The seat checks before it repeats anything. With nothing open, no note is added.
+- The Telegram done / error message says how many actions are unconfirmed.
+
+Deleting a conversation removes its journal only when nothing in it is still open.
+
 ### Files the console writes
 
-All of these are gitignored: `console\state.json`, `console\settings.json` (what Settings turned on), `console\logs\` (one JSONL per conversation), `console\uploads\`, `console\search\` (the search index, a cache: deleting it only costs one rebuild), `console\token.txt` (CSRF token for every POST), `console\server.log`, `console\supervisor.log`. Two secret files live outside the repo, in `%USERPROFILE%\.claude\secrets\`:
+All of these are gitignored: `console\state.json`, `console\settings.json` (what Settings turned on), `console\logs\` (one JSONL per conversation), `console\journal\` (the [action journal](#action-journal), one JSONL per conversation), `console\uploads\`, `console\search\` (the search index, a cache: deleting it only costs one rebuild), `console\token.txt` (CSRF token for every POST), `console\server.log`, `console\supervisor.log`. Two secret files live outside the repo, in `%USERPROFILE%\.claude\secrets\`:
 
 - `seat-console-auth.json`: user name and a random password for remote (non-loopback) access. Created on first start.
 - `seat-console-telegram.json`: your bot token and linked chat id (see below).
@@ -425,7 +446,7 @@ $env:TZ = 'Europe/Vienna'   # one routine test assumes the local clock is the de
 Get-ChildItem console\test-*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { "FAILED: $($_.Name)" } }
 ```
 
-`node console/smoke-fake.mjs --port 4852` runs a test instance with a fake claude (no login, no quota) and checks start, reply, a hard kill of the server mid-turn, reattach, Stop and leftovers; on Linux / macOS add `--supervisor` to cover `run-server.sh` too. It takes the seat name from your `seats.json`.
+`node console/smoke-fake.mjs --port 4852` runs a test instance with a fake claude (no login, no quota) and checks start, reply, a hard kill of the server mid-turn, reattach, an action journal entry left open by a limit stop (carried by the next message, settled from the page), Stop and leftovers; on Linux / macOS add `--supervisor` to cover `run-server.sh` too. It takes the seat name from your `seats.json`.
 
 `console\smoke.ps1` is an end-to-end test on a separate test instance (port 4851). **It uses a real seat named `ops` and spends real quota** (small model), so run it only when you mean to. `console\start-test.ps1` / `stop-test.ps1` start and stop that isolated test instance (own data folder, no Tailscale, Telegram off).
 

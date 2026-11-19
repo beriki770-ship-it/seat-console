@@ -76,6 +76,18 @@ try {
     const r = await api('POST', '/api/send', { conversationId: id, text: 'after restart' }); if (r.status !== 200) throw new Error(`send ${r.status}`);
     const res = await idleWith(id, 'echo: after restart'); if (!res.includes(`pid ${host.claudePid}`)) throw new Error('different claude: ' + res); return res;
   });
+  await step('action journal: intent -> limit stop -> next message carries it -> settled on the page', async () => {
+    const r = await api('POST', '/api/send', { conversationId: id, text: 'journalstop' }); if (r.status !== 200) throw new Error(`send ${r.status}`);
+    const c = (await until(async () => { const j = await conv(id); return j?.conv?.quotaWait && j.conv.unknownActions === 1 && j; }, 30000, 'quota stop with 1 unknown action')).conv;
+    const u = c.unknown[0]; if (u.what !== 'send the launch mail to the list' || !fs.existsSync(path.join(DATA, 'journal', id + '.jsonl'))) throw new Error('unknown: ' + JSON.stringify(c.unknown));
+    const sent = async (text) => { const s = await api('POST', '/api/send', { conversationId: id, text }); if (s.status !== 200) throw new Error(`send ${s.status}`); await idleWith(id, 'echo: ' + text); return (await conv(id)).events.findLast((e) => e.type === 'console_user').text; };
+    const first = await sent('go on'); if (!first.includes('UNKNOWN OUTCOME') || !first.includes(`[${u.id}] send the launch mail to the list (check: the Sent folder has it)`)) throw new Error('resume text without the intent: ' + first);
+    if ((await sent('and again')).includes('UNKNOWN')) throw new Error('the note came twice');
+    const s = await api('POST', '/api/journal', { conversationId: id, id: u.id, outcome: 'done' }); if (s.status !== 200) throw new Error(`journal ${s.status} ${s.text}`);
+    const after = (await conv(id)).conv; if (after.unknownActions !== 0 || after.unknown) throw new Error('still open: ' + after.unknownActions);
+    if ((await api('POST', '/api/journal', { conversationId: id, id: u.id, outcome: 'done' })).status !== 400) throw new Error('settled twice');
+    return `intent ${u.id} recorded, stop on the limit, "go on" carried it once, settled -> unknownActions 0`;
+  });
   await step('Stop ends host and claude cleanly', async () => {
     const r = await api('POST', '/api/stop', { conversationId: id }); if (r.status !== 200) throw new Error(`stop ${r.status} ${r.text}`);
     const zombie = (p) => { try { return /\) Z /.test(fs.readFileSync(`/proc/${p}/stat`, 'utf8')); } catch { return false; } };

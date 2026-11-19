@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { withUnknown } from './journal.mjs';
 
 export const MARGIN_MS = 2 * 60e3;   // start this long after the reset (as quotawait.mjs)
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -179,7 +180,8 @@ export function createMulti({ state, save, broadcast, deps }) {
         for (const t of p.tasks) {
           if (t.status !== 'pending' || !t.deps.every((d) => done.has(d))) continue;
           let seat; try { seat = seatFor(deps.map, t.discipline); } catch (e) { t.status = 'error'; t.error = e.message; persist(p); continue; }   // disciplines.json lost it: this task stops, the others go on
-          await dispatch(p, t.id, seat, t.conv ? retryPrompt(t) : taskPrompt(p, t), t.conv, `[${p.name}] ${t.title}`, (c) => { t.conv = c.id; t.status = 'running'; }, t.model);   // the model the planner chose for this task (from its own seat's list)
+          // Open intents of the action journal (journal.mjs) ride along: the task's own conversation's and, for a fresh one, its predecessors'.
+          await dispatch(p, t.id, seat, withUnknown(t.conv ? retryPrompt(t) : taskPrompt(p, t), deps.unknown?.(t.conv, t.prevConvs || []) || []), t.conv, `[${p.name}] ${t.title}`, (c) => { t.conv = c.id; t.status = 'running'; }, t.model);   // the model the planner chose for this task (from its own seat's list)
         }
       }
       if (p.status === 'integrating' && !p.integrateSent) {
@@ -257,6 +259,6 @@ export function createMulti({ state, save, broadcast, deps }) {
     return p;
   }
 
-  const view = () => Object.values(state.multi).sort((a, b) => b.createdAt - a.createdAt).map(({ brief, ...p }) => ({ ...p, tasks: p.tasks.map(({ brief: _, ...t }) => t) }));
+  const view = () => Object.values(state.multi).sort((a, b) => b.createdAt - a.createdAt).map(({ brief, ...p }) => ({ ...p, tasks: p.tasks.map(({ brief: _, ...t }) => ({ ...t, unknownActions: deps.unknownCount?.([t.conv, ...(t.prevConvs || [])]) || 0 })) }));
   return { create, approve, retry, cancel, settled, tick, view, find: (short) => Object.values(state.multi).find((p) => p.id.startsWith(short)) };
 }

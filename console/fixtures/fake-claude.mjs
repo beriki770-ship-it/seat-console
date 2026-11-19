@@ -1,8 +1,9 @@
 // A stand-in for `claude -p --input-format stream-json --output-format stream-json`: no login, no quota, no network. Used by smoke-fake.mjs
 // through the test instance's `--claude` flag. Each user message gets an init, an assistant text and a result; the reply names this
 // process's pid, so a test can prove the SAME claude answered before and after a console restart. A message containing "slow" answers after 6 s.
-// A message containing "perm" first asks the console for a tool permission (control_request can_use_tool, as in ask mode) and answers with the decision.
+// "journalstop" (action journal) records an intent and stops on the limit. A message containing "perm" first asks the console for a tool permission (control_request can_use_tool, as in ask mode) and answers with the decision.
 import readline from 'node:readline';
+import { execFileSync } from 'node:child_process';
 
 const a = process.argv, i = Math.max(a.indexOf('--session-id'), a.indexOf('--resume'));
 const session_id = i > 0 ? a[i + 1] : 'fake-session';
@@ -25,8 +26,10 @@ readline.createInterface({ input: process.stdin }).on('line', (l) => {
     waiting = (allow) => finish(`${allow ? 'allowed' : 'denied'}: ${reply}`);
     return;
   }
+  // "journalstop": records an external action in the console's action journal (env SEAT_JOURNAL / SEAT_JOURNAL_CLI, journal.mjs) and then stops on the limit without its done.
+  if (/journalstop/.test(text)) execFileSync(process.execPath, [process.env.SEAT_JOURNAL_CLI, 'intent', 'send the launch mail to the list', '--check', 'the Sent folder has it'], { encoding: 'utf8' });
   // "quotastop": the turn ends on the usage limit like the real CLI (429, usage_limit_reached), resetting one minute from now (UTC).
-  if (/quotastop/.test(text)) {
+  if (/quotastop|journalstop/.test(text)) {
     const d = new Date(Date.now() + 60e3), h = d.getUTCHours(), resets = `${h % 12 || 12}:${String(d.getUTCMinutes()).padStart(2, '0')}${h < 12 ? 'am' : 'pm'} (UTC)`;
     out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: "You've hit your session limit" }] }, error: 'rate_limit', api_error_status: 429 });
     return setTimeout(() => out({ type: 'result', subtype: 'success', is_error: true, api_error_status: 429, api_error: 'usage_limit_reached', result: `You've hit your session limit · resets ${resets}`, total_cost_usd: 0 }), 200);

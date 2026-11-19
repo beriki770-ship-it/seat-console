@@ -295,12 +295,15 @@ main { position:relative; }
 .conv .qwait .dismiss { margin-inline-start:6px; padding:0 4px; border-radius:6px; cursor:pointer; font-weight:400; }
 .conv .needs .dismiss { margin-inline-start:6px; padding:0 4px; border-radius:6px; cursor:pointer; font-weight:400; }
 .conv .needs .dismiss:hover { background:var(--accent); color:var(--bg); }
+/* action journal: external actions with an unknown outcome */
+.conv .unk { grid-column:2 / 4; justify-self:start; margin-top:3px; padding:1px 8px; border-radius:10px; border:1px solid var(--warn); background:var(--bg); color:var(--warn); font-size:11px; font-weight:600; }
+.mtask .unk { color:var(--warn); font-weight:600; }
 .conv .needs { grid-column:2 / 4; justify-self:start; margin-top:3px; padding:1px 8px; border-radius:10px; border:1px solid var(--accent); background:var(--bg); color:var(--accent); font-size:11px; font-weight:600; }
 #menu.ans { position:relative; } #menu.ans::after { content:''; position:absolute; top:4px; inset-inline-end:4px; width:10px; height:10px; border-radius:50%; background:var(--accent); }
 #pins { display:flex; gap:6px; padding:6px 24px; border-bottom:1px solid var(--line); overflow-x:auto; scrollbar-width:thin; }
 #pins[hidden], #suggest[hidden] { display:none; }
 .pin { display:flex; align-items:center; flex:none; max-width:min(420px, 100%); border:1px solid var(--line); border-radius:16px; background:var(--panel); font-size:12px; }
-.pin.question { border-color:var(--accent); } .pin.error { border-color:var(--warn); }
+.pin.question { border-color:var(--accent); } .pin.unk { border-color:var(--warn); } .pin.unk .pjump { cursor:default; } .pin.unk .pjump small { display:block; color:var(--mute); overflow:hidden; text-overflow:ellipsis; } .pin.unk .jfail { color:var(--warn); padding-inline:4px 10px; } .pin.error { border-color:var(--warn); }
 .pin .pjump { border:0; background:none; padding-block:4px; padding-inline:10px 4px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
 .pin a { color:var(--accent); text-decoration:none; padding:0 4px; }
 .pin .pdone { border:0; background:none; padding-block:4px; padding-inline:6px 10px; color:var(--ok); font-size:12px; }

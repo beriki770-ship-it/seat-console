@@ -49,7 +49,7 @@ export const permTooLong = (input) => esc(fullInput(input)).length > PERM_MAX;
 export const extractSummary = (text) => { const m = String(text || '').split('\n').map((l) => l.trim()).filter((l) => /^(?:סיכום|Summary):/i.test(l)); return m.length ? m[m.length - 1] : null; };
 export const summaryText = (text) => { const l = extractSummary(text); return l && l.replace(/^(?:סיכום|Summary):\s*/i, ''); };
 // Message HTML for one event. kind: done | error | perm. files = names the turn wrote or edited. usage = 0..1 five-hour window of the seat, or null. needsAnswer = the turn asks the user something.
-export function buildMessage(kind, { seat, title, text, tool, input, convId, files, usage, resetsAt, ctxPct, needsAnswer }, base) {
+export function buildMessage(kind, { seat, title, text, tool, input, convId, files, usage, resetsAt, ctxPct, needsAnswer, unknown }, base) {
   const head = (e) => `${e} <b>${esc(seat)}</b> · <i>${esc(clip(title, 40))}</i>`;
   const foot = ['', link(`${base}/#${convId}`)];
   if (kind === 'perm') {
@@ -62,7 +62,7 @@ export function buildMessage(kind, { seat, title, text, tool, input, convId, fil
   const more = sum ? tx !== extractSummary(tx) : tx.length > 300;   // the full text hides in an expandable quote so nothing is lost
   const fl = files && files.length ? `📄 ${files.slice(0, 5).map((f) => `<code>${esc(f)}</code>`).join(' ')}${files.length > 5 ? ` +${files.length - 5}` : ''}` : null;
   // needsAnswer: the turn ended with a question / decision for the user (marks.mjs), shown right under the summary
-  return [head(kind === 'error' ? '❌' : '✅'), body, needsAnswer && kind === 'done' ? `❓ <b>${t('bot.waitingAnswer')}</b>` : null, fl, more ? quote(escClip(tx, 1800), true) : null, usage != null ? [`${bar(usage)} · ${t('bot.fiveHours')}`, resetTag(resetsAt)].filter(Boolean).join(' · ') : null, ctxPct != null ? `🧠 ${pct(ctxPct / 100)}` : null, ...foot].filter((x) => x !== null).join('\n');
+  return [head(kind === 'error' ? '❌' : '✅'), body, needsAnswer && kind === 'done' ? `❓ <b>${t('bot.waitingAnswer')}</b>` : null, unknown > 0 ? `⚠️ <b>${t('bot.unknownActions', { n: num(unknown) })}</b>` : null, fl, more ? quote(escClip(tx, 1800), true) : null, usage != null ? [`${bar(usage)} · ${t('bot.fiveHours')}`, resetTag(resetsAt)].filter(Boolean).join(' · ') : null, ctxPct != null ? `🧠 ${pct(ctxPct / 100)}` : null, ...foot].filter((x) => x !== null).join('\n');
 }
 // ---- files of a finished turn (sendFiles below): Bot API limits are 10 MB for a photo and 50 MB for any other upload ----
 export const FILES_MAX = 5, PHOTO_MAX = 10 * 1024 * 1024, UPLOAD_MAX = 50 * 1024 * 1024;

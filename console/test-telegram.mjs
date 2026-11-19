@@ -35,6 +35,8 @@ assert.ok(m.includes('<blockquote>עשיתי. עובד.</blockquote>') && !m.inc
 // a turn that ends with a question to the user: the needs-answer line sits right under the summary (done only, never on an error)
 const qa = ok(buildMessage('done', { seat: 'ops', title: 'T', text: 'x?\nסיכום: שאלה.', convId: id, needsAnswer: true }, BASE));
 assert.ok(qa.includes('<blockquote>שאלה.</blockquote>\n❓ <b>Waiting for your answer</b>') && !m.includes('❓') && !ok(buildMessage('error', { seat: 'ops', title: 'T', text: 'b', convId: id, needsAnswer: true }, BASE)).includes('❓'));
+// action journal: a conversation that stops with open intents says how many (done and error), nothing when there are none
+assert.ok(ok(buildMessage('done', { seat: 'ops', title: 'T', text: 'x', convId: id, unknown: 2 }, BASE)).includes('⚠️ <b>Unconfirmed external actions: 2</b>') && ok(buildMessage('error', { seat: 'ops', title: 'T', text: 'x', convId: id, unknown: 1 }, BASE)).includes('⚠️ <b>') && !m.includes('⚠️') && !ok(buildMessage('done', { seat: 'ops', title: 'T', text: 'x', convId: id, unknown: 0 }, BASE)).includes('⚠️'));
 // escaping: tags and & coming from agents arrive as text, never as markup
 const evil = ok(buildMessage('done', { seat: 'ops', title: 'a <b>&', text: 'x </blockquote><b>y&z\nסיכום: <i>&', convId: id, files: ['<f>&.js'] }, BASE));
 assert.ok(evil.includes('<i>a &lt;b&gt;&amp;</i>') && evil.includes('<blockquote>&lt;i&gt;&amp;</blockquote>') && evil.includes('<code>&lt;f&gt;&amp;.js</code>') && !evil.includes('<b>y'));

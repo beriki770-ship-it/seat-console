@@ -12,3 +12,4 @@ test-data/
 launchd.err.log
 search/
 agent-state/
+journal/

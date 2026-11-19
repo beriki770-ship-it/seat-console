@@ -31,6 +31,7 @@ import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
+import { openIntents, settle as settleIntent, withUnknown, CLI_CMD as JOURNAL_CMD, CLI_PATH as JOURNAL_CLI } from './journal.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
 import { readSettings, writeJsonAtomic, validateSettings, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
 
@@ -200,6 +201,19 @@ const R = (c) => { let r = rt.get(c.id); if (!r) { r = { proc: null, events: nul
 // Each conversation's claude.exe lives in its own detached host (host.mjs), so a conversation whose host is still alive keeps working through a server restart: it is reattached by reattachAll() below, not interrupted.
 const hostBase = (c) => path.join(DATA, 'logs', c.seat, c.id);
 const hostInfoOf = (c) => readJson(hostPaths(hostBase(c)).info);
+// Action journal (journal.mjs, issue #1): one file per conversation, written by its seat through the journal CLI. Open intents are read
+// again only when the file changed (summary() runs on every broadcast).
+const JOURNAL_DIR = path.join(DATA, 'journal');
+fs.mkdirSync(JOURNAL_DIR, { recursive: true });
+const journalOf = (id) => path.join(JOURNAL_DIR, id + '.jsonl');
+const openCache = new Map();
+function openOf(id) {
+  let st; try { st = fs.statSync(journalOf(id)); } catch { openCache.delete(id); return []; }
+  const k = st.size + ':' + st.mtimeMs, hit = openCache.get(id); if (hit?.k === k) return hit.list;
+  const list = openIntents(journalOf(id)); openCache.set(id, { k, list }); return list;
+}
+// Open intents of OTHER conversations (the earlier conversations of a project task): each carries its journal file for the record command.
+const openElsewhere = (ids) => ids.filter(Boolean).flatMap((id) => openOf(id).map((x) => ({ ...x, file: journalOf(id) })));
 const liveHosts = new Set(Object.values(state.conversations).filter((c) => { try { const i = hostInfoOf(c); return i && (c.remote || pidAlive(i.pid)); } catch { return false; } }).map((c) => c.id)); // a malformed entry is handled (and logged) by reattachAll; a remote host is asked over ssh after the start (reattachRemotes)
 const crashLoopStart = crashLoop(state, Date.now()); state.lastExit = null; state.lastStartAt = Date.now();
 const crashed = markInterrupted(state, liveHosts) || crashLoopStart; saveState();
@@ -220,7 +234,8 @@ function broadcastEvent(c, ev, i) {
 const QUIET_MS = 20000;
 const effStatus = (c) => { const r = R(c); if (r.status === 'stopped' && r.proc) return 'idle'; /* a live process is never `stopped` */ return r.status === 'idle' && ((c.bg?.length || 0) > 0 || Date.now() - r.activityAt < QUIET_MS) ? 'working' : r.status; };
 // A conversation on a remote that ssh cannot reach (and that has no live link) reads `error · unreachable since HH:MM` until the remote answers again.
-const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c) }; };
+const unknownOf = (c) => { const u = openOf(c.id); return u.length ? { unknownActions: u.length, unknown: u.slice(0, 20).map(({ id, what, check }) => ({ id, what, check })) } : { unknownActions: 0 }; };
+const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c), ...unknownOf(c) }; };
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
@@ -502,9 +517,10 @@ function handleLine(c, line, end) {
     else {
     // Needs-your-answer mark, auto-pins and suggestions of this turn (marks.mjs); persisted, the summary carries them to the page.
     markTurn(c, { result: ev.result || '', isError: !!ev.is_error, i: evIndex, asks: r.turnAsks }); r.turnAsks = []; saveState();   // spent: a later result of the same turn must not pin them again broadcast({ conv: summary(c) });
-    const info = { needsAnswer: !!c.needsAnswer, seat: c.seat, title: c.title, text: ev.result, convId: c.id, files: [...r.turnFiles], out: { writes: [...r.turnWrites], named: findPaths(ev.result || '', !WIN), since: r.turnAt ?? Infinity }, ...quotaOf(c.seat), ...ctxNote(c) };   // out: Write targets + files the reply names (the console's preview cards), see outFiles; no turnAt (turn began before a restart) = no named files
+    const info = { needsAnswer: !!c.needsAnswer, seat: c.seat, title: c.title, text: ev.result, convId: c.id, files: [...r.turnFiles], unknown: openOf(c.id).length, out: { writes: [...r.turnWrites], named: findPaths(ev.result || '', !WIN), since: r.turnAt ?? Infinity }, ...quotaOf(c.seat), ...ctxNote(c) };   // out: Write targets + files the reply names (the console's preview cards), see outFiles; no turnAt (turn began before a restart) = no named files
     // Usage limit (quotawait.mjs): the conversation is resumed by the console once the limit has reset; the Telegram error says when.
     if (isQuotaStop(ev) && !c.remote && !c.phone) {
+      c.unknownDue = true;   // the next message (the automatic resume or the user's) carries the open intents
       const tries = (c.quotaTries || 0) + 1;
       if (tries <= QUOTA_MAX_TRIES) { c.quotaWait = { until: resumeAt(ev, state.usage[c.seat]?.windows, Date.now()), tries }; saveState(); broadcast({ conv: summary(c) }); info.text = `${ev.result}\n\n⏸ resumes by itself at ${new Date(c.quotaWait.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; console.log(`[quota] conv=${c.id.slice(0, 8)} stopped on the limit, resume at ${new Date(c.quotaWait.until).toISOString()} (try ${tries})`); }
       else { c.quotaTries = 0; info.text = `${ev.result}\n\n⏸ ${QUOTA_MAX_TRIES} resumes in a row hit the limit again; it needs a look`; console.log(`[quota] conv=${c.id.slice(0, 8)} gave up after ${QUOTA_MAX_TRIES} tries`); }
@@ -574,7 +590,8 @@ setInterval(guard('quota', () => {
     if (R(c).status === 'working' || c.turns > 0 || R(c).perms.size) continue;
     quotaBusy.add(c.id); c.quotaTries = w.tries; c.quotaWait = undefined; saveState();
     console.log(`[quota] conv=${c.id.slice(0, 8)} resuming (try ${w.tries})`);
-    send({ conversationId: c.id, text: RESUME_TEXT, auto: true })
+    send({ conversationId: c.id, text: withUnknown(RESUME_TEXT, openOf(c.id)), auto: true })
+      .then(() => { c.unknownDue = undefined; saveState(); })   // the resume carried the open intents; a resume that never got through leaves them for the user's next message
       .catch((e) => {   // retried twice, a minute apart; then it needs a person (a write that failed may already have logged the message)
         const fails = (w.fails || 0) + 1; c.quotaWait = fails < 3 ? { until: Date.now() + 60e3, tries: w.tries, fails } : undefined; saveState();
         console.log(`[quota] conv=${c.id.slice(0, 8)} resume send failed (${fails}/3): ${e.message}`);
@@ -665,9 +682,13 @@ async function startProc(c) {
   if (!rem && !agent) await initSeat(c.seat);
   else if (R(c).remoteKillFailed) throw new Error(`remote ${rem.name} unreachable: the previous host there could not be stopped; send again when it answers`);
   const configDir = rem ? `(remote ${rem.name}: its own login)` : agent ? `(${agent}: its own login)` : path.join(HOME, '.claude-seats', c.seat);
+  // Idempotency first, journal second. Not for a remote: its claude runs there and cannot write this machine's journal. The CLI is named by its
+  // absolute path (JOURNAL_CMD), so the same command works in bash, cmd and PowerShell; SEAT_JOURNAL (env) tells it which file is this conversation's.
+  const JOURNAL_RULE = `Make external actions SAFE TO REPEAT whenever you can: deploy/upload with a sync or deploy script that can simply be re-run (rsync, an idempotent deploy script), and give one-shot publish scripts a guard (a state file that refuses a second post/send). Only for an external action that is NOT safe to repeat (sending an email or chat message, posting or commenting on a site, a payment, creating an issue/ticket, a non-idempotent API write) record it: \`${JOURNAL_CMD} intent "<what>" --check "<how to verify it happened>"\` before (it prints an id), \`${JOURNAL_CMD} done <id> "<result>"\` (or \`fail <id> "<error>"\`) after. Local file edits are not external actions.`;
+  const journalEnv = { SEAT_JOURNAL: journalOf(c.id), SEAT_JOURNAL_CLI: JOURNAL_CLI };
   const ending = 'End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.';
   const role = rem ? `You are a Claude session on the remote machine '${rem.name}', driven from the user's Seat Console. ${ending}`
-    : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${ending}`;
+    : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${JOURNAL_RULE} ${ending}`;
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...MODE_ARGS[c.mode],
     '--append-system-prompt', role, '--name', `seat:${c.seat}`];
   // First start pins the session id to the conversation id; every later start resumes it.
@@ -680,8 +701,8 @@ async function startProc(c) {
   const info = rem ? await rseq(c, () => rhost.spawnRemoteHost(rem, { id: c.id, args, cwd: c.cwd, token: crypto.randomBytes(24).toString('hex') })).then((i) => {
     remoteStatus(rem.name, null); fs.mkdirSync(path.dirname(hostBase(c)), { recursive: true }); fs.writeFileSync(hostPaths(hostBase(c)).info, JSON.stringify({ ...i, remote: rem.name })); return i;
   }, (e) => { if (e.down) remoteStatus(rem.name, e.message); throw e; })
-    : agent ? await spawnHost({ base: hostBase(c), script: HOST_JS, exe: process.execPath, args: [agentScript(agent), ...args], cwd: c.cwd, env: { ...cleanEnv(), AGENT_STATE: path.join(DATA, 'agent-state'), AGY_BIN, ...agentEnv(c.seat) }   /* AGY_BIN: absolute, because a seat "home" changes HOME */, token: crypto.randomBytes(24).toString('hex') })
-    : await spawnHost({ base: hostBase(c), script: HOST_JS, exe: CLAUDE_CMD[0], args: [...CLAUDE_CMD.slice(1), ...args], cwd: c.cwd, env: { ...cleanEnv(), CLAUDE_CONFIG_DIR: configDir }, token: crypto.randomBytes(24).toString('hex') });
+    : agent ? await spawnHost({ base: hostBase(c), script: HOST_JS, exe: process.execPath, args: [agentScript(agent), ...args], cwd: c.cwd, env: { ...cleanEnv(), AGENT_STATE: path.join(DATA, 'agent-state'), AGY_BIN, ...agentEnv(c.seat), ...journalEnv }   /* AGY_BIN: absolute, because a seat "home" changes HOME */, token: crypto.randomBytes(24).toString('hex') })
+    : await spawnHost({ base: hostBase(c), script: HOST_JS, exe: CLAUDE_CMD[0], args: [...CLAUDE_CMD.slice(1), ...args], cwd: c.cwd, env: { ...cleanEnv(), CLAUDE_CONFIG_DIR: configDir, ...journalEnv }, token: crypto.randomBytes(24).toString('hex') });
   c.spawnedAt = Date.now(); // host + claude were created before this instant: the creation-time fallback of the guarded kills (procid.mjs) needs it when the command-line lookup fails
   c.hostOff = 0; c.hostGen = (c.hostGen || 0) + 1; // a new host-out file starts at byte 0: offsets logged by the previous host no longer apply
   const r = R(c); r.procCost = 0; c.started = true; r.silent = false; r.lineFailed = false; r.compacted = false; r.appendFailed = false; saveState(); // a new host-out file: nothing from the old one applies
@@ -718,7 +739,7 @@ function procGone(c, code, err) {
   c.baseCost = (c.baseCost || 0) + r.procCost; r.procCost = 0; r.proc = null; r.perms.clear(); c.bg = []; r.done = null; r.slash = null; r.compacting = false; // no process left to send a pending "finished" later; a stale one would keep the conversation busy
   cleanHostFiles(c);
   r.clampAt = 0;
-  if (c.working) { clearTurns(c); const text = `process exited (${code}) ${String(err).trim()}`; pushEvent(c, { type: 'console_error', text }); setStatus(c, 'error'); tg.notify('error', { seat: c.seat, title: c.title, text, convId: c.id }, PHONE).catch(notifyFailed); }
+  if (c.working) { c.unknownDue = true; clearTurns(c); const text = `process exited (${code}) ${String(err).trim()}`; pushEvent(c, { type: 'console_error', text }); setStatus(c, 'error'); tg.notify('error', { seat: c.seat, title: c.title, text, convId: c.id, unknown: openOf(c.id).length }, PHONE).catch(notifyFailed); }
   else setStatus(c, 'stopped');
 }
 // hostLost (the host vanished while we were connected: `interrupted`, recover works) lives in lifecycle.mjs.
@@ -935,6 +956,8 @@ async function send(b) {
   if (rem ? !/^\/[^\0\r\n]*$/.test(cwd) : !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('cwd does not exist: ' + cwd);
   if (c && R(c).slash && Date.now() - R(c).slash.at < 600000) throw new Error('/' + R(c).slash.kind + ' is running on this conversation: send again when it has finished.');
   const created = !c;
+  const due = !!c && !b.auto && (c.unknownDue || R(c).status === 'interrupted');   // the user's first message after an interruption, a crash, a Stop or a usage-limit stop carries the open intents (once)
+  if (due && !c.unknownDue) { c.unknownDue = true; saveState(); }   // kept until the message really reaches the seat: a failed start or write must not lose the note
   if (c?.archived) c.archived = false;   // writing to it again = in use: back to the live list
   if (!c) { c = newConversation(seat, { cwd, model: b.model || (!rem && SET().models[seat]) || undefined, effort: b.effort, mode: b.mode }); if (rem) c.remote = rem.name; }   // "default model" = the seat's default from Settings, if one is set
   // Anything below failing (spawn, bad image id, dead stdin) must not leave a ghost conversation behind that THIS call created.
@@ -957,13 +980,15 @@ async function send(b) {
   autoTitle(c, b.title || clipChars(b.text.trim().replace(/\s+/g, ' '), 60));   // never over a title the user set (rename)
   if (!b.auto && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; }   // the user took over: no automatic resume
   if (!b.auto) answered(c);   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
-  pushEvent(c, { type: 'console_user', text: b.text, ...(images.length ? { images } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.stored, label: f.label, size: f.size })) } : {}) });
+  const bt = due ? withUnknown(b.text, openOf(c.id)) : b.text;
+  pushEvent(c, { type: 'console_user', text: bt, ...(images.length ? { images } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.stored, label: f.label, size: f.size })) } : {}) });
   const r = R(c); if (!c.turns) { r.turnFiles.clear(); r.turnWrites.clear(); r.turnAsks = []; r.turnAt = Date.now() - 2000; } // a second message mid-turn keeps the files the running turn already wrote; turnAt (2 s mtime slack): reply-named files count from here
   r.clampAt = 0; turnStart(c); setStatus(c, r.perms.size ? 'waiting' : 'working'); // clampAt of the previous result must not clamp this new turn before its first event
-  const text = (c.effort === 'ultracode' ? 'ultracode\n\n' + b.text : b.text) + files.map((f) => `\nAttached file: ${f.path} (${f.label}, ${sizeText(f.size)})`).join('');
+  const text = (c.effort === 'ultracode' ? 'ultracode\n\n' + bt : bt) + files.map((f) => `\nAttached file: ${f.path} (${f.label}, ${sizeText(f.size)})`).join('');
   if (!writeProc(c, { type: 'user', message: { role: 'user', content: images.length ? [{ type: 'text', text }, ...images.map((n) => imageBlock(c, n))] : text } })) {
     turnEnd(c); setStatus(c, c.turns ? 'working' : 'error'); throw new Error('seat process is not accepting input, try again');
   }
+  if (due) { c.unknownDue = undefined; saveState(); }
   return c;
   } catch (e) {
     if (created) { await killProc(c); delete state.conversations[c.id]; rt.delete(c.id); saveState(); fs.rmSync(logFile(c), { force: true }); fs.rmSync(path.join(UPLOADS, c.id), { recursive: true, force: true }); broadcast({ removed: c.id }); }
@@ -1036,7 +1061,7 @@ async function tgRecover(which) { // 'all' or a conversation id prefix; a conver
   const text = fs.readFileSync(path.join(SEATS_DIR, 'tasks', 'recover-continue.txt'), 'utf8').trim();
   const out = { resumed: [], failed: [] };
   for (const c of interruptedConvs().filter((x) => which === 'all' || x.id.startsWith(which))) {
-    try { await send({ conversationId: c.id, text, auto: true }); out.resumed.push({ seat: c.seat, title: c.title }); } catch (e) { out.failed.push({ seat: c.seat, title: c.title, error: e.message }); }
+    try { await send({ conversationId: c.id, text: withUnknown(text, openOf(c.id)), auto: true }); c.unknownDue = undefined; saveState(); out.resumed.push({ seat: c.seat, title: c.title }); } catch (e) { out.failed.push({ seat: c.seat, title: c.title, error: e.message }); }
   }
   return out;
 }
@@ -1072,6 +1097,8 @@ const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({
   map: DISC.map, owner: DISC.owner, seats: SEATS, root: DEFAULT_CWD, windows: (seat) => state.usage[seat]?.windows, log: console.log,
   send: (b) => send({ ...b, auto: true }),
   models: () => modelsSnap,   // per seat, what the planner may pick from for each task (refreshModels below)
+  unknown: (convId, prev) => [...(convId ? openOf(convId) : []), ...openElsewhere(prev)],   // a task's open intents (journal.mjs): its own conversation's + those of the earlier ones it replaced
+  unknownCount: (ids) => ids.filter(Boolean).reduce((n, id) => n + openOf(id).length, 0),
   ctxPct: (id) => { const c = convOf(id); return c ? ctxView(c)?.pct ?? null : null; },   // token economy: how full a task's context window is
   freshAtPct: () => SET().projectsFreshAtPct ?? 40,
   idle: (id) => { const c = convOf(id); return !!c && !c.working && !c.turns && R(c).status !== 'working' && !R(c).perms.size; },
@@ -1525,9 +1552,16 @@ async function handler(req, res) {
       }
       const c = convOf(b.conversationId);
       if (!c) return json(res, 400, { error: 'unknown conversation' });
-      if (url.pathname === '/api/stop') { await stopConv(c); return json(res, 200, { ok: true }); }
+      if (url.pathname === '/api/journal') {   // the user settles an unknown action on the page: "Done" / "Didn't happen" (journal.mjs, by: user)
+        try { settleIntent(journalOf(c.id), String(b.id || ''), b.outcome === 'done' ? 'done' : b.outcome === 'failed' ? 'failed' : '', { by: 'user' }); } catch (e) { return json(res, 400, { error: e.message }); }
+        broadcast({ conv: summary(c) }); sendAll({ multi: true }); return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/api/stop') { if (c.working || c.turns > 0) { c.unknownDue = true; saveState(); } await stopConv(c); return json(res, 200, { ok: true }); }   // a turn cut off by Stop: the next message carries the open intents
       if (url.pathname === '/api/mode') { try { return json(res, 200, { ok: true, how: await setMode(c, String(b.mode)) }); } catch (e) { return json(res, 409, { error: e.message }); } }
-      if (url.pathname === '/api/resume') { await ensureProc(c); setStatus(c, 'idle'); return json(res, 200, { ok: true, sessionId: c.sessionId }); }
+      if (url.pathname === '/api/resume') {
+        if (R(c).status === 'interrupted') c.unknownDue = true;   // setStatus clears the interruption: the next message still carries the open intents
+        await ensureProc(c); setStatus(c, 'idle'); return json(res, 200, { ok: true, sessionId: c.sessionId });
+      }
       if (url.pathname === '/api/rename') { try { setTitle(c, b.title); } catch (e) { return json(res, 400, { error: e.message }); } saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true, title: c.title }); }
       if (url.pathname === '/api/pin') {   // manual 📌 on a message (action add, i = its event index) or the ✓ that releases a pin (action done)
         try { if (b.action === 'add') addManualPin(c, { i: b.i, text: b.text }); else if (b.action === 'done') donePin(c, String(b.id)); else throw new Error('unknown action'); } catch (e) { return json(res, 400, { error: e.message }); }
@@ -1544,6 +1578,7 @@ async function handler(req, res) {
         if (R(c).proc || R(c).starting) return json(res, 409, { error: 'a message started this conversation again: stop it first' });
         if (c.remote && hostInfoOf(c)) return json(res, 409, { error: `remote ${c.remote} unreachable: its host there could not be stopped, try again when it answers` });   // deleting now would orphan it // a send slipped in while the kill ran: deleting now would orphan its host
         delete state.conversations[c.id]; rt.delete(c.id); saveState();
+        if (!openOf(c.id).length) fs.rmSync(journalOf(c.id), { force: true }); openCache.delete(c.id);   // a journal with open intents is kept (their outcome is still unknown)
         fs.rmSync(logFile(c), { force: true }); fs.rmSync(logFile(c) + '.restore', { force: true }); purgeArchive(DATA, c); fs.rmSync(path.join(UPLOADS, c.id), { recursive: true, force: true }); search.forget(c.id);
         if (ctlOf(c)) rhost.remoteRmUploads(ctlOf(c), c.id);   // the copies made for its claude there
         for (const x of fs.readdirSync(path.dirname(logFile(c))).filter((n) => n.startsWith(c.id + '.host'))) fs.rmSync(path.join(path.dirname(logFile(c)), x), { force: true }); // host leftovers (log)
