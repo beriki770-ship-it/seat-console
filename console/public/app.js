@@ -547,7 +547,8 @@ function showProjects() {
   const old = $('mform'), keep = old && { name: old.name.value, dir: old.dir.value, owner: old.owner.value, brief: old.brief.value };   // a re-render never loses a half-typed project
   const seatsOpt = [...new Set([multiData.owner, ...Object.values(multiData.disciplines)])];
   const act = multiData.projects.filter(ACTIVE), done = multiData.projects.filter((p) => !ACTIVE(p));
-  $('projects').innerHTML = `<header class="phead"><h2>🧩 ${t('projects.title')}</h2><small>${t('projects.intro')}</small></header>`
+  // ☰ (phone: opens the seat list) and Close (back to the conversation), like the Settings page: without them a phone had no way back
+  $('projects').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-pdrawer aria-label="${t('side.seats')}">☰</button><div><h2>🧩 ${t('projects.title')}</h2><small>${t('projects.intro')}</small></div><button type="button" data-pclose>${t('common.close')}</button></header>`
     + `<div class="pgrid"><div class="pcol">`
     + (multiData.off ? `<p class="err">${t('projects.off')} <bdi>${esc(multiData.off)}</bdi></p>` : '')
     + `<form id="mform"${multiData.off ? ' hidden' : ''}><h3>${t('projects.startTitle')}</h3><input name="name" placeholder="${t('projects.namePh')}" required dir="auto"><input name="dir" placeholder="${t('projects.dirPh')}" dir="auto" spellcheck="false">`
@@ -574,6 +575,8 @@ function closeProjects() {
 $('multi').onclick = (e) => { if (e.target.closest('[data-mopen]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; } };
 $('projects').oninput = (e) => { if (e.target.id === 'mfq') { folderQ = e.target.value; $('mfolders').innerHTML = folderList(); } };
 $('projects').onclick = async (e) => {
+  if (e.target.closest('[data-pclose]')) return closeProjects();
+  if (e.target.closest('[data-pdrawer]')) return document.body.classList.add('drawer');
   const st = e.target.closest('[data-mstart]');
   if (st) { const f = $('mform'); f.dir.value = st.dataset.mstart; if (!f.name.value) f.name.value = st.dataset.mname; f.scrollIntoView({ block: 'start' }); f.brief.focus(); return; }
   const ap = e.target.closest('[data-mapprove]'), rt = e.target.closest('[data-mretry]'), cp = e.target.closest('[data-mcancelp]');
