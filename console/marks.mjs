@@ -108,3 +108,9 @@ export function setTitle(c, raw) {
   c.title = t; c.titleSetByUser = true; return t;
 }
 export function autoTitle(c, title) { if (!c.titleSetByUser && c.title === 'New conversation') c.title = title; }
+
+// A finished conversation that needs nothing from the user may be archived on its own (server autoArchiveDone). ctx: status (effStatus), perms (open approvals),
+// unknown (open journal intents), held (open on the page, or part of a run that is still going), graceMs (quiet time needed).
+export const autoArchivable = (c, { status, perms = 0, unknown = 0, held = false, graceMs, now = Date.now() }) =>
+  graceMs > 0 && !held && !c.archived && !c.noAutoArchive && !c.keep && !c.phone && !c.remote && !c.needsAnswer && !c.quotaWait && !c.working && !c.interrupted && !(c.bg?.length)
+  && !perms && !unknown && ['idle', 'stopped', 'done'].includes(status) && now - (c.updatedAt || 0) >= graceMs;

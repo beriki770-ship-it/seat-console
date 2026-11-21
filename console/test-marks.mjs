@@ -1,6 +1,6 @@
 // "Needs your answer", auto-pins, pin release, follow-up suggestions and user titles (marks.mjs).
 import assert from 'node:assert/strict';
-import { findQuestion, findUrls, suggest, markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle, PINS_KEPT, AUTO_PINS_OPEN, TITLE_MAX } from './marks.mjs';
+import { autoArchivable, findQuestion, findUrls, suggest, markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle, PINS_KEPT, AUTO_PINS_OPEN, TITLE_MAX } from './marks.mjs';
 let ok = 0; const pass = (m) => { ok++; console.log('ok  ' + m); };
 const S = '\nסיכום: עשיתי X. צריך ממך החלטה.';
 {
@@ -67,5 +67,13 @@ const S = '\nסיכום: עשיתי X. צריך ממך החלטה.';
   assert.equal(Array.from(setTitle(c, 'x'.repeat(500))).length, TITLE_MAX);
   const d = { title: 'New conversation' }; setTitle(d, 'New conversation'); autoTitle(d, 'from the first message'); assert.equal(d.title, 'New conversation', 'a user title is never overwritten');
   pass('titles: trimmed, clipped, non-empty; the automatic title never replaces one the user set');
+}
+{
+  const now = 1e9, base = { updatedAt: now - 3600e3 }, ctx = { status: 'stopped', graceMs: 1800e3, now };
+  assert.equal(autoArchivable({ ...base }, ctx), true);
+  assert.equal(autoArchivable({ ...base }, { ...ctx, status: 'idle' }), true);
+  for (const [c, x] of [[{ needsAnswer: 5 }], [{ quotaWait: { until: 1 } }], [{ keep: true }], [{ phone: {} }], [{ archived: true }], [{ noAutoArchive: true }], [{ interrupted: true }], [{ bg: [1] }], [{ updatedAt: now - 60e3 }], [{}, { status: 'working' }], [{}, { status: 'error' }], [{}, { perms: 1 }], [{}, { unknown: 2 }], [{}, { held: true }], [{}, { graceMs: 0 }]])
+    assert.equal(autoArchivable({ ...base, ...c }, { ...ctx, ...x }), false, JSON.stringify([c, x]));
+  pass('autoArchivable: finished + quiet + nothing asked only');
 }
 console.log(`all ${ok} marks tests passed`);

@@ -29,7 +29,7 @@
 | **Approvals** | `auto`, `ask` (Allow / Deny cards) and `bypass` modes per conversation |
 | **Usage meters** | 5-hour and weekly windows per seat, reset times, a 90 % warning, wait-for-reset instead of failover |
 | **Phone** | Installable PWA over Tailscale, Telegram bot with buttons, replies, photos and files |
-| **Projects** | One brief, many seats, dependencies, a final integration; long task conversations hand over to a fresh one to save quota |
+| **Projects** | One brief, many seats, dependencies, a final integration; long task conversations hand over to a fresh one to save quota; a page per project folder lists its conversations and git state; finished chats archive themselves |
 | **Routines** | Cron prompts that ask first and run on your tap |
 | **Action journal** | A seat that stops after starting a mail, a post or a payment tells the next turn and you that the outcome is unknown, instead of repeating it |
 | **Settings page** | First-run checklist; every optional feature is a switch |

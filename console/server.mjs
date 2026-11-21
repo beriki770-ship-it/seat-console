@@ -25,11 +25,12 @@ import { runRetention, readLogText, restoreLog, gzPath, purgeArchive } from './r
 import { createSearch } from './searchidx.mjs';
 import { TZ as DIGEST_TZ, viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
 import { t, tn, hm, useLanguage, pickLang, LANGS, RTL } from './i18n.mjs';
-import { markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
+import { autoArchivable, markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
 import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
+import { allowedDir, gitInfo, handoffHead } from './project.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
 import { openIntents, settle as settleIntent, withUnknown, CLI_CMD as JOURNAL_CMD, CLI_PATH as JOURNAL_CLI } from './journal.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
@@ -979,7 +980,7 @@ async function send(b) {
   const files = await claimFiles(c, b.files, b.fileBuffers, b.draftId, rem);
   autoTitle(c, b.title || clipChars(b.text.trim().replace(/\s+/g, ' '), 60));   // never over a title the user set (rename)
   if (!b.auto && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; }   // the user took over: no automatic resume
-  if (!b.auto) answered(c);   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
+  if (!b.auto) { answered(c); c.noAutoArchive = false; }   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
   const bt = due ? withUnknown(b.text, openOf(c.id)) : b.text;
   pushEvent(c, { type: 'console_user', text: bt, ...(images.length ? { images } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.stored, label: f.label, size: f.size })) } : {}) });
   const r = R(c); if (!c.turns) { r.turnFiles.clear(); r.turnWrites.clear(); r.turnAsks = []; r.turnAt = Date.now() - 2000; } // a second message mid-turn keeps the files the running turn already wrote; turnAt (2 s mtime slack): reply-named files count from here
@@ -1083,6 +1084,17 @@ function projectFolders() {
   }
   foldersCache = { at: Date.now(), list: list.sort((a, b) => b.mtime - a.mtime) };
   return foldersCache.list;
+}
+
+// Conversations that run inside a project folder (cwd = dir or below), for the Projects page. One that sits in a nested project folder belongs to the deepest one only.
+const inDir = (cwd, d) => { const r = path.resolve(cwd); return r === d || r.startsWith(d + path.sep); };
+const convHits = (dir, dirs) => {
+  const deeper = dirs.filter((d) => d !== dir && d.startsWith(dir + path.sep));
+  return Object.values(state.conversations).filter((c) => c.cwd && inDir(c.cwd, dir) && !deeper.some((d) => inDir(c.cwd, d))).sort((a, b) => !!a.archived - !!b.archived || b.updatedAt - a.updatedAt);   // live ones first, archived after
+};
+function convsUnder(dir, dirs) {
+  const hits = convHits(dir, dirs);
+  return { convs: hits.slice(0, 20).map((c) => ({ id: c.id, title: c.title, seat: c.seat, status: effStatus(c), updatedAt: c.updatedAt, archived: !!c.archived })), convCount: hits.length };
 }
 
 // ---- multi-sided projects (multi.mjs): discipline -> its FIXED seat (console/disciplines.json); a seat at its limit makes its tasks wait, never another seat ----
@@ -1394,7 +1406,15 @@ async function handler(req, res) {
       if (!hasKey(SEATS, seat) || !SEATS[seat].agent) return json(res, 200, { models: null });
       try { return json(res, 200, { models: await agentModels(seat) }); } catch (e) { return json(res, 200, { models: [], error: String(e.message || e) }); }
     }
-    if (req.method === 'GET' && url.pathname === '/api/multi') return json(res, 200, { projects: multi.view(), disciplines: DISC.map, owner: DISC.owner, off: multiOff() || null, hidden: !SET().multiProjects, folders: projectFolders() });
+  const hits = convHits(dir, dirs);
+    if (req.method === 'GET' && url.pathname === '/api/project') {   // one project's page: conversations, runs, git, HANDOFF head. Only folders the Projects page lists.
+      const folders = projectFolders(), projects = multi.view(), dirs = [...new Set([...folders.map((f) => path.resolve(f.dir)), ...projects.map((p) => path.resolve(p.dir))])];
+      const dir = allowedDir(url.searchParams.get('dir'), dirs); if (!dir) return json(res, 404, { error: 'not a project folder' });
+      const hits = convHits(dir, dirs), live = hits.filter((c) => !c.archived), arch = hits.filter((c) => c.archived), f = folders.find((x) => path.resolve(x.dir) === dir);
+      const view = (c) => { const v = summary(c); return { id: v.id, title: v.title, seat: v.seat, status: v.status, cost: v.cost, updatedAt: v.updatedAt, need: [v.pending && 'perms', v.needsAnswer && 'answer', v.quotaWait && 'quota', v.status === 'error' && 'error'].filter(Boolean) }; };
+      return json(res, 200, { name: f?.name || path.basename(dir), dir, mtime: f?.mtime || 0, git: await gitInfo(dir), convs: live.map(view), archived: arch.slice(0, 50).map(view), archivedCount: arch.length, runs: projects.filter((p) => path.resolve(p.dir) === dir), handoff: handoffHead(dir) });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/multi') { const projects = multi.view(), folders = projectFolders(), dirs = [...new Set([...folders.map((f) => path.resolve(f.dir)), ...projects.map((p) => path.resolve(p.dir))])]; return json(res, 200, { projects: projects.map((p) => ({ ...p, ...convsUnder(path.resolve(p.dir), dirs) })), disciplines: DISC.map, owner: DISC.owner, off: multiOff() || null, hidden: !SET().multiProjects, folders: folders.map((f) => ({ ...f, ...convsUnder(path.resolve(f.dir), dirs) })) }); }
     if (req.method === 'GET' && url.pathname === '/api/settings') return json(res, 200, await settingsView());
     if (req.method === 'GET' && url.pathname === '/api/digest') return json(res, 200, digestMessage(Date.now(), url.searchParams.get('kind') === 'evening' ? 'evening' : 'morning'));   // the digest text + buttons, nothing is sent
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
@@ -1570,7 +1590,7 @@ async function handler(req, res) {
       if (url.pathname === '/api/dismiss') { answered(c); saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "waiting for your answer": cleared as if the user had answered, without sending a message
       if (url.pathname === '/api/quotawait') { c.quotaWait = undefined; c.quotaTries = 0; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "resumes at": no automatic resume for this stop
       if (url.pathname === '/api/keep') { c.keep = !!b.keep; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Keep shown": the row stays when its seat is folded (all devices)
-      if (url.pathname === '/api/archive') { c.archived = !!b.archived; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
+      if (url.pathname === '/api/archive') { c.archived = !!b.archived; if (!c.archived) c.noAutoArchive = true;   /* brought back: not archived on its own again until the user writes */ saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {
         // An idle process is only waiting for input, so it is stopped and removed; a running turn or an open approval refuses.
         if (c.working || c.bg?.length || R(c).perms.size || R(c).starting) return json(res, 409, { error: 'conversation is running: stop it first' });
@@ -1736,7 +1756,17 @@ function autoArchive() {
     console.log(`[auto-archive] conv=${c.id.slice(0, 8)} "${String(c.title).slice(0, 40)}": idle ${Math.floor((Date.now() - c.updatedAt) / 864e5)} d`);
   }
 }
-if (!ISOLATED) { setInterval(guard('auto-archive', autoArchive), 10 * 60000).unref(); setTimeout(guard('auto-archive', autoArchive), 30000).unref(); }
+// Finished-work archive: quiet for autoArchiveDoneMin (Settings, 0 = off), nothing asked of the user (marks.mjs autoArchivable). Same archive step as /api/archive.
+function autoArchiveDone() {
+  const graceMs = (SET().autoArchiveDoneMin || 0) * 60000; if (!graceMs) return;
+  const open = new Set([...clients].map((o) => o.watch)), run = new Set(multi.view().filter((p) => !['done', 'cancelled'].includes(p.status)).flatMap((p) => [p.planConv, p.integrateConv, ...p.tasks.map((k) => k.conv)]));
+  for (const c of Object.values(state.conversations)) {
+    if (!autoArchivable(c, { status: effStatus(c), perms: R(c).perms.size, unknown: openAll(c).length, held: open.has(c.id) || run.has(c.id), graceMs })) continue;
+    c.archived = true; saveState(); broadcast({ conv: summary(c) });
+    console.log(`[auto-archive] conv=${c.id.slice(0, 8)} "${String(c.title).slice(0, 40)}": finished, quiet ${Math.floor((Date.now() - c.updatedAt) / 60000)} min`);
+  }
+}
+if (!ISOLATED) { setInterval(guard('auto-archive', autoArchive), 10 * 60000).unref(); setInterval(guard('auto-archive-done', autoArchiveDone), 5 * 60000).unref(); setTimeout(guard('auto-archive-done', autoArchiveDone), 40000).unref(); setTimeout(guard('auto-archive', autoArchive), 30000).unref(); }
 // Build the search index in the background after start (the first build reads every log once); later passes only read what was appended.
 setTimeout(() => search.refresh([...Object.values(state.conversations), ...Object.values(state.remoteConvs)]).then(() => console.log('[search] index ready')).catch((e) => console.log('[search] ' + e.message)), 5000).unref();
 setInterval(() => reapIdle().catch((e) => console.log('[idle] ' + e.message)), Math.min(60000, IDLE_REAP_MS / 2)).unref();

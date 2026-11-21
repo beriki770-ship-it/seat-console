@@ -415,7 +415,7 @@ function onEvent(m) {
     const s = seats.find((x) => x.name === d.conv.seat), i = s.conversations.findIndex((c) => c.id === d.conv.id);
     if (i >= 0) s.conversations[i] = d.conv; else s.conversations.unshift(d.conv);
     s.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
-    scheduleSeats();
+    scheduleSeats(); if (onProjects()) { clearTimeout(convRefresh); convRefresh = setTimeout(loadMulti, 2000); }
     if (d.conv.id === cur.id) { refreshCtx(); $('banner').hidden = !(d.conv.status === 'interrupted' || d.conv.status === 'stopped'); showMarks(); const h = $('htitle'); if (h && !h.isContentEditable) h.textContent = d.conv.title; }
     return;
   }
@@ -511,13 +511,13 @@ $('routines').onclick = async (e) => {
   if (r.conversationId) location.hash = r.conversationId;
 };
 // ---- Projects page (#projects) + multi-sided projects (multi.mjs): a brief -> plan on the owner seat -> one tap approves -> each task on the seat fixed for its discipline ----
-let multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
+let convRefresh, projDir = null, projData = null, projPrefill = null, multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
 const mstatus = (s) => tk('mstatus.', s);
 const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
 const onProjects = () => document.body.classList.contains('projects');
 async function loadMulti() {
   try { multiData = await api('/api/multi'); } catch { return; }
-  multiLoaded = true; $('multi').hidden = !!multiData.hidden; showMultiSide(); if (onProjects() && !$('projects').contains(document.activeElement)) { showProjects(); flashCard(); }   // a half-typed brief or filter is never wiped by a refresh
+  multiLoaded = true; $('multi').hidden = !!multiData.hidden; showMultiSide(); if (onProjects() && !$('projects').contains(document.activeElement)) { if (projDir) loadProject(); else { showProjects(); flashCard(); } }   // a half-typed brief or filter is never wiped by a refresh
 }
 // Sidebar: one entry to the page + the projects still going, each a link to its card.
 function showMultiSide() {
@@ -525,6 +525,7 @@ function showMultiSide() {
   $('multi').innerHTML = `<h2>🧩 ${t('projects.title')}</h2><button type="button" data-mopen class="${onProjects() ? 'primary' : ''}">${t('projects.open')}${ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''}</button>`
     + act.map((p) => `<a class="mline" href="#multi-${esc(p.id)}"><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('');
 }
+const convList = (x) => x.convCount ? `<div class="mconvs"><small>${t('projects.convs', { n: num(x.convCount) })}</small>${x.convs.map((c) => `<a class="mline${c.archived ? ' arch' : ''}" href="#${esc(c.id)}"><span dir="auto">${esc(c.title)}</span><small><bdi>${esc(c.seat)}</bdi> · ${esc(label(c.status))}</small></a>`).join('')}</div>` : '';
 function card(p) {
   const wait = (x, seat) => x.waitUntil ? ' · ' + t('projects.waitsFor', { seat: `<bdi>${esc(seat)}</bdi>`, when: when(x.waitUntil) }) : '';
   const retry = (task, label = t('projects.retry')) => `<button data-mretry="${esc(p.id)}" data-task="${esc(task)}">${label}</button>`;
@@ -534,13 +535,13 @@ function card(p) {
     + (p.status === 'plan-error' ? retry('plan', t('projects.retryPlan')) : '') + (p.status === 'integrate-error' ? retry('integrate', t('projects.retryIntegration')) : '')
     + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">${t('projects.cancel')}</button>` : '');
   const done = p.tasks.filter((k) => k.status === 'done').length;
-  return `<div class="mproj" id="multi-${esc(p.id)}"><b dir="auto">${esc(p.name)}</b><small>${esc(mstatus(p.status))}${p.tasks.length ? ' · ' + t('projects.tasksDone', { done: num(done), n: num(p.tasks.length) }) : ''} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr">${esc(p.dir)}</small>`
+  return `<div class="mproj" id="multi-${esc(p.id)}"><b dir="auto">${esc(p.name)}</b><small>${esc(mstatus(p.status))}${p.tasks.length ? ' · ' + t('projects.tasksDone', { done: num(done), n: num(p.tasks.length) }) : ''} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr"><a href="#project/${encodeURIComponent(p.dir)}">${esc(p.dir)}</a></small>`
     + `<small>${p.planConv ? `<a href="#${esc(p.planConv)}">${t('projects.planConv')}</a>` : ''}${p.integrateConv ? ` · <a href="#${esc(p.integrateConv)}">${t('projects.integration')}</a>` : ''}</small>`
-    + `${p.error ? `<small class="err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="racts">${acts}</div>` : ''}${tasks}</div>`;
+    + `${p.error ? `<small class="err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="racts">${acts}</div>` : ''}${tasks}${convList(p)}</div>`;
 }
 function folderList() {
   const q = folderQ.trim().toLowerCase(), all = multiData.folders || [], hits = q ? all.filter((f) => f.name.toLowerCase().includes(q)) : all;
-  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><span dir="ltr">${esc(f.name)}</span><small>${f.mtime ? t('projects.touched', { when: when(f.mtime) }) : ''}</small></div><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">${t('projects.start')}</button></div>`).join('')
+  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><a href="#project/${encodeURIComponent(f.dir)}" dir="ltr">${esc(f.name)}</a><small>${f.mtime ? t('projects.touched', { when: when(f.mtime) }) : ''}</small></div><span class="racts"><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">${t('projects.start')}</button><button data-mchat="${esc(f.dir)}">${t('projects.newChat')}</button></span></div>${convList(f)}`).join('')
     + (hits.length > 40 ? `<small>${t('projects.moreFolders', { n: num(hits.length - 40) })}</small>` : '') + (!hits.length ? `<small>${t('projects.noFolder')}</small>` : '');
 }
 function showProjects() {
@@ -559,9 +560,36 @@ function showProjects() {
     + `<div class="pcol"><h3>${t('projects.running', { n: num(act.length) })}</h3>${act.map(card).join('') || `<small>${t('projects.nothingRunning')}</small>`}`
     + (done.length ? `<h3>${t('projects.finished')}</h3>${done.map(card).join('')}` : '') + `</div></div>`;
   const f = $('mform'); if (keep) for (const k of ['name', 'dir', 'owner', 'brief']) if (keep[k]) f[k].value = keep[k];
+  if (projPrefill) { f.dir.value = projPrefill.dir; if (!f.name.value) f.name.value = projPrefill.name; projPrefill = null; f.scrollIntoView({ block: 'start' }); f.brief.focus(); }   // "Start a run here" on a project page
+}
+// One project's page (#project/<dir>): what is going on in that folder. Data: GET /api/project.
+const NEED = { perms: 'project.needPerms', answer: 'project.needAnswer', quota: 'project.needQuota', error: 'project.needError' };
+const projRow = (c) => `<a class="mline${c.archived ? ' arch' : ''}" href="#${esc(c.id)}"><span dir="auto"><span class="dot ${DOT[c.status] ?? c.status}"></span>${esc(c.title)}</span><small><bdi>${esc(c.seat)}</bdi> · ${esc(label(c.status))} · <bdi dir="ltr">~${usd(c.cost || 0)}</bdi> · ${when(c.updatedAt)}</small></a>`;
+function renderProject() {
+  const d = projData, head = `<header class="phead shead"><button type="button" class="smenu" data-pdrawer aria-label="${t('side.seats')}">☰</button><div><h2>🧩 <bdi dir="auto">${esc(d?.name || projDir)}</bdi></h2><small dir="ltr">${esc(projDir)}</small></div><button type="button" data-mback>${t('project.back')}</button></header>`;
+  if (!d || d.error) return $('projects').innerHTML = head + `<div class="pgrid"><div class="pcol"><small>${t('project.notFound')}</small></div></div>`;
+  const need = [...d.convs, ...d.archived].filter((c) => c.need.length), work = d.convs.filter((c) => ['working', 'waiting'].includes(c.status)), idle = d.convs.filter((c) => !work.includes(c));
+  const g = d.git, md = d.handoff;
+  $('projects').innerHTML = head + `<div class="pgrid"><div class="pcol">`
+    + `<small>${d.mtime ? t('projects.touched', { when: when(d.mtime) }) : ''}${g ? ` · <bdi dir="ltr">${esc(g.branch)}</bdi> · ${t(g.dirty ? 'project.dirty' : 'project.clean')}` : ''}</small>`
+    + (g?.commits.length ? `<small dir="ltr">${g.commits.map((k) => `${esc(k.hash)} ${esc(k.subject)}`).join('<br>')}</small>` : '')
+    + `<div class="racts"><button data-mchat="${esc(projDir)}">${t('projects.newChat')}</button><button data-mrun="${esc(projDir)}" data-mname="${esc(d.name.split(/[\\/]/).pop())}">${t('project.startRun')}</button></div>`
+    + (need.length ? `<h3>${t('project.needs')}</h3>${need.map((c) => `<a class="mline" href="#${esc(c.id)}"><span dir="auto">${esc(c.title)}</span><small class="err">${c.need.map((k) => t(NEED[k])).join(' · ')}</small></a>`).join('')}` : '')
+    + (work.length ? `<h3>${t('project.working', { n: num(work.length) })}</h3>${work.map(projRow).join('')}` : '')
+    + `<h3>${t('project.idle', { n: num(idle.length) })}</h3>${idle.map(projRow).join('') || `<small>${t('project.noConvs')}</small>`}`
+    + (d.archivedCount ? `<details><summary>${t('project.archived', { n: num(d.archivedCount) })}</summary>${d.archived.map((c) => projRow({ ...c, archived: true })).join('')}</details>` : '')
+    + `</div><div class="pcol">` + (d.runs.length ? `<h3>${t('project.runs')}</h3>${d.runs.map(card).join('')}` : '')
+    + (md ? `<h3>${t('project.happening')}</h3><small dir="ltr">${t('project.handoffNote', { file: esc(md.file) })}</small><div class="mmd" dir="auto">${md.text.split('\n').map((l) => /^#/.test(l) ? `<b>${esc(l.replace(/^#+\s*/, ''))}</b>` : esc(l)).join('\n')}</div>` : '') + `</div></div>`;
+}
+async function loadProject() {
+  const dir = projDir; let r; try { r = await api('/api/project?dir=' + encodeURIComponent(dir)); } catch { r = { error: 'x' }; }
+  if (dir === projDir) { projData = r; renderProject(); }
+}
+function openProject(dir) {
+  closeSettings(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; renderProject(); showMultiSide(); loadProject();
 }
 function openProjects(id) {
-  closeSettings(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
+  projDir = null; closeSettings(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
   focusId = id || null; if (multiLoaded) flashCard();   // a direct link before the first load: the card is flashed once the data is in (loadMulti)
 }
 function flashCard() {
@@ -570,13 +598,16 @@ function flashCard() {
 }
 function closeProjects() {
   if (!onProjects()) return; document.body.classList.remove('projects'); showMultiSide();
-  if (location.hash === '#projects' || location.hash.startsWith('#multi-')) history.replaceState(null, '', location.pathname + location.search);   // the same project link works again
+  projDir = null; if (location.hash === '#projects' || location.hash.startsWith('#multi-') || location.hash.startsWith('#project/')) history.replaceState(null, '', location.pathname + location.search);   // the same project link works again
 }
 $('multi').onclick = (e) => { if (e.target.closest('[data-mopen]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; } };
 $('projects').oninput = (e) => { if (e.target.id === 'mfq') { folderQ = e.target.value; $('mfolders').innerHTML = folderList(); } };
 $('projects').onclick = async (e) => {
   if (e.target.closest('[data-pclose]')) return closeProjects();
+  if (e.target.closest('[data-mback]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; return; }
+  const mr = e.target.closest('[data-mrun]'); if (mr) { projPrefill = { dir: mr.dataset.mrun, name: mr.dataset.mname }; if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; return; }
   if (e.target.closest('[data-pdrawer]')) return document.body.classList.add('drawer');
+  const nc = e.target.closest('[data-mchat]'); if (nc) { await pick(cur.seat, null); $('cwd').value = nc.dataset.mchat; return $('text').focus(); }
   const st = e.target.closest('[data-mstart]');
   if (st) { const f = $('mform'); f.dir.value = st.dataset.mstart; if (!f.name.value) f.name.value = st.dataset.mname; f.scrollIntoView({ block: 'start' }); f.brief.focus(); return; }
   const ap = e.target.closest('[data-mapprove]'), rt = e.target.closest('[data-mretry]'), cp = e.target.closest('[data-mcancelp]');
@@ -690,6 +721,7 @@ $('resume').onclick = async () => { const r = await api('/api/resume', { convers
 function openHash() {
   if (location.hash === '#settings') return openSettings();
   closeSettings();
+  if (location.hash.startsWith('#project/')) { let d = ''; try { d = decodeURIComponent(location.hash.slice(9)); } catch {} return openProject(d); }
   if (location.hash === '#projects' || location.hash.startsWith('#multi-')) return openProjects(location.hash.startsWith('#multi-') ? location.hash.slice(7) : null);
   const c = allConvs().find((x) => x.id === location.hash.slice(1));
   if (c && c.id !== cur.id) pick(c.seat, c.id); else if (c) closeProjects();   // the conversation already behind the page: just uncover it
@@ -811,7 +843,8 @@ const TABS = {
     + `<h3>${t('set.usage.resets')}</h3>` + tog('claudeResets', t('set.usage.claudeResets'), t('set.usage.claudeResetsHint'))
     + tog('codexResets', t('set.usage.codexResets'), t('set.usage.codexResetsHint', { cmd: '<code dir="ltr">codex app-server</code>' }))
     + `<h3>${t('set.usage.housekeeping')}</h3><label class="snum"><span><b>${t('set.usage.archive')}</b><small>${t('set.usage.archiveHint')}</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> ${t('set.usage.days')}</label>`
-    + `<label class="snum"><span><b>${t('set.usage.reap')}</b><small>${t('set.usage.reapHint')}</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> ${t('set.usage.min')}</label>`,
+    + `<label class="snum"><span><b>${t('set.usage.reap')}</b><small>${t('set.usage.reapHint')}</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> ${t('set.usage.min')}</label>`
+    + `<label class="snum"><span><b>${t('set.usage.archiveDone')}</b><small>${t('set.usage.archiveDoneHint')}</small></span><input type="number" min="0" max="10080" data-set="autoArchiveDoneMin" value="${draft.autoArchiveDoneMin}"> ${t('set.usage.min')}</label>`,
   projects: () => {
     const d = setData.disciplines || { owner: setData.detected.seats[0]?.name, disciplines: {} };
     return `<h3>${t('set.proj.title')}</h3>` + tog('multiProjects', t('set.proj.page'), t('set.proj.pageHint'))
