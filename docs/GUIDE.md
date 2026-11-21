@@ -8,7 +8,7 @@ Every section there has a **Show me** button: the Guide closes and the console p
 
 ## What does the sidebar show?
 
-Each seat is one AI account with its own chats. Under the seat name are its usage bars: the 5-hour window and the week, how much is used and when each one resets. If the account holds a free limit reset, it is listed with a **Use** button, which asks before it spends anything. **Fold all** shrinks every seat to the chats that are starred or need you.
+Each seat is one AI account with its own chats. Its row shows the name, how much of the 5-hour window and of the week is used, and how many chats are working or wait on you. The arrow in front of the name opens the details: email, role, when each window resets, and any free limit reset with a **Use** button, which asks before it spends anything. **All** shrinks every seat to its row and the chats that need you.
 
 ## How do I start a chat?
 
@@ -28,7 +28,7 @@ A row marked **needs approval** has a tool waiting: open the chat and press **Al
 
 ## How do I keep a chat, or put one away?
 
-Open the ⋯ menu on a row. **Keep (no auto-archive)** adds a ★: the chat is never archived on its own and stays visible when its seat is folded. **Archive** takes it out of the list. **Show archived (…)** at the bottom of a seat brings archived chats back into view, and search finds them too. **Move to project…** lists a chat under a different project without changing its folder.
+Open the ⋯ menu on a row. **Keep (no auto-archive)** adds a ★: the chat is never archived on its own. **Archive** takes it out of the list. **Show archived (…)** at the bottom of a seat brings archived chats back into view, and search finds them too. **Move to project…** lists a chat under a different project without changing its folder.
 
 ## Why did a chat move to the archive by itself?
 

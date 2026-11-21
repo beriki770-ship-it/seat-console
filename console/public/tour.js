@@ -24,13 +24,16 @@
     let r = null; try { r = await api('/api/project?dir=' + encodeURIComponent(d)); } catch {}
     const c = r?.convs?.[0]; hashTo(`#project/${encodeURIComponent(d)}/${c ? 'c/' + c.id : 'new'}`);
   };
-  const openMenu = async () => { await side(); const c = allConvs().find((x) => !x.archived && !x.remote); if (c && menuFor !== c.id) { menuFor = c.id; showSeats(); } };
+  // sidebar E: seats start folded, so the menu goes on a chat already in the list, else the first seat with one is unfolded from the rail first (all its chats shown: it may be past the newest 12)
+  const openMenu = async () => { await side(); let id = document.querySelector('#seats [data-more]')?.dataset.more; if (!id) { const c = allConvs().find((x) => !x.archived && !x.remote); if (!c) return; showMore[c.seat] = true; railGo(c.seat); id = c.id; } if (menuFor !== id) { menuFor = id; showSeats(); } };
+  const seatDetails = async () => { await side(); const s = seats.find((x) => x.usage) || seats[0]; if (s && !det.has(s.name)) railGo(s.name); };   // email, role and the meters with their reset times sit in the seat's details
+  const toSearch = async () => { await side(); openSearch(); };   // the field opens over the panel's title row
   const openWaiting = async () => { await main(); const c = allConvs().find((x) => x.pending); if (c && c.id !== cur.id) await pick(c.seat, c.id); };
 
   // ---- the tours: k = data-guide target, h = title key (an existing button name where one exists), p = text key, go = get the page there first ----
   const S = {
-    seat: { k: 'seat', h: 'tour.seat.h', p: 'tour.seat.p', go: side },
-    usage: { k: 'usage', h: 'tour.usage.h', p: 'tour.usage.p', go: side },
+    seat: { k: 'seat', h: 'tour.seat.h', p: 'tour.seat.p', go: seatDetails },
+    usage: { k: 'usage', h: 'tour.usage.h', p: 'tour.usage.p', go: seatDetails },
     foldall: { k: 'foldall', h: 'side.foldAll', p: 'tour.foldall.p', go: side },
     new: { k: 'new', h: 'side.newConversation', p: 'tour.new.p', go: side },
     folder: { k: 'folder', h: 'composer.projectAuto', p: 'tour.folder.p', go: toDraft },
@@ -47,7 +50,7 @@
     archive: { k: 'archive', h: 'conv.archive', p: 'tour.archive.p', go: openMenu },
     archiveDone: { k: 'archive-done', h: 'set.usage.archiveDone', p: 'tour.archiveDone.p', go: () => toSettings('usage') },
     archiveDays: { k: 'archive-days', h: 'set.usage.archive', p: 'tour.archiveDays.p', go: () => toSettings('usage') },
-    search: { k: 'search', h: 'side.searchLabel', p: 'tour.search.p', go: side },
+    search: { k: 'search', h: 'side.searchLabel', p: 'tour.search.p', go: toSearch },
     projOpen: { k: 'projects-open', h: 'projects.open', p: 'tour.projOpen.p', go: side },
     folders: { k: 'folders', h: 'projects.title', p: 'tour.folders.p', go: async () => { await main(); hashTo('#projects'); } },
     openProject: { k: 'open-project', h: 'projects.openProject', p: 'tour.openProject.p', go: async () => { await main(); hashTo('#projects'); } },
@@ -133,6 +136,7 @@
     root.remove(); root = null; target = null;
     removeEventListener('keydown', onKey, true); removeEventListener('resize', place); removeEventListener('scroll', place, true);
     if (menuFor) { menuFor = null; showSeats(); }   // a ⋯ menu the tour opened
+    if ($('sidetop').classList.contains('searching') && !$('q').value) clearSearch();   // the search field the tour opened, left empty
     document.body.classList.remove('drawer');
     (before?.isConnected ? before : $('guidebtn')).focus({ preventScroll: true });   // "Show me" was inside the Guide, which is gone by now
   }

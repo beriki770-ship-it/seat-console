@@ -12,7 +12,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { createTelegram, Throttle, sentLine, quotaWarnDue, buildQuotaWarning, esc } from './telegram.mjs';
+import { createTelegram, Throttle, sentLine, quotaWarnDue, buildQuotaWarning, esc, findPermConv } from './telegram.mjs';
 import { markInterrupted, isCleanExit, crashLoop, crashWarnDue } from './recovery.mjs';
 import { createRoutines } from './routines.mjs';
 import { slimEvent, slimEvents, toolDetail, memTrim, memSlim } from './slim.mjs';
@@ -1024,8 +1024,7 @@ function quietRepeat(c, text, now = Date.now()) {
   lastDone.set(c.id, { at: now, short }); return false;
 }
 async function tgDecision(convShort, requestId, allow) {
-  const c = Object.values(state.conversations).find((x) => x.id.startsWith(convShort));
-  if (!c) throw new Error('conversation not found');
+  const c = findPermConv(state.conversations, convShort, requestId, (x, id) => !!rt.get(x.id)?.perms?.has(id));
   decide(c, requestId, allow);
   return allow ? 'Allowed' : 'Denied';
 }
@@ -1199,6 +1198,21 @@ const body = (req) => new Promise((ok, no) => {
   req.on('data', (x) => { n += x.length; if (n > 1e6) { no(new Error('body too large')); req.destroy(); } else chunks.push(x); });
   req.on('end', () => { try { ok(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')); } catch (e) { no(e); } });
 });
+// Build id shown on the page (Guide footer) and sent on every event stream: the page compares it with its own and offers a reload after a restart
+// with new code. Commit short hash + a hash of the page files, so uncommitted page edits count as a new build too.
+const BUILD = (() => { let g = 'nogit'; try { g = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: HERE, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
+  const h = crypto.createHash('sha1'); for (const f of ['index.html', 'app.js', 'app.css', 'tour.js']) try { h.update(fs.readFileSync(path.join(HERE, 'public', f))); } catch {}
+  return `${g}.${h.digest('hex').slice(0, 4)}`; })();
+// Optional diagnostics (the page side is OFF by default, DIAG_UNTIL = 0 in app.js): what a phone's composer receives, one JSON line per event,
+// no message text. data/client-log.jsonl keeps the newest 500 lines. Remove with the page's DIAG block once the question is answered.
+const CLIENT_LOG = path.join(DATA, 'data', 'client-log.jsonl');
+function clientLog(b, req) {
+  const evs = (Array.isArray(b.events) ? b.events : []).slice(0, 50).map((e) => JSON.stringify({ at: Date.now(), ua: String(req.headers['user-agent'] || '').slice(0, 200), ...e }).slice(0, 4000));
+  if (!evs.length) return 0;
+  fs.mkdirSync(path.dirname(CLIENT_LOG), { recursive: true });
+  let old = []; try { old = fs.readFileSync(CLIENT_LOG, 'utf8').split('\n').filter(Boolean); } catch {}
+  fs.writeFileSync(CLIENT_LOG, old.concat(evs).slice(-500).join('\n') + '\n'); return evs.length;
+}
 const json = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
 // Same, gzipped when the browser accepts it and the body is worth it (a phone over Tailscale pays per byte).
 function sendZ(req, res, code, type, body) {
@@ -1418,7 +1432,7 @@ async function handler(req, res) {
       let body = type.startsWith('image/') ? raw : raw.toString('utf8');   // PNG icons stay bytes: a utf8 round trip corrupts them
       if (file === 'index.html') {   // the language: Settings' choice, else the browser's (Accept-Language), else English; he/ar right-to-left
         const lg = SET().language || pickLang(req.headers['accept-language']);
-        body = body.replace('__TOKEN__', TOKEN).replace('<html lang="en">', `<html lang="${lg}" dir="${RTL.has(lg) ? 'rtl' : 'ltr'}">`);
+        body = body.replace('__TOKEN__', TOKEN).replace('__BUILD__', BUILD).replace('__HTTPS__', tsName ? `https://${tsName}` : '').replace('<html lang="en">', `<html lang="${lg}" dir="${RTL.has(lg) ? 'rtl' : 'ltr'}">`);
       }
       return sendZ(req, res, 200, type, body);
     }
@@ -1479,7 +1493,7 @@ async function handler(req, res) {
       // gzip stream flushed after every write, so a message is never held back waiting for more input
       const out = gz ? zlib.createGzip({ flush: zlib.constants.Z_SYNC_FLUSH }) : res; if (gz) out.pipe(res);
       out.watch = url.searchParams.get('conv') || null;
-      out.write(': hi\n\n');
+      out.write(': hi\n\n'); out.write(`data: ${JSON.stringify({ build: BUILD })}\n\n`);   // the page offers a reload when this differs from its own
       // Tells the page how many events exist now: one it missed between its snapshot read and this registration shows up as hello.total > snapshot.total (the client resyncs).
       // The log of a conversation not opened since the start is read async (loadLogAsync, like reattachAll): a sync read of a 60 MB log blocked every client.
       // Registered (clients.add) only after the count, as before: an event emitted while it loads is in the total, so the page sees hello.total > snapshot and resyncs.
@@ -1504,6 +1518,7 @@ async function handler(req, res) {
         return json(res, 200, { ok: true, file: true, id: `${dir}/${stored}`, name: fileLabel(stored.replace(/^[0-9a-f]{16}-/, '')), size: buf.length });
       }
       const b = await body(req);
+      if (url.pathname === '/api/client-log') return json(res, 200, { ok: true, n: clientLog(b, req) });   // optional diagnostics, see clientLog
       if (url.pathname === '/api/restart') {   // Settings "Restart now": the supervisor (run-server.sh / .ps1) starts it again; conversations live in their hosts and are reattached
         if (!fromPage(req)) return json(res, 403, { error: 'only from the console page' });
         console.log('[settings] restart requested from the page'); json(res, 200, { ok: true, supervisor: !!process.env.SEAT_CONSOLE_SUPERVISOR });

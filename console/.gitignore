@@ -13,3 +13,4 @@ launchd.err.log
 search/
 agent-state/
 journal/
+data/client-log.jsonl

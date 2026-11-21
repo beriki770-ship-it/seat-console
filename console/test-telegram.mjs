@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { escClip, buildMessage, Throttle, parseCallback, callbackData, extractSummary, createTelegram, PERM_MAX, isStatusRequest, buildDigest, buildRecover, bar, permTooLong, clock, resetTag, seatMark, quotaWarnDue, buildQuotaWarning } from './telegram.mjs';
+import { escClip, buildMessage, Throttle, parseCallback, callbackData, extractSummary, createTelegram, PERM_MAX, isStatusRequest, buildDigest, buildRecover, bar, permTooLong, clock, resetTag, seatMark, quotaWarnDue, buildQuotaWarning, findPermConv, PERM_GONE, CONFLICT_TEXT } from './telegram.mjs';
 import { markInterrupted } from './recovery.mjs';
 import { createRoutines } from './routines.mjs';
 
@@ -80,6 +80,14 @@ const cd = callbackData(id, 'req-123', true);
 assert.equal(cd, 'p:0123abcd:req-123:1'); assert.ok(Buffer.byteLength(cd) <= 64);
 assert.deepEqual(parseCallback(cd), { convShort: '0123abcd', requestId: 'req-123', allow: true });
 assert.deepEqual(parseCallback('p:0123abcd:a:b:c:0'), { convShort: '0123abcd', requestId: 'a:b:c', allow: false });
+{ // findPermConv: archived conversation still found; a rolled-over id follows c.rollover.to; a gone request or unknown conversation reads as a plain sentence
+  const convs = { 'aaaa1111-x': { id: 'aaaa1111-x', archived: true, rollover: { stage: 'done', to: 'bbbb2222-x' } }, 'bbbb2222-x': { id: 'bbbb2222-x', rollover: { stage: 'done', to: 'aaaa1111-x' } }, 'cccc3333-x': { id: 'cccc3333-x', archived: true } };
+  const perms = { 'bbbb2222-x': new Set(['r-succ']), 'cccc3333-x': new Set(['r-arch']) }, has = (c, id) => !!perms[c.id]?.has(id);
+  assert.equal(findPermConv(convs, 'aaaa1111', 'r-succ', has).id, 'bbbb2222-x');   // rolled over -> successor (loop in the chain does not hang)
+  assert.equal(findPermConv(convs, 'cccc3333', 'r-arch', has).id, 'cccc3333-x');   // archived -> found
+  assert.throws(() => findPermConv(convs, 'aaaa1111', 'r-none', has), (e) => e.message === PERM_GONE);
+  assert.throws(() => findPermConv(convs, 'dddd4444', 'r-succ', has), (e) => e.message.startsWith(PERM_GONE) && !/not found/.test(e.message));
+}
 assert.equal(parseCallback('x:1'), null);
 
 // status phrase matcher: exact short phrases only
@@ -385,6 +393,24 @@ tg.stop(); await new Promise((r) => setTimeout(r, 600));
   assert.deepEqual(offs, [81]); assert.equal(calls.slice(mark).find((c) => c.method === 'getUpdates').body.offset, 77, 'first poll starts at the persisted offset');
   await wait(() => calls.slice(mark).some((c) => c.method === 'getUpdates' && c.body.offset === 81));
   tg2.stop();
+}
+
+// a second bot instance on the same token (Telegram 409 Conflict) took the approval taps on 2026-11-20..21: after 3 conflicts in a row ONE warning goes out
+{
+  const sent = [], logs3 = [];
+  const fake = http.createServer((req, res) => { let b = ''; req.on('data', (x) => b += x); req.on('end', () => {
+    const method = req.url.split('/').pop();
+    if (method === 'getUpdates') { res.end(JSON.stringify({ ok: false, error_code: 409, description: 'Conflict: terminated by other getUpdates request; make sure that only one bot instance is running' })); return; }
+    if (method === 'sendMessage') sent.push(JSON.parse(b).text);
+    res.end(JSON.stringify({ ok: true, result: method === 'sendMessage' ? { message_id: 1 } : true }));
+  }); }).listen(0);
+  await new Promise((r) => fake.once('listening', r));
+  const tg3 = createTelegram({ cfgFile, apiBase: `http://127.0.0.1:${fake.address().port}`, linkCodeFile, seats: ['ops'], phoneBase: BASE, retryMs: 20, log: (l) => logs3.push(l), onNewTask: async () => {}, onList: async () => [], onStatus: async () => ({ seats: [] }), onDecision: async () => 'x', onReply: async () => 'x' });
+  tg3.start();
+  await wait(() => logs3.filter((l) => /409/.test(l)).length >= 8);
+  tg3.stop(); fake.close();
+  assert.deepEqual(sent, [CONFLICT_TEXT], 'exactly one conflict warning per process');
+  checkHtml(CONFLICT_TEXT);
 }
 
 // ---- languages (i18n.mjs): the same builders in every shipped language stay valid Telegram HTML, carry that language's words, keep names and numbers ----

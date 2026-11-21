@@ -1,6 +1,7 @@
 // Seat Console front end: seats with their conversations in the sidebar, one conversation pane, live via SSE.
 const TOKEN = document.querySelector('meta[name=seat-token]').content;
 const $ = (id) => document.getElementById(id);
+const BUILD = document.querySelector('meta[name=seat-build]')?.content || '', HTTPS_URL = document.querySelector('meta[name=seat-https]')?.content || '';
 let seats = [];
 let cur = { seat: localStorage.getItem('seat') || 'studio', id: null };   // id null = draft of a new conversation
 const convo = {};            // conversation id -> { events, pending:Set }
@@ -308,33 +309,90 @@ function showQuota() {
   box.hidden = false;
 }
 const showArch = (() => { try { return JSON.parse(localStorage.getItem('showArch') || '{}'); } catch { return {}; } })();
-// Folded seats: only the open conversation and the ones waiting on the user stay visible, the rest is one "N more" line. Kept per browser.
-const fold = (() => { try { return JSON.parse(localStorage.getItem('fold') || '{}'); } catch { return {}; } })();
-const saveFold = () => { try { localStorage.setItem('fold', JSON.stringify(fold)); } catch {} };
+// Folded seats (sidebar E): the seat's one-line row, plus the open conversation and the ones waiting on the user (approval, answer,
+// an action with an unknown outcome). Starred chats no longer stay out: "All" is meant to be the seat rows only. Kept per browser.
+// Folded is the default ("All"): a seat is open only once the user unfolds it or opens one of its conversations. New key, so the new default applies once.
+// fold[name]: undefined = never touched (folded, auto-unfolds when one of its chats is opened), true = folded by the user (stays folded), false = open.
 const showMore = {};   // per seat: list every live conversation, not only the newest 12
+const fold = (() => { try { return JSON.parse(localStorage.getItem('seatFold') || '{}'); } catch { return {}; } })();
+const saveFold = () => { try { localStorage.setItem('seatFold', JSON.stringify(fold)); } catch {} };
+const folded = (name) => fold[name] !== false;
+const det = new Set();   // seats whose details (email, role, resets with Use) are open under the row: the chevron, or a jump from the rail
+let hlSeat = null, hlTimer = 0;   // the seat a rail jump just landed on, tinted for a moment
 let menuFor = null;   // conversation id whose ⋯ menu is open
 const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}"${c.pending || c.needsAnswer ? ' data-guide="needs"' : ''} data-id="${c.id}" data-seat="${seat}">
-      <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${c.keep ? `<span class="kept" title="${t('conv.keptTitle')}">★</span> ` : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="${t('ctx.title')} ${esc(ctxText(c.ctx))}">${pct(c.ctx.pct / 100)}</span>` : ''}
-      <span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span>
-      <small>${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
-      ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
+      <span class="dot ${DOT[c.status] ?? c.status}"></span><span class="t" dir="auto">${c.keep ? `<span class="kept" title="${t('conv.keptTitle')}">★</span> ` : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="${t('ctx.title')} ${esc(ctxText(c.ctx))}">${pct(c.ctx.pct / 100)}</span>` : ''}
+      <small><span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span> ${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
+      ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-expanded="${menuFor === c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
   + (menuFor === c.id ? `<div class="cmenu" data-guide="convmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-guide="keep" data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-guide="archive" data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
 
-function showSeats() {
-  showQuota(); menuMark();
-  const allFolded = seats.every((s) => fold[s.name]);
-  $('foldall').textContent = t(allFolded ? 'side.expandAll' : 'side.foldAll'); $('foldall').dataset.to = String(!allFolded);
-  $('seats').innerHTML = seats.map((s) => {
-    const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = !!fold[s.name];
-    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.keep || c.pending || c.needsAnswer || c.quotaWait || c.unknownActions))) : (showMore[s.name] ? live : live.slice(0, 12)), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0, more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
-    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}" data-guide="seat"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${t(f ? 'side.unfoldSeat' : 'side.foldSeat')}">${f ? (RTL.includes(LANG) ? '◂' : '▸') : '▾'}</button>${esc(s.name)}</b><small dir="ltr">${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>
-    ${s.remote && !s.control ? '' : `<button data-guide="new" data-new="${s.name}" title="${t('side.newConversation')}">+ ${t('side.new')}</button>`}</div>`
-    + shown.map((c) => convRow(c, s.name)).join('')
-    + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${tn('side.moreConversations', hidden)}</button>` : '')
-    + (more > 0 || (!f && showMore[s.name] && live.length > 12) ? `<button class="archtoggle" data-showmore="${esc(s.name)}">${showMore[s.name] ? t('side.showFewer') : t('side.showMore', { n: num(more) })}</button>` : '')
-    + (!f && arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${t(showArch[s.name] ? 'side.hideArchived' : 'side.showArchived', { n: num(arch.length) })}</button>` : '')
-    + (!f && showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
+// A non-Claude seat gets a neutral letter mark and its provider's name on the row (no logos); a remote group a dashed avatar.
+const PROV = { codex: { mark: 'G', name: 'GPT · Codex' }, agy: { mark: 'A', name: 'Antigravity' } };
+const needN = (s) => s.conversations.filter((c) => !c.archived && (c.pending || c.needsAnswer)).length;
+const fiveH = (s) => { const w = s.usage?.windows?.five_hour; return !w ? null : w.resetsAt * 1000 <= Date.now() ? 0 : w.utilization; };
+const initials = (name) => name.replace(/^remote: /, '').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2);
+// The two micro meters on a seat row: only the windows the account really reports (Antigravity reports none, so it shows none).
+const micro = (u) => !u ? '' : [['five_hour', 'side.m5h'], ['seven_day', 'side.mWeek']].filter(([k]) => u.windows?.[k]).map(([k, lk]) => {
+  const v = u.windows[k], p = v.resetsAt * 1000 <= Date.now() ? 0 : Math.round(v.utilization * 100);
+  return `<span class="mm ${p >= 85 ? 'hot' : ''}" title="${esc(tk('usage.window.', k))} ${pct(p / 100)}"><span>${t(lk)}</span><em>${num(p)}</em><i style="--v:${Math.min(100, p)}%"></i></span>`;
+}).join('');
+// Rail avatar: the 5 h usage as a ring (a rounded square for a non-Claude seat), the initials, and how many chats wait on the user.
+function avatar(s) {
+  const p = PROV[s.agent], u = fiveH(s), n = needN(s), v = u == null ? 0 : Math.min(100, Math.round(u * 100)), col = v >= 85 ? '#f2766d' : '#e8b04a';
+  const shape = (extra) => p ? `<rect x="2" y="2" width="32" height="32" rx="9" pathLength="100" ${extra}/>` : `<circle cx="18" cy="18" r="16" pathLength="100" ${extra}/>`;
+  const ring = `<svg class="ring" viewBox="0 0 36 36" aria-hidden="true">${shape('class="trk"')}${v ? shape(`fill="none" stroke="${col}" stroke-dasharray="${v} 100"`) : ''}</svg>`;
+  const tip = s.name + (u != null ? ` · ${tk('usage.window.', 'five_hour')} ${pct(u)}` : '') + (n ? ' · ' + t('projects.needYou', { n: num(n) }) : '');
+  return `<button type="button" class="av ${p ? 'prov' : ''} ${s.remote ? 'remote' : ''}" data-rail="${esc(s.name)}" aria-current="${s.name === cur.seat}" aria-expanded="${!folded(s.name)}" title="${esc(tip)}" aria-label="${esc(t('side.goSeat', { seat: s.name }) + (n ? ', ' + t('projects.needYou', { n: num(n) }) : ''))}">${ring}<span class="ini">${esc(initials(s.name))}</span>${p ? `<span class="pmark" aria-hidden="true">${p.mark}</span>` : ''}${n ? `<span class="badge">${num(n)}</span>` : ''}</button>`;
+}
+function showRail() {
+  const allFolded = seats.every((s) => folded(s.name));
+  $('foldall').setAttribute('aria-pressed', String(allFolded)); $('foldall').dataset.to = String(!allFolded);
+  const nl = needList(); $('needsum').hidden = !nl.length; $('needsum').textContent = nl.length ? t('projects.needYou', { n: num(nl.length) }) : ''; $('needsum').title = t('side.needList');
+  if (!$('needpop').hidden) { if (nl.length) showNeedPop(); else closeNeedPop(); }   // an open list follows the live updates
+  $('avs').innerHTML = seats.map(avatar).join('');
+}
+// "N need you" in the panel header opens this list: every conversation, on any seat, that waits on the user, newest first. A row opens it (normal view).
+const needList = () => allConvs().filter((c) => !c.archived && (c.pending || c.needsAnswer || c.quotaWait || c.unknownActions)).sort((a, b) => b.updatedAt - a.updatedAt);
+function showNeedPop() {
+  const html = `<h2>${t('side.needList')}</h2>` + needList().map((c) => {
+    const s = seats.find((x) => x.name === c.seat), why = [c.pending && t('project.needPerms'), c.needsAnswer && t('project.needAnswer'), c.quotaWait && t('project.needQuota'), c.unknownActions && t('conv.unknownActions', { n: num(c.unknownActions) })].filter(Boolean).join(' · ');
+    const dir = c.project || c.cwd, proj = dir ? dir.split(/[\\/]/).filter(Boolean).pop() : '';
+    return `<button type="button" class="nrow" data-nid="${esc(c.id)}" data-nseat="${esc(c.seat)}"><span class="nini ${PROV[s?.agent] ? 'prov' : ''}" title="${esc(c.seat)}">${esc(initials(c.seat))}</span><span class="nt" dir="auto">${esc(c.title)}</span><small class="nage">${tm(c.updatedAt)}</small><small><b>${esc(why)}</b>${proj ? ` · <bdi>${esc(proj)}</bdi>` : ''}</small></button>`;
   }).join('');
+  if ($('needpop').innerHTML !== html) { const f = document.activeElement?.dataset?.nid, top = $('needpop').scrollTop; $('needpop').innerHTML = html; $('needpop').scrollTop = top; if (f) $('needpop').querySelector(`[data-nid="${CSS.escape(f)}"]`)?.focus(); }   // a live update keeps scroll and focus
+}
+const closeNeedPop = () => { $('needpop').hidden = true; $('needsum').setAttribute('aria-expanded', 'false'); };
+$('needsum').onclick = () => { if (!$('needpop').hidden) return closeNeedPop(); showNeedPop(); $('needpop').hidden = false; $('needsum').setAttribute('aria-expanded', 'true'); $('needpop').querySelector('.nrow')?.focus(); };
+$('needpop').onclick = (e) => { const b = e.target.closest('[data-nid]'); if (b) { closeNeedPop(); pick(b.dataset.nseat, b.dataset.nid); } };
+document.addEventListener('click', (e) => { if (!$('needpop').hidden && !e.target.closest('#needpop, #needsum')) closeNeedPop(); }, true);   // a click anywhere else closes it
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('needpop').hidden && !e.defaultPrevented && !e.target.closest?.('input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]')) { closeNeedPop(); $('needsum').focus(); } });   // not while Esc belongs to a field (search, rename, composer)
+const CHEV = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="m3.5 2 3 3-3 3"/></svg>', PLUS = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2.5v9M2.5 7h9"/></svg>';
+function showSeats() {
+  showQuota(); menuMark(); showRail();
+  $('seats').innerHTML = seats.map((s) => {
+    const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = folded(s.name), d = det.has(s.name), p = PROV[s.agent];
+    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.pending || c.needsAnswer || c.unknownActions))) : (showMore[s.name] ? live : live.slice(0, 12)), more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
+    const w = live.filter((c) => c.status === 'working' || c.status === 'waiting').length, n = needN(s);
+    return `<section class="seatbox ${f ? 'folded' : ''} ${d && !f ? 'det' : ''} ${hlSeat === s.name ? 'hl' : ''}" data-seat="${esc(s.name)}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}" data-guide="seat">`
+      + `<button type="button" class="chev" data-det="${esc(s.name)}" aria-expanded="${!f}" aria-label="${esc(t('side.details', { seat: s.name }))}">${CHEV}</button>`
+      + `<button type="button" class="sname" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${t(f ? 'side.unfoldSeat' : 'side.foldSeat')}"><b>${esc(s.name)}</b>${p ? `<small class="prov">${p.name}</small>` : ''}</button>`
+      + `<span class="mms">${micro(s.usage)}</span>`
+      + `<span class="counts" title="${esc(t('side.countsTitle', { w: num(w), n: num(n) }))}">${w ? `<span><i class="dot working"></i>${num(w)}</span>` : ''}${n ? `<span class="cn"><i class="dot waiting"></i>${num(n)}</span>` : ''}</span>`
+      + (s.remote && !s.control ? '<span></span>' : `<button type="button" class="newb" data-guide="new" data-new="${esc(s.name)}" title="${t('side.newConversation')}" aria-label="${t('side.newConversation')}">${PLUS}</button>`) + '</div>'
+      + (d && !f ? `<div class="sdet"><small dir="ltr">${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>` : '')
+      + shown.map((c) => convRow(c, s.name)).join('')
+      + (more > 0 || (!f && showMore[s.name] && live.length > 12) ? `<button class="archtoggle" data-showmore="${esc(s.name)}">${showMore[s.name] ? t('side.showFewer') : t('side.showMore', { n: num(more) })}</button>` : '')
+      + (!f && arch.length ? `<button class="archtoggle" data-archtoggle="${s.name}">${t(showArch[s.name] ? 'side.hideArchived' : 'side.showArchived', { n: num(arch.length) })}</button>` : '')
+      + (!f && showArch[s.name] ? arch.map((c) => convRow(c, s.name)).join('') : '') + '</section>';
+  }).join('');
+}
+// Rail avatar: unfold that seat with its details open, scroll it to the top of the panel and tint it for a moment. "All" folds every seat (again: opens all).
+function railGo(name) {
+  if ($('sidetop').classList.contains('searching')) clearSearch();
+  fold[name] = false; saveFold(); det.add(name); hlSeat = name; showSeats();
+  const box = [...$('seats').querySelectorAll('.seatbox')].find((x) => x.dataset.seat === name);
+  if (box) $('sidescroll').scrollTo({ top: box.offsetTop - 6, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  clearTimeout(hlTimer); hlTimer = setTimeout(() => { hlSeat = null; $('seats').querySelector('.seatbox.hl')?.classList.remove('hl'); }, 1600);
 }
 
 // The sidebar is rebuilt at most once per frame and not more than 4 times a second, however many updates arrive.
@@ -346,7 +404,7 @@ function scheduleSeats() {
 }
 async function pick(seat, id, ctx = null) {   // ctx: a project dir = open it inside that project (project bar on top); null = the normal view
   if (!id && seats.find((s) => s.name === seat && s.remote && !s.control)) seat = seats.find((s) => !s.remote).name;   // a read-only remote group has no new-conversation draft (no composer)
-  cur = { seat, id }; localStorage.setItem('seat', seat); closeProjects(); closeSettings(); closeGuide(); draftDir = null; if (ctx !== false) setCtx(ctx, id);   // false (first paint): leave the address alone, openHash reads it next
+  cur = { seat, id }; localStorage.setItem('seat', seat); if (id && fold[seat] === undefined) { fold[seat] = false; saveFold(); } closeProjects(); closeSettings(); closeGuide(); draftDir = null; if (ctx !== false) setCtx(ctx, id);   // false (first paint): leave the address alone, openHash reads it next; an opened conversation unfolds its seat unless the user folded that seat himself (fold true)
   pending.length = 0; showThumbs();
   if (id) delete convo[id];                // events of a conversation that was not watched were not delivered: always load it fresh
   watch(true);                             // the stream carries full events only for the open conversation
@@ -380,12 +438,28 @@ function flush() {
   log.appendChild(frag); if (atEnd) log.scrollTop = log.scrollHeight;
 }
 
+// Shared from Android's share sheet (sw.js takeShare parked the files): they become attachments of a NEW chat on the last-used seat, which init has
+// just opened. A new chat, not the last open one: something shared from outside usually starts a new task, and nothing is sent until the user presses Send.
+async function takeShare() {
+  history.replaceState(null, '', location.pathname);
+  let c, files = [], text = ''; try { c = await caches.open('seat-console-share'); } catch { return; }
+  for (const k of await c.keys()) {
+    const r = await c.match(k);
+    if (k.url.endsWith('/share/text')) text = await r.text();
+    else files.push(new File([await r.blob()], decodeURIComponent(r.headers.get('X-Name') || 'file'), { type: r.headers.get('Content-Type') || '' }));
+    await c.delete(k);
+  }
+  diag({ k: 'share', files: files.map((f) => f.type || '?'), text: !!text });
+  if (text) $('text').value = text;
+  if (files.length) await attach(files);
+  caretEnd();
+}
 async function init() {
   try { await loadLang(LANG); } finally { document.documentElement.dataset.ready = '1'; }   // the page stays hidden until its words are in (app.css), never longer than this
   seats = await api('/api/seats');
   if (!seats.find((s) => s.name === cur.seat && (!s.remote || s.control))) cur.seat = seats[0].name;   // a read-only remote group has no "new conversation" draft
   await pick(cur.seat, null, false);
-  openHash(); window.addEventListener('hashchange', openHash);
+  if (new URLSearchParams(location.search).has('share')) await takeShare(); else openHash(); window.addEventListener('hashchange', openHash);
   loadSettings().then(() => { if (setData?.firstRun && !onSettings()) openSettings('start'); offerTour(); });   // offerTour (tour.js): the one-time "quick tour?" question   // first start: Settings opens by itself (not awaited: detection may take seconds)
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
   loadMulti(); setInterval(() => { if (!document.hidden) loadMulti(); }, 60000);
@@ -397,6 +471,7 @@ async function init() {
 function onEvent(m) {
   beat = Date.now();
   const d = JSON.parse(m.data);
+  if (d.build) { $('newver').hidden = d.build === BUILD || BUILD === '__BUILD__'; return; }   // a restart with new code: offer a reload instead of running old JS
   if ('saveError' in d) { $('saveBanner').hidden = !d.saveError; return; }   // the server cannot write state.json: shown until a save works again
   if (d.removed) {
     for (const s of seats) s.conversations = s.conversations.filter((c) => c.id !== d.removed);
@@ -449,7 +524,7 @@ $('pins').onclick = async (e) => {
   if (!el) return alert(t('pins.tooOld'));
   el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 1600);
 };
-$('suggest').onclick = (e) => { const b = e.target.closest('[data-sug]'); if (!b) return; $('text').value = b.dataset.sug; $('text').focus(); };   // into the input, never sent by itself
+$('suggest').onclick = (e) => { const b = e.target.closest('[data-sug]'); if (!b) return; $('text').value = b.dataset.sug; caretEnd(); };   // into the input, never sent by itself
 
 // Copy: navigator.clipboard exists only in a secure context (https, 127.0.0.1); over http on the Tailscale IP the old execCommand path does the job.
 async function copyText(text, btn) {
@@ -519,13 +594,14 @@ const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
 const onProjects = () => document.body.classList.contains('projects');
 async function loadMulti() {
   try { multiData = await api('/api/multi'); } catch { return; }
-  multiLoaded = true; $('multi').hidden = !!multiData.hidden; showMultiSide(); if (projCtx) loadPctx(); if (onProjects() && !($('projects').contains(document.activeElement) && document.activeElement.matches('input, textarea, select'))) { if (projDir) loadProject(); else { showProjects(); flashCard(); } }   // a half-typed brief or filter is never wiped by a refresh
+  multiLoaded = true; $('multi').hidden = $('projbtn').hidden = !!multiData.hidden; showMultiSide(); if (projCtx) loadPctx(); if (onProjects() && !($('projects').contains(document.activeElement) && document.activeElement.matches('input, textarea, select'))) { if (projDir) loadProject(); else { showProjects(); flashCard(); } }   // a half-typed brief or filter is never wiped by a refresh
 }
 // Sidebar: one entry to the page + the projects still going, each a link to its card.
 function showMultiSide() {
   const act = multiData.projects.filter(ACTIVE), ask = act.filter((p) => p.status === 'plan-ready' || p.status.endsWith('error') || p.tasks.some((t) => ['error', 'stuck', 'needs-answer'].includes(t.status))).length;
-  $('multi').innerHTML = `<h2>🧩 ${t('projects.title')}</h2><button type="button" data-guide="projects-open" data-mopen class="${onProjects() ? 'primary' : ''}">${t('projects.open')}${ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''}</button>`
-    + (act.length ? `<div class="mruns">${act.map((p) => `<a class="mline" href="#project/${encodeURIComponent(p.dir)}"><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('')}</div>` : '');   // a running run opens its project's page
+  const pb = $('projbtn'), bd = pb.querySelector('.rbadge');
+  bd.hidden = !ask; bd.textContent = ask ? num(ask) : ''; pb.title = t('projects.open') + (ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''); pb.setAttribute('aria-label', pb.title);
+  $('multi').innerHTML = act.length ? `<div class="mruns">${act.map((p) => `<a class="mline" href="#project/${encodeURIComponent(p.dir)}"><span class="dot working"></span><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('')}</div>` : '';   // a running run opens its project's page
 }
 // The Projects page shows only the minimum: one compact row per folder with something going on (live conversations opened there or
 // related to it, or a run), its runs as one line each, finished runs behind a toggle. Tasks, conversations and run controls live on the project page.
@@ -765,7 +841,7 @@ function closeProjects() {
   if (!onProjects()) return; document.body.classList.remove('projects'); showMultiSide();
   projDir = null; if (location.hash === '#projects' || location.hash.startsWith('#multi-') || (location.hash.startsWith('#project/') && !ctxHash())) history.replaceState(null, '', location.pathname + location.search);   // the same project link works again
 }
-$('multi').onclick = (e) => { if (e.target.closest('[data-mopen]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; } };
+$('projbtn').onclick = () => { if (onProjects()) return closeProjects(); if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; };   // second click: back to the conversation behind it
 $('projects').addEventListener('toggle', (e) => {   // a refresh keeps Archived and "Show all tasks" as the user left them
   if (e.target.classList?.contains('pj-arch')) projArchOpen = e.target.open;
   else if (e.target.classList?.contains('pj-more')) projMoreOpen = e.target.open;
@@ -815,7 +891,9 @@ $('seats').onclick = async (e) => {
     if (!confirm(t('conv.confirmDelete'))) return;
     const r = await api('/api/delete', { conversationId: de.dataset.del }); if (r.error) alert(r.error); return;
   }
-  const fo = e.target.closest('[data-fold]'); if (fo) { fold[fo.dataset.fold] = !fold[fo.dataset.fold]; saveFold(); return showSeats(); }
+  // chevron: open the seat with its details / fold it; name: open the seat / fold it. Folding always closes the details, and the user's fold sticks (fold true).
+  const dt = e.target.closest('[data-det]'), fo = !dt && e.target.closest('[data-fold]');
+  if (dt || fo) { const n = (dt || fo).dataset[dt ? 'det' : 'fold']; if (folded(n)) { fold[n] = false; if (dt) det.add(n); } else { fold[n] = true; det.delete(n); } saveFold(); return showSeats(); }
   const sm = e.target.closest('[data-showmore]'); if (sm) { showMore[sm.dataset.showmore] = !showMore[sm.dataset.showmore]; return showSeats(); }
   const at = e.target.closest('[data-archtoggle]'); if (at) { showArch[at.dataset.archtoggle] = !showArch[at.dataset.archtoggle]; try { localStorage.setItem('showArch', JSON.stringify(showArch)); } catch {} return showSeats(); }
   const rn = e.target.closest('[data-rename]'); if (rn) { menuFor = null; if (rn.dataset.rename !== cur.id) await pick(rn.dataset.seat, rn.dataset.rename); else showSeats(); return startRename(); }
@@ -850,36 +928,53 @@ $('composer').onsubmit = async (e) => {
   $('text').value = '';
   if (run) {
     const k = await api('/api/remote-continue', { id: run, mode: $('mode').value });
-    if (k.error) { $('log').appendChild(div('msg note err', esc(k.error))); $('text').value = text; return; }
+    if (k.error) { $('log').appendChild(div('msg note err', esc(k.error))); $('text').value = text; caretEnd(); return; }
     cur.id = k.conversationId;
   }
   const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: run ? undefined : $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
-  if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; return; }
+  if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; caretEnd(); return; }
   pending.length = 0; showThumbs(); draftId = newDraftId();
   if (run) { seats = await api('/api/seats'); await pick(cur.seat, cur.id, projCtx); }
   else if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId, projCtx); }   // a chat started inside a project stays there
 };
 // On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
 const TOUCH = matchMedia('(pointer: coarse)').matches;
-if (TOUCH) { $('text').dataset.i18nPlaceholder = 'composer.placeholderTouch'; $('text').enterKeyHint = 'enter'; }
-// A new line inside a list continues it: "1. x" -> "2. ", "- x" -> "- "; Enter on an empty item ends the list.
-function continueList(t) {
-  const s = t.selectionStart; if (s !== t.selectionEnd) return false;
-  const line = t.value.slice(t.value.lastIndexOf('\n', s - 1) + 1, s);
-  const m = line.match(/^(\s*)(?:(\d+)([.)])|([-*•]))\s+(.*)$/); if (!m) return false;
-  const [, ind, num, dot, bullet, rest] = m, start = s - line.length;
-  if (!rest.trim()) { t.setRangeText('', start, s, 'end'); return true; }   // empty item: drop the marker, stop the list
-  t.setRangeText('\n' + ind + (num ? `${+num + 1}${dot} ` : `${bullet} `), s, s, 'end'); return true;
+if (TOUCH) { $('text').dataset.i18nPlaceholder = $('text').dataset.i18nAriaLabel = 'composer.placeholderTouch'; $('text').enterKeyHint = 'enter'; }
+// The composer is a contenteditable <div> (Gboard can commit an image only into one) that behaves like the old textarea:
+// plain text only (text nodes + <br> for line breaks; Chrome would make a <div> per line from a "\n"), and .value reads / writes that text, so every caller stays as it was.
+const ED = $('text');
+const edText = (n) => n.nodeType === 3 ? n.data : n.nodeName === 'BR' ? ((n === n.parentNode.lastChild && n.parentNode === ED) || (n.parentNode !== ED && n.parentNode.childNodes.length === 1) ? '' : '\n')   // the browser's placeholder <br> (at the very end, or alone in a stray empty-line block) is no extra line
+  : (/^(DIV|P)$/.test(n.nodeName) && n !== ED && n.previousSibling ? '\n' : '') + [...n.childNodes].map(edText).join('');   // a stray block (should not happen) still reads as its own line
+Object.defineProperty(ED, 'value', { get: () => edText(ED), set: (v) => { ED.textContent = v; } });
+const caretEnd = () => { ED.focus(); const r = document.createRange(); r.selectNodeContents(ED); r.collapse(false); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); };
+const insertPlain = (txt) => { (txt || '').replace(/\r\n?/g, '\n').split('\n').forEach((p, i) => { if (i) document.execCommand('insertLineBreak'); if (p) document.execCommand('insertText', false, p); }); };   // execCommand keeps Ctrl+Z working
+ED.addEventListener('input', () => { if (!ED.textContent && ED.children.length) ED.textContent = ''; });   // emptied: drop the stray <br> so the placeholder shows again
+// A new line inside a list continues it: "1. x" -> "2. ", "- x" -> "- "; Enter on an empty item ends the list. Otherwise a plain "\n".
+function newLine() {
+  const sel = getSelection(); if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0), pre = document.createRange(); pre.selectNodeContents(ED); pre.setEnd(r.startContainer, r.startOffset);
+  const before = edText(pre.cloneContents()), line = r.collapsed ? before.slice(before.lastIndexOf('\n') + 1) : '';
+  const m = line.match(/^(\s*)(?:(\d+)([.)])|([-*•]))\s+(.*)$/);
+  if (!m) return insertPlain('\n');
+  const [, ind, num, dot, bullet, rest] = m;
+  if (!rest.trim()) { for (let k = 0; k < line.length; k++) sel.modify('extend', 'backward', 'character'); document.execCommand('delete'); return; }   // empty item: drop the marker, stop the list
+  insertPlain('\n' + ind + (num ? `${+num + 1}${dot} ` : `${bullet} `));
 }
-$('text').onkeydown = (e) => {
+ED.onkeydown = (e) => {
   if (TOUCH || e.key !== 'Enter' || e.isComposing) return;   // phone keyboards: handled in beforeinput below
-  if (!e.shiftKey) { e.preventDefault(); $('composer').requestSubmit(); return; }
-  if (continueList(e.target)) { e.preventDefault(); e.target.dispatchEvent(new Event('input', { bubbles: true })); }
+  e.preventDefault();
+  if (!e.shiftKey) $('composer').requestSubmit(); else newLine();
 };
 // Android keyboards often report Enter as key "Unidentified" in keydown; beforeinput always names the line break.
-$('text').addEventListener('beforeinput', (e) => {
-  if (!TOUCH || (e.inputType !== 'insertLineBreak' && e.inputType !== 'insertParagraph')) return;
-  if (continueList(e.target)) { e.preventDefault(); e.target.dispatchEvent(new Event('input', { bubbles: true })); }
+// beforeinput also keeps the box plain: pasted / dropped rich text goes in as text, images (a keyboard's image commit too) go to the attachments.
+ED.addEventListener('beforeinput', (e) => {
+  const it = e.inputType;
+  if ((it === 'insertLineBreak' || it === 'insertParagraph') && !e.isComposing) { e.preventDefault(); return newLine(); }
+  if (it.startsWith('format')) return e.preventDefault();   // Ctrl+B / Ctrl+I: no formatting in a plain-text box
+  if ((it === 'insertFromPaste' || it === 'insertFromDrop' || it === 'insertFromPasteAsQuotation') && e.dataTransfer) {
+    e.preventDefault(); const fs = pastedImages(e.dataTransfer);
+    if (fs.length && !$('attach').hidden) attach(fs); insertPlain(e.dataTransfer.getData('text/plain'));
+  }
 });
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
 // Permission mode applies at once, also mid-turn (server setMode): no message needed. A remote run has no process of its own (the composer continues it).
@@ -917,7 +1012,7 @@ async function handoff(seat, result) {
   await pick(seat, null);
   $('cwd').value = c.cwd; showChip();
   $('text').value = t('result.continuation', { seat: c.seat, title: c.title }) + `\n\n${result}\n\n`;
-  $('text').focus();
+  caretEnd();
 }
 
 // ---- attachments (button: any file; clipboard paste: images). Uploaded at once, referenced by id when the message is sent. The server decides image or file by magic bytes. ----
@@ -953,17 +1048,26 @@ async function attach(files) {
   showThumbs();
 }
 $('attach').onclick = () => $('file').click();
+// Phones: "Photo" opens the photo picker (recent screenshots first) through accept="image/*"; Attach keeps every file type.
+$('photobtn').hidden = !TOUCH; $('photobtn').onclick = () => $('photo').click();
+$('photo').onchange = () => { attach([...$('photo').files]); $('photo').value = ''; };
 $('file').onchange = () => { attach([...$('file').files]); $('file').value = ''; };
 $('thumbs').onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { pending.splice(+b.dataset.rm, 1); showThumbs(); } else if (e.target.dataset.edit) editPending(+e.target.dataset.edit); };
 $('thumbs').onkeydown = (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.edit) { e.preventDefault(); editPending(+e.target.dataset.edit); } };
 // The edited PNG goes through attach() like any file, then takes the old attachment's place.
+let editing = false;   // a double tap on the thumbnail must not stack two editors
 async function editPending(i) {
-  const p = pending[i], f = await editImage(p.url, p.name).catch(() => null); if (!f) return;
+  if (editing) return; editing = true;
+  try { await editOne(i); } finally { editing = false; }
+}
+async function editOne(i) {
+  const p = pending[i], f = await editImage(p.url, p.name).catch((e) => { diag({ k: 'imgedit', ev: 'fail', m: String(e?.message || e).slice(0, 200) }); return null; }); if (!f) return;
   const n = pending.length; await attach([f]);
-  if (pending.length > n) { pending.splice(i, 1, pending.splice(n, 1)[0]); showThumbs(); }
+  const ok = pending.length > n; if (ok) { pending.splice(i, 1, pending.splice(n, 1)[0]); showThumbs(); }
+  diag({ k: 'imgedit', ev: 'replaced', ok, size: f.size });
 }
 // Clipboard images (desktop screenshots; iOS/Android long-press Paste put the image in clipboardData.items, sometimes not in .files) get a
-// paste-YYYYMMDD-HHMMSS.ext name instead of the browser's "image.png". Plain-text paste is left to the textarea.
+// paste-YYYYMMDD-HHMMSS.ext name instead of the browser's "image.png". Text goes in as plain text (insertPlain).
 const imagesOf = (dt) => [...(dt?.files || [])].filter((f) => f.type.startsWith('image/'));
 function pastedImages(dt) {
   let fs = imagesOf(dt);
@@ -971,7 +1075,22 @@ function pastedImages(dt) {
   const d = new Date(), z = (n) => String(n).padStart(2, '0'), stamp = `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
   return fs.map((f, i) => new File([f], `paste-${stamp}${fs.length > 1 ? '-' + (i + 1) : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/\+.*/, '')}`, { type: f.type }));
 }
-$('text').addEventListener('paste', (e) => { const fs = pastedImages(e.clipboardData); if (fs.length) { e.preventDefault(); attach(fs); } });
+$('text').addEventListener('paste', (e) => { e.preventDefault(); const fs = pastedImages(e.clipboardData); if (fs.length) attach(fs); insertPlain(e.clipboardData?.getData('text/plain')); });   // images to the attachments, text as plain text (never the copied formatting)
+// "Paste image": reads the clipboard directly, for keyboards that cannot paste an image into a web page. navigator.clipboard.read exists only in a
+// secure context (https via tailscale serve, or 127.0.0.1); on the plain http Tailscale address a tap names the https address instead.
+$('pasteimg').hidden = false;   // never hidden silently: on the plain http address a tap says where it works
+$('pasteimg').onclick = async () => {
+  if (!(isSecureContext && navigator.clipboard?.read)) { diag({ k: 'pasteimg', ok: false, why: 'insecure' }); return alert(t('composer.pasteImageHttps', { url: HTTPS_URL || 'https://' })); }
+  let perm = 'n/a'; try { perm = (await navigator.permissions.query({ name: 'clipboard-read' })).state; } catch {}
+  diag({ k: 'pasteimg', step: 'start', perm });   // logged before read(): a read that never settles still leaves a trace
+  let items;
+  try { items = await Promise.race([navigator.clipboard.read(), new Promise((_, no) => setTimeout(() => no(Object.assign(new Error('no answer in 20 s'), { name: 'Timeout' })), 20000))]); }
+  catch (x) { diag({ k: 'pasteimg', ok: false, perm, err: x.name, msg: String(x.message).slice(0, 200) }); return alert(t(x.name === 'NotAllowedError' ? 'composer.pasteImageDenied' : x.name === 'Timeout' ? 'composer.pasteImageTimeout' : 'composer.pasteImageFailed')); }
+  diag({ k: 'pasteimg', ok: true, perm, types: items.map((it) => it.types.join(',')) });
+  const files = []; for (const it of items) { const ty = it.types.find((x) => x.startsWith('image/')); if (ty) files.push(new File([await it.getType(ty)], 'image', { type: ty })); }
+  if (!files.length) return alert(t('composer.pasteImageNone'));
+  attach(pastedImages({ files }));
+};
 // Drag and drop onto the composer: any file, same path as the Attach button. dragover must be cancelled or the browser opens the file instead.
 const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
 $('composer').addEventListener('dragover', (e) => { if (isFileDrag(e)) { e.preventDefault(); $('composer').classList.add('dropping'); } });
@@ -1098,21 +1217,21 @@ function closeSettings() {
   if (!onSettings()) return; document.body.classList.remove('settings');
   if (location.hash === '#settings') history.replaceState(null, '', location.pathname + location.search);
 }
-$('setbtn').onclick = () => { if (location.hash === '#settings') openSettings(); else location.hash = 'settings'; };
+$('setbtn').onclick = () => { if (onSettings()) return closeSettings(); if (location.hash === '#settings') openSettings(); else location.hash = 'settings'; };
 // ---- Guide (#guide): how to use the console, one short answer per task. Button names are filled in from the page's own keys,
 // so the guide always names a button exactly as the page shows it, in every language. ----
 const GUIDE = ['seats', 'start', 'folder', 'attach', 'approve', 'keep', 'auto', 'search', 'projects', 'runs', 'project', 'ctx', 'settings'];
 const onGuide = () => document.body.classList.contains('guide');
 function showGuide() {
   const b = (k, v) => `<b>${t(k, v)}</b>`;
-  const names = { settings: b('set.title'), foldAll: b('side.foldAll'), use: b('usage.use'), new: b('side.new'), auto: b('mode.auto'), ask: b('mode.ask'), bypass: b('mode.bypass'), effort: b('composer.effort'), chip: b('composer.projectAuto'),
+  const names = { settings: b('set.title'), foldAll: b('side.all'), use: b('usage.use'), new: b('side.new'), auto: b('mode.auto'), ask: b('mode.ask'), bypass: b('mode.bypass'), effort: b('composer.effort'), chip: b('composer.projectAuto'),
     attach: b('composer.attach'), stop: b('composer.stop'), allow: b('perm.allow'), deny: b('perm.deny'), needsApproval: b('status.waiting'), needsAnswer: b('conv.needsAnswer'), closeQuestion: b('conv.closeQuestion'),
     keep: b('conv.keep'), archive: b('conv.archive'), showArchived: b('side.showArchived', { n: '…' }), move: b('conv.moveProject'), tabUsage: b('set.tab.usage'), archiveDone: b('set.usage.archiveDone'), archiveDays: b('set.usage.archive'),
     openProjects: b('projects.open'), openProject: b('projects.openProject'), newChat: b('projects.newChat'), allFolders: b('projects.allFolders', { n: '…' }), startRun: b('projects.startRun'), plan: b('projects.plan'), approve: b('projects.approve'),
     needs: b('project.needs'), allClear: b('project.allClear'), working: b('project.working'), runs: b('project.runs'), allTasks: b('project.allTasks'), happening: b('project.happening'), backTo: b('project.backTo'), opened: b('project.opened'), related: b('project.related'), pin: b('project.pin'), notRelated: b('project.notRelated'),
     tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
   $('guide').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-gdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('guide.title')}</h2><small>${t('guide.subtitle')}</small></div><button type="button" data-gclose>${t('common.close')}</button></header>`
-    + `<div class="gd"><p class="gd-full"><button type="button" class="primary" data-gtour="full">${t('tour.full')}</button></p>${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p><button type="button" class="gd-show" data-gtour="${k}">${t('tour.show')}</button></section>`).join('')}</div>`;
+    + `<div class="gd"><p class="gd-full"><button type="button" class="primary" data-gtour="full">${t('tour.full')}</button></p>${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p><button type="button" class="gd-show" data-gtour="${k}">${t('tour.show')}</button></section>`).join('')}<p class="gd-build">${t('guide.build', { id: `<code dir="ltr">${esc(BUILD)}</code>` })}</p></div>`;   // which code this page runs (the phone app too)
 }
 function openGuide() {
   closeSettings(); closeProjects(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
@@ -1122,7 +1241,10 @@ function closeGuide() {
   if (!onGuide()) return; document.body.classList.remove('guide');
   if (location.hash === '#guide') history.replaceState(null, '', location.pathname + location.search);
 }
-$('guidebtn').onclick = () => { if (location.hash === '#guide') openGuide(); else location.hash = 'guide'; };
+$('guidebtn').onclick = () => { if (onGuide()) return closeGuide(); if (location.hash === '#guide') openGuide(); else location.hash = 'guide'; };
+// Rail buttons show what is open: every page switch toggles a body class, so one observer covers all the ways in and out (button, hash, Close, tour).
+const railState = () => { $('projbtn').setAttribute('aria-pressed', String(onProjects())); $('setbtn').setAttribute('aria-pressed', String(onSettings())); $('guidebtn').setAttribute('aria-pressed', String(onGuide())); };
+new MutationObserver(railState).observe(document.body, { attributes: true, attributeFilter: ['class'] }); railState();
 $('guide').onclick = (e) => { const g = e.target.closest('[data-gtour]'); if (g) return startTour(g.dataset.gtour); if (e.target.closest('[data-gclose]')) return closeGuide(); if (e.target.closest('[data-gdrawer]')) document.body.classList.add('drawer'); };
 const note = (html, err) => { setNote = { tab: setTab, html, err }; };
 async function settingsAct(path, body, okHtml) {
@@ -1210,13 +1332,18 @@ $('effort').addEventListener('input', () => { $('effortOut').textContent = EFFOR
 
 // Installable app (PWA): the service worker only runs on https or 127.0.0.1; on plain http over Tailscale this is skipped silently.
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
-$('foldall').onclick = () => { const to = $('foldall').dataset.to === 'true'; for (const s of seats) fold[s.name] = to; saveFold(); showSeats(); };
+$('foldall').onclick = () => { const to = $('foldall').dataset.to === 'true'; for (const s of seats) fold[s.name] = to; saveFold(); if (to) det.clear(); showSeats(); if (to) $('sidescroll').scrollTo({ top: 0 }); };
+$('avs').onclick = (e) => {   // a toggle: an open seat folds back, a folded one opens (railGo)
+  const b = e.target.closest('[data-rail]'); if (!b) return; const n = b.dataset.rail;
+  if (folded(n)) return railGo(n);
+  fold[n] = true; det.delete(n); saveFold(); showSeats();
+};
 
 // Search: titles + chat text of every conversation, archived ones included (server: /api/search, searchidx.mjs).
 let qTimer = 0, qSeq = 0;
 const runSearch = async () => {
   const q = $('q').value.trim(), on = !!q, seq = ++qSeq;
-  $('results').hidden = !on; $('seats').hidden = on; $('routines').hidden = on; $('qclear').hidden = !$('q').value;
+  $('results').hidden = !on; $('seats').hidden = on; $('routines').hidden = on;
   if (!on) return;
   let r; try { r = await (await fetch('/api/search?q=' + encodeURIComponent(q))).json(); } catch { r = { hits: [], error: true }; }
   if (seq !== qSeq) return;   // a newer query was typed meanwhile
@@ -1227,11 +1354,31 @@ const runSearch = async () => {
     + (r.hits?.length ? r.hits.map((h) => `<button class="conv qhit ${h.id === cur.id ? 'on' : ''}" data-id="${h.id}" data-seat="${esc(h.seat)}"><span class="dot ${h.status === 'stopped' ? '' : h.status}"></span><span class="t" dir="auto">${h.keep ? '★ ' : ''}${mark(h.title)}</span><span class="qseat">${esc(h.seat)}${h.archived ? ' · ' + t('search.archived') : ''}</span>${h.snippet ? `<small dir="auto">${mark(h.snippet)}</small>` : ''}</button>`).join('')
       : `<p class="qnote">${t(r.error ? 'search.failed' : 'search.none')}</p>`);
 };
-// One click (the x in the field) or Esc in the field: query gone, results closed, the normal list back.
-const clearSearch = () => { clearTimeout(qTimer); $('q').value = ''; runSearch(); };
-$('q').addEventListener('input', () => { $('qclear').hidden = !$('q').value; clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
-$('q').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); clearSearch(); } });
-$('qclear').onclick = () => { clearSearch(); $('q').focus(); };
+// The search field opens over the panel's title row (rail button). One click on its x, or Esc: query gone, field closed, the normal list back.
+const clearSearch = () => { clearTimeout(qTimer); $('q').value = ''; runSearch(); $('sidetop').classList.remove('searching'); $('qbtn').setAttribute('aria-pressed', 'false'); };
+const openSearch = () => { $('sidetop').classList.add('searching'); $('qbtn').setAttribute('aria-pressed', 'true'); $('q').focus(); };
+$('qbtn').onclick = () => { if ($('sidetop').classList.contains('searching')) { clearSearch(); $('qbtn').focus(); } else openSearch(); };
+$('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); clearSearch(); $('qbtn').focus(); } });
+$('qclear').onclick = () => { clearSearch(); $('qbtn').focus(); };
 // The sidebar's top block stays put; a hairline under it only once the list has scrolled beneath it.
 $('sidescroll').addEventListener('scroll', (e) => $('sidetop').classList.toggle('stuck', e.currentTarget.scrollTop > 0), { passive: true });
 $('results').onclick = (e) => { const b = e.target.closest('[data-id]'); if (b) pick(b.dataset.seat, b.dataset.id); };
+
+// ---- Optional diagnostics, OFF by default (DIAG_UNTIL = 0; no phone telemetry unless you opt in): what the composer really receives, sent to /api/client-log (server: clientLog).
+// Types and counts only, never message text. Active only while Date.now() < DIAG_UNTIL: set DIAG_UNTIL = Date.parse('<end date>') to debug an image-paste problem on a phone. Delete this block when done. ----
+const DIAG_UNTIL = 0, diagQ = []; let diagT = 0;
+function diag(e) {
+  if (Date.now() > DIAG_UNTIL) return;
+  diagQ.push({ t: Date.now(), build: BUILD, ...e }); clearTimeout(diagT);
+  diagT = setTimeout(() => { const events = diagQ.splice(0); fetch('/api/client-log', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json', 'X-Seat-Token': TOKEN }, body: JSON.stringify({ events }) }).catch(() => {}); }, 800);
+}
+$('reloadbtn').onclick = () => location.reload();
+const dtInfo = (dt) => !dt ? null : { types: [...(dt.types || [])], files: [...(dt.files || [])].map((f) => f.type || '?'), items: [...(dt.items || [])].map((i) => i.kind + ':' + i.type) };
+diag({ k: 'load', origin: location.origin, secure: isSecureContext, standalone: matchMedia('(display-mode: standalone)').matches, ua: navigator.userAgent, clipboardRead: !!navigator.clipboard?.read, composer: ED.tagName + '/' + ED.contentEditable, touch: TOUCH });
+// capture phase on the form: logged before the composer's own handlers cancel or change anything
+$('composer').addEventListener('paste', (e) => e.target === ED && diag({ k: 'paste', dt: dtInfo(e.clipboardData) }), true);
+$('composer').addEventListener('beforeinput', (e) => e.target === ED && (!TYPING.test(e.inputType) || e.dataTransfer) && diag({ k: 'beforeinput', it: e.inputType, composing: e.isComposing, cancelable: e.cancelable, dlen: e.data?.length ?? null, dt: dtInfo(e.dataTransfer) }), true);
+const TYPING = /^(insertText|insertCompositionText|deleteContentBackward|deleteContentForward|deleteCompositionText|insertLineBreak|insertParagraph)$/;   // ordinary typing is not logged, only what could carry an image
+$('composer').addEventListener('input', (e) => e.target === ED && !TYPING.test(e.inputType) && diag({ k: 'input', it: e.inputType, dlen: e.data?.length ?? null }), true);
+$('composer').addEventListener('drop', (e) => diag({ k: 'drop', dt: dtInfo(e.dataTransfer) }), true);

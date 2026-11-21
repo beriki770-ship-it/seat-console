@@ -99,6 +99,16 @@ export function parseCallback(data) {
   const m = /^p:([0-9a-f]{8}):(.+):([01])$/.exec(String(data || ''));
   return m ? { convShort: m[1], requestId: m[2], allow: m[3] === '1' } : null;
 }
+// Which conversation an approval button applies to: the one it names (archived ones included, they stay in state), else a rollover successor
+// down the c.rollover.to chain that holds the request. Missing conversation or request -> a plain sentence, never a bare "not found" (2026-11-21).
+export const CONFLICT_TEXT = '⚠️ <b>Seat Console</b>: another copy of this bot is reading its updates (Telegram 409 Conflict), so Allow/Deny taps and replies go to that copy and fail there. Stop the Telegram bot on the other machine: one console per bot.';
+export const PERM_GONE = 'this request was already answered or has expired, open it in the console';
+export function findPermConv(convs, convShort, requestId, hasPerm) {
+  const start = Object.values(convs).find((x) => x.id.startsWith(convShort));
+  if (!start) throw new Error(PERM_GONE + ' (this console does not know that conversation)');
+  for (let c = start, seen = new Set(); c && !seen.has(c.id); seen.add(c.id), c = convs[c.rollover?.to]) if (hasPerm(c, requestId)) return c;
+  throw new Error(PERM_GONE);
+}
 
 // ---- status digest: answers "what's new" from server state only (no model call, zero cost) ----
 // Short plain messages that mean "tell me what is going on" instead of "start a task". Lowercased + trimmed, exact match.
@@ -151,7 +161,7 @@ export function buildDigest(data, now, base) {
 // Uploads of every conversation share ONE serial queue (see sendFiles).
 let fileQueue = Promise.resolve();
 export const TG_FILE_MAX = 20 * 1024 * 1024;   // Telegram's own limit for a bot's getFile download
-export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000 }) {
+export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000, retryMs = 30000 }) {
   let warned = false;
   const base = () => (typeof phoneBase === 'function' ? phoneBase() : phoneBase); // a function when the console URL can change after start (Tailscale coming up late)
   const readCfg = () => {
@@ -384,6 +394,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     let outcome;
     if (!p) outcome = t('bot.toast.unknownButton');
     else { try { outcome = await onDecision(p.convShort, p.requestId, p.allow); } catch (e) { outcome = t('bot.toast.notApplied', { error: e.message }); } }
+    log(`telegram approval tap ${cb.data} -> ${outcome}`);   // the only record of a tap that did not go through (2026-11-21 had none)
     await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(outcome === 'Allowed' ? t('bot.perm.allowed') : outcome === 'Denied' ? t('bot.perm.denied') : outcome, 190) }).catch(() => {});
     // The original keeps its formatting (editing the text would flatten the <pre>): drop the buttons and answer under it.
     await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
@@ -402,7 +413,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     return linkCode;
   }
   // Long-poll loop: getUpdates (timeout 30) while configured; re-checks the file every idleMs while not.
-  let stopped = false, commandsFor = null;
+  let stopped = false, commandsFor = null, conflicts = 0;
   async function loop() {
     let offset = getOffset() || 0; // persisted by the host app: a restart must not replay the updates Telegram still holds
     while (!stopped) {
@@ -414,7 +425,13 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
         if (commandsFor !== cfg.botToken + '|' + lang()) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: t('bot.cmd.status') }, ...seats.map((s) => ({ command: s, description: t('bot.cmd.seat', { seat: s }) })), { command: 'digest', description: t('bot.cmd.digest') }, { command: 'evening', description: t('bot.cmd.evening') }, { command: 'list', description: t('bot.cmd.list') }, { command: 'recover', description: t('bot.cmd.recover') }, { command: 'routines', description: t('bot.cmd.routines') }, { command: 'multi', description: t('bot.cmd.multi') }] }); commandsFor = cfg.botToken + '|' + lang(); }   // the menu follows a language change too
         const ups = await call(cfg, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }, 45000);
         for (const u of ups) { offset = u.update_id + 1; setOffset(offset); await handleUpdate(readCfg() || cfg, u); }
-      } catch (e) { log('telegram poll failed: ' + e.message); await new Promise((r) => setTimeout(r, 30000)); }
+      } catch (e) {
+        log('telegram poll failed: ' + e.message);
+        // 409 = a second process polls this bot token: Telegram hands each update to only one of them, so button taps and replies land in a console that
+        // does not know the conversation. Said once per process at the 3rd conflict, not reset by a won poll: two pollers alternate wins. Sending still works.
+        if (/^getUpdates: 409/.test(e.message) && ++conflicts === 3) { log('telegram: another bot instance is polling this token'); send(CONFLICT_TEXT).catch(() => {}); }
+        await new Promise((r) => setTimeout(r, retryMs));
+      }
     }
   }
   // The post-crash message: null when nothing is interrupted or Telegram is off / not reachable (the caller retries).
