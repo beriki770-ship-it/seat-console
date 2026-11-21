@@ -121,6 +121,10 @@ Pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first (no npm
 
 # Documentation
 
+## Using the console
+
+A short task-by-task guide (starting a chat, approvals, Keep and Archive, search, Projects, the project page, the settings worth knowing) is in [docs/GUIDE.md](docs/GUIDE.md). The same text is inside the console: **Guide** at the top of the sidebar, in all 15 languages.
+
 ## All features
 
 - **Chat UI over several accounts.** The sidebar lists your seats, each with its conversations (title, status, cost). Every conversation is one long-lived `claude -p` process running under that seat's own `CLAUDE_CONFIG_DIR`, so it uses that seat's sign-in. Up to 5 live conversations per seat.

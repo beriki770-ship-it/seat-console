@@ -30,7 +30,7 @@ import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connect
 import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
-import { allowedDir, gitInfo, handoffHead } from './project.mjs';
+import { allowedDir, convProject, detectProject, gitInfo, handoffHead, newChatCwd } from './project.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
 import { openIntents, settle as settleIntent, withUnknown, CLI_CMD as JOURNAL_CMD, CLI_PATH as JOURNAL_CLI } from './journal.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
@@ -236,7 +236,7 @@ const QUIET_MS = 20000;
 const effStatus = (c) => { const r = R(c); if (r.status === 'stopped' && r.proc) return 'idle'; /* a live process is never `stopped` */ return r.status === 'idle' && ((c.bg?.length || 0) > 0 || Date.now() - r.activityAt < QUIET_MS) ? 'working' : r.status; };
 // A conversation on a remote that ssh cannot reach (and that has no live link) reads `error · unreachable since HH:MM` until the remote answers again.
 const unknownOf = (c) => { const u = openOf(c.id); return u.length ? { unknownActions: u.length, unknown: u.slice(0, 20).map(({ id, what, check }) => ({ id, what, check })) } : { unknownActions: 0 }; };
-const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c), ...unknownOf(c) }; };
+const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, project: c.project || null, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c), ...unknownOf(c) }; };
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
@@ -952,7 +952,9 @@ async function send(b) {
   const seat = c ? c.seat : rem ? 'remote-' + rem.name : b.seat;
   if (!rem && !hasKey(SEATS, seat)) throw new Error('unknown seat');
   if (b.mode && !hasKey(MODE_ARGS, b.mode)) throw new Error('unknown mode');
-  const cwd = b.cwd || c?.cwd || state.cwds[seat] || (rem ? await rhost.remoteHome(rem) : DEFAULT_CWD);
+  // A new chat opens in the folder picked for it, else in the one project its first message names, else in the neutral projects root:
+  // never in whatever folder this seat's previous chat used (a chat about one project opened in another's folder).
+  const cwd = c ? b.cwd || c.cwd : rem ? b.cwd || state.cwds[seat] || await rhost.remoteHome(rem) : newChatCwd({ picked: b.cwd, text: b.text, folders: projectFolders(), root: DEFAULT_CWD });
   // A remote folder only has to be an absolute path here: it is checked THERE, a missing one fails the host start with claude's own error.
   if (rem ? !/^\/[^\0\r\n]*$/.test(cwd) : !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error('cwd does not exist: ' + cwd);
   if (c && R(c).slash && Date.now() - R(c).slash.at < 600000) throw new Error('/' + R(c).slash.kind + ' is running on this conversation: send again when it has finished.');
@@ -1086,11 +1088,10 @@ function projectFolders() {
   return foldersCache.list;
 }
 
-// Conversations that run inside a project folder (cwd = dir or below), for the Projects page. One that sits in a nested project folder belongs to the deepest one only.
-const inDir = (cwd, d) => { const r = path.resolve(cwd); return r === d || r.startsWith(d + path.sep); };
+// Conversations of a project folder, for the Projects page: the ones moved there by hand, plus those running inside it (cwd = dir or below);
+// one that sits in a nested project folder belongs to the deepest one only (project.mjs convProject).
 const convHits = (dir, dirs) => {
-  const deeper = dirs.filter((d) => d !== dir && d.startsWith(dir + path.sep));
-  return Object.values(state.conversations).filter((c) => c.cwd && inDir(c.cwd, dir) && !deeper.some((d) => inDir(c.cwd, d))).sort((a, b) => !!a.archived - !!b.archived || b.updatedAt - a.updatedAt);   // live ones first, archived after
+  return Object.values(state.conversations).filter((c) => convProject(c, dirs) === dir).sort((a, b) => !!a.archived - !!b.archived || b.updatedAt - a.updatedAt);   // live ones first, archived after
 };
 function convsUnder(dir, dirs) {
   const hits = convHits(dir, dirs);
@@ -1406,7 +1407,10 @@ async function handler(req, res) {
       if (!hasKey(SEATS, seat) || !SEATS[seat].agent) return json(res, 200, { models: null });
       try { return json(res, 200, { models: await agentModels(seat) }); } catch (e) { return json(res, 200, { models: [], error: String(e.message || e) }); }
     }
-  const hits = convHits(dir, dirs);
+    if (req.method === 'GET' && url.pathname === '/api/detect-project') {   // the composer's project chip: which folder a new chat with this first message opens in (same rule as send())
+      const dir = detectProject(url.searchParams.get('text') || '', projectFolders()), f = dir && projectFolders().find((x) => path.resolve(x.dir) === dir);
+      return json(res, 200, { dir, name: f ? f.name : null });
+    }
     if (req.method === 'GET' && url.pathname === '/api/project') {   // one project's page: conversations, runs, git, HANDOFF head. Only folders the Projects page lists.
       const folders = projectFolders(), projects = multi.view(), dirs = [...new Set([...folders.map((f) => path.resolve(f.dir)), ...projects.map((p) => path.resolve(p.dir))])];
       const dir = allowedDir(url.searchParams.get('dir'), dirs); if (!dir) return json(res, 404, { error: 'not a project folder' });
@@ -1589,6 +1593,12 @@ async function handler(req, res) {
       }
       if (url.pathname === '/api/dismiss') { answered(c); saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "waiting for your answer": cleared as if the user had answered, without sending a message
       if (url.pathname === '/api/quotawait') { c.quotaWait = undefined; c.quotaTries = 0; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ✕ on "resumes at": no automatic resume for this stop
+      if (url.pathname === '/api/conv-project') {   // ⋯ Move to project: list it under another project folder (same guard as /api/project); dir null = by its folder again
+        let dir = null;
+        if (b.dir != null) { const dirs = [...new Set([...projectFolders().map((f) => path.resolve(f.dir)), ...multi.view().map((p) => path.resolve(p.dir))])]; dir = allowedDir(b.dir, dirs); if (!dir) return json(res, 404, { error: 'not a project folder' }); }
+        if (dir) c.project = dir; else delete c.project;
+        saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true, project: dir });
+      }
       if (url.pathname === '/api/keep') { c.keep = !!b.keep; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Keep shown": the row stays when its seat is folded (all devices)
       if (url.pathname === '/api/archive') { c.archived = !!b.archived; if (!c.archived) c.noAutoArchive = true;   /* brought back: not archived on its own again until the user writes */ saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {
@@ -1761,7 +1771,7 @@ function autoArchiveDone() {
   const graceMs = (SET().autoArchiveDoneMin || 0) * 60000; if (!graceMs) return;
   const open = new Set([...clients].map((o) => o.watch)), run = new Set(multi.view().filter((p) => !['done', 'cancelled'].includes(p.status)).flatMap((p) => [p.planConv, p.integrateConv, ...p.tasks.map((k) => k.conv)]));
   for (const c of Object.values(state.conversations)) {
-    if (!autoArchivable(c, { status: effStatus(c), perms: R(c).perms.size, unknown: openAll(c).length, held: open.has(c.id) || run.has(c.id), graceMs })) continue;
+    if (!autoArchivable(c, { status: effStatus(c), perms: R(c).perms.size, unknown: openOf(c.id).length, held: open.has(c.id) || run.has(c.id), graceMs })) continue;
     c.archived = true; saveState(); broadcast({ conv: summary(c) });
     console.log(`[auto-archive] conv=${c.id.slice(0, 8)} "${String(c.title).slice(0, 40)}": finished, quiet ${Math.floor((Date.now() - c.updatedAt) / 60000)} min`);
   }

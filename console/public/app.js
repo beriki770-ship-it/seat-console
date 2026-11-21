@@ -213,7 +213,8 @@ async function showConversation() {
     + `<small dir="ltr">${esc(s.name)} · ${esc(s.email)}</small>` + (c ? `<span class="badge ${c.mode}">${esc(tk('mode.', c.mode))}</span>` : '') + ctxBtnHtml(c)
     + `<button type="button" id="toolsbtn" aria-pressed="${showTools}">${t('conv.showActions')}</button>`;
   closeCtx();
-  $('cwd').value = c ? c.cwd : s.cwd;
+  $('cwd').value = c ? c.cwd : projCtx || draftDir || '';   // a new chat: the project it was started in or picked on the chip; empty = the server decides (send())
+  if (!c) detectSoon(); showChip();
   // An existing conversation's model and effort come from the conversation: left on whatever the last one used, the next message would silently restart it with those.
   setModels(s, c);   // an agent seat (Codex, Antigravity) shows ITS models; a Claude seat the Claude list
   if (c) { $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || t('composer.effortDefault'); }
@@ -317,7 +318,7 @@ const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''
       <span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span>
       <small>${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
       ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
-  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
+  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
 
 function showSeats() {
   showQuota(); menuMark();
@@ -339,12 +340,13 @@ function showSeats() {
 // The sidebar is rebuilt at most once per frame and not more than 4 times a second, however many updates arrive.
 let seatsAt = 0, seatsTimer = 0;
 function scheduleSeats() {
+  if (projCtx && !$('pbar').contains(document.activeElement)) renderPbar();   // live dots in the project bar
   if (seatsTimer) return;
   seatsTimer = setTimeout(() => { seatsTimer = 0; seatsAt = performance.now(); requestAnimationFrame(showSeats); }, Math.max(0, 250 - (performance.now() - seatsAt)));
 }
-async function pick(seat, id) {
+async function pick(seat, id, ctx = null) {   // ctx: a project dir = open it inside that project (project bar on top); null = the normal view
   if (!id && seats.find((s) => s.name === seat && s.remote && !s.control)) seat = seats.find((s) => !s.remote).name;   // a read-only remote group has no new-conversation draft (no composer)
-  cur = { seat, id }; localStorage.setItem('seat', seat); closeProjects(); closeSettings();
+  cur = { seat, id }; localStorage.setItem('seat', seat); closeProjects(); closeSettings(); closeGuide(); draftDir = null; if (ctx !== false) setCtx(ctx, id);   // false (first paint): leave the address alone, openHash reads it next
   pending.length = 0; showThumbs();
   if (id) delete convo[id];                // events of a conversation that was not watched were not delivered: always load it fresh
   watch(true);                             // the stream carries full events only for the open conversation
@@ -382,7 +384,7 @@ async function init() {
   try { await loadLang(LANG); } finally { document.documentElement.dataset.ready = '1'; }   // the page stays hidden until its words are in (app.css), never longer than this
   seats = await api('/api/seats');
   if (!seats.find((s) => s.name === cur.seat && (!s.remote || s.control))) cur.seat = seats[0].name;   // a read-only remote group has no "new conversation" draft
-  await pick(cur.seat, null);
+  await pick(cur.seat, null, false);
   openHash(); window.addEventListener('hashchange', openHash);
   loadSettings().then(() => { if (setData?.firstRun && !onSettings()) openSettings('start'); });   // first start: Settings opens by itself (not awaited: detection may take seconds)
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
@@ -511,19 +513,19 @@ $('routines').onclick = async (e) => {
   if (r.conversationId) location.hash = r.conversationId;
 };
 // ---- Projects page (#projects) + multi-sided projects (multi.mjs): a brief -> plan on the owner seat -> one tap approves -> each task on the seat fixed for its discipline ----
-let convRefresh, projDir = null, projData = null, projPrefill = null, multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
+let convRefresh, projDir = null, projData = null, projFirst = false, projArchOpen = false, projMoreOpen = false, projOpenRuns = new Set(), projPrefill = null, multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
 const mstatus = (s) => tk('mstatus.', s);
 const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
 const onProjects = () => document.body.classList.contains('projects');
 async function loadMulti() {
   try { multiData = await api('/api/multi'); } catch { return; }
-  multiLoaded = true; $('multi').hidden = !!multiData.hidden; showMultiSide(); if (onProjects() && !$('projects').contains(document.activeElement)) { if (projDir) loadProject(); else { showProjects(); flashCard(); } }   // a half-typed brief or filter is never wiped by a refresh
+  multiLoaded = true; $('multi').hidden = !!multiData.hidden; showMultiSide(); if (projCtx) loadPctx(); if (onProjects() && !($('projects').contains(document.activeElement) && document.activeElement.matches('input, textarea, select'))) { if (projDir) loadProject(); else { showProjects(); flashCard(); } }   // a half-typed brief or filter is never wiped by a refresh
 }
 // Sidebar: one entry to the page + the projects still going, each a link to its card.
 function showMultiSide() {
   const act = multiData.projects.filter(ACTIVE), ask = act.filter((p) => p.status === 'plan-ready' || p.status.endsWith('error') || p.tasks.some((t) => ['error', 'stuck', 'needs-answer'].includes(t.status))).length;
   $('multi').innerHTML = `<h2>🧩 ${t('projects.title')}</h2><button type="button" data-mopen class="${onProjects() ? 'primary' : ''}">${t('projects.open')}${ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''}</button>`
-    + act.map((p) => `<a class="mline" href="#multi-${esc(p.id)}"><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('');
+    + (act.length ? `<div class="mruns">${act.map((p) => `<a class="mline" href="#project/${encodeURIComponent(p.dir)}"><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('')}</div>` : '');   // a running run opens its project's page
 }
 const convList = (x) => x.convCount ? `<div class="mconvs"><small>${t('projects.convs', { n: num(x.convCount) })}</small>${x.convs.map((c) => `<a class="mline${c.archived ? ' arch' : ''}" href="#${esc(c.id)}"><span dir="auto">${esc(c.title)}</span><small><bdi>${esc(c.seat)}</bdi> · ${esc(label(c.status))}</small></a>`).join('')}</div>` : '';
 function card(p) {
@@ -535,13 +537,13 @@ function card(p) {
     + (p.status === 'plan-error' ? retry('plan', t('projects.retryPlan')) : '') + (p.status === 'integrate-error' ? retry('integrate', t('projects.retryIntegration')) : '')
     + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">${t('projects.cancel')}</button>` : '');
   const done = p.tasks.filter((k) => k.status === 'done').length;
-  return `<div class="mproj" id="multi-${esc(p.id)}"><b dir="auto">${esc(p.name)}</b><small>${esc(mstatus(p.status))}${p.tasks.length ? ' · ' + t('projects.tasksDone', { done: num(done), n: num(p.tasks.length) }) : ''} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr"><a href="#project/${encodeURIComponent(p.dir)}">${esc(p.dir)}</a></small>`
+  return `<div class="mproj" id="multi-${esc(p.id)}"><div class="mphead"><b dir="auto">${esc(p.name)}</b><a class="mopen" href="#project/${encodeURIComponent(p.dir)}">${t('projects.openProject')}</a></div><small>${esc(mstatus(p.status))}${p.tasks.length ? ' · ' + t('projects.tasksDone', { done: num(done), n: num(p.tasks.length) }) : ''} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr"><a href="#project/${encodeURIComponent(p.dir)}">${esc(p.dir)}</a></small>`
     + `<small>${p.planConv ? `<a href="#${esc(p.planConv)}">${t('projects.planConv')}</a>` : ''}${p.integrateConv ? ` · <a href="#${esc(p.integrateConv)}">${t('projects.integration')}</a>` : ''}</small>`
     + `${p.error ? `<small class="err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="racts">${acts}</div>` : ''}${tasks}${convList(p)}</div>`;
 }
 function folderList() {
   const q = folderQ.trim().toLowerCase(), all = multiData.folders || [], hits = q ? all.filter((f) => f.name.toLowerCase().includes(q)) : all;
-  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><a href="#project/${encodeURIComponent(f.dir)}" dir="ltr">${esc(f.name)}</a><small>${f.mtime ? t('projects.touched', { when: when(f.mtime) }) : ''}</small></div><span class="racts"><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">${t('projects.start')}</button><button data-mchat="${esc(f.dir)}">${t('projects.newChat')}</button></span></div>${convList(f)}`).join('')
+  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><a href="#project/${encodeURIComponent(f.dir)}" dir="ltr">${esc(f.name)}</a><small>${f.mtime ? t('projects.touched', { when: when(f.mtime) }) : ''}</small></div><span class="racts"><a class="mopen" href="#project/${encodeURIComponent(f.dir)}">${t('projects.openProject')}</a><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">${t('projects.start')}</button><button data-mchat="${esc(f.dir)}">${t('projects.newChat')}</button></span></div>${convList(f)}`).join('')
     + (hits.length > 40 ? `<small>${t('projects.moreFolders', { n: num(hits.length - 40) })}</small>` : '') + (!hits.length ? `<small>${t('projects.noFolder')}</small>` : '');
 }
 function showProjects() {
@@ -564,32 +566,175 @@ function showProjects() {
 }
 // One project's page (#project/<dir>): what is going on in that folder. Data: GET /api/project.
 const NEED = { perms: 'project.needPerms', answer: 'project.needAnswer', quota: 'project.needQuota', error: 'project.needError' };
-const projRow = (c) => `<a class="mline${c.archived ? ' arch' : ''}" href="#${esc(c.id)}"><span dir="auto"><span class="dot ${DOT[c.status] ?? c.status}"></span>${esc(c.title)}</span><small><bdi>${esc(c.seat)}</bdi> · ${esc(label(c.status))} · <bdi dir="ltr">~${usd(c.cost || 0)}</bdi> · ${when(c.updatedAt)}</small></a>`;
+const ago = (ms) => { const s = (ms - Date.now()) / 1e3, a = Math.abs(s), [v, u] = a < 45 ? [0, 'second'] : a < 3600 ? [s / 60, 'minute'] : a < 864e2 ? [s / 3600, 'hour'] : [s / 864e2, 'day']; return new Intl.RelativeTimeFormat(intl(), { numeric: 'auto' }).format(Math.round(v), u); };   // "3 min ago", in the page's language
+const tm = (ms) => !Number.isFinite(ms) || !ms ? '' : `<time datetime="${new Date(ms).toISOString()}" title="${esc(when(ms))}">${esc(ago(ms))}</time>`;
+const ico = (d, cls = '') => `<svg class="pj-ico ${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+const ICO = { check: 'M5 12.5l4.5 4.5L19 7.5', arrow: 'M5 12h13M13 6l6 6-6 6', back: 'M19 12H6M11 6l-6 6 6 6', branch: 'M7 4v11M7 15a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM17 4a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM17 9c0 4.5-5 4-10 7', menu: 'M4 7h16M4 12h16M4 17h16' };
+const SEG = { done: 'done', running: 'run', error: 'bad', stuck: 'bad', 'needs-answer': 'bad' };   // run rail: task status -> segment look (anything else is queued)
+const DOT = { stopped: '' };   // status -> dot class where they differ (a stopped conversation shows a plain dot)
 function renderProject() {
-  const d = projData, head = `<header class="phead shead"><button type="button" class="smenu" data-pdrawer aria-label="${t('side.seats')}">☰</button><div><h2>🧩 <bdi dir="auto">${esc(d?.name || projDir)}</bdi></h2><small dir="ltr">${esc(projDir)}</small></div><button type="button" data-mback>${t('project.back')}</button></header>`;
-  if (!d || d.error) return $('projects').innerHTML = head + `<div class="pgrid"><div class="pcol"><small>${t('project.notFound')}</small></div></div>`;
-  const need = [...d.convs, ...d.archived].filter((c) => c.need.length), work = d.convs.filter((c) => ['working', 'waiting'].includes(c.status)), idle = d.convs.filter((c) => !work.includes(c));
-  const g = d.git, md = d.handoff;
-  $('projects').innerHTML = head + `<div class="pgrid"><div class="pcol">`
-    + `<small>${d.mtime ? t('projects.touched', { when: when(d.mtime) }) : ''}${g ? ` · <bdi dir="ltr">${esc(g.branch)}</bdi> · ${t(g.dirty ? 'project.dirty' : 'project.clean')}` : ''}</small>`
-    + (g?.commits.length ? `<small dir="ltr">${g.commits.map((k) => `${esc(k.hash)} ${esc(k.subject)}`).join('<br>')}</small>` : '')
-    + `<div class="racts"><button data-mchat="${esc(projDir)}">${t('projects.newChat')}</button><button data-mrun="${esc(projDir)}" data-mname="${esc(d.name.split(/[\\/]/).pop())}">${t('project.startRun')}</button></div>`
-    + (need.length ? `<h3>${t('project.needs')}</h3>${need.map((c) => `<a class="mline" href="#${esc(c.id)}"><span dir="auto">${esc(c.title)}</span><small class="err">${c.need.map((k) => t(NEED[k])).join(' · ')}</small></a>`).join('')}` : '')
-    + (work.length ? `<h3>${t('project.working', { n: num(work.length) })}</h3>${work.map(projRow).join('')}` : '')
-    + `<h3>${t('project.idle', { n: num(idle.length) })}</h3>${idle.map(projRow).join('') || `<small>${t('project.noConvs')}</small>`}`
-    + (d.archivedCount ? `<details><summary>${t('project.archived', { n: num(d.archivedCount) })}</summary>${d.archived.map((c) => projRow({ ...c, archived: true })).join('')}</details>` : '')
-    + `</div><div class="pcol">` + (d.runs.length ? `<h3>${t('project.runs')}</h3>${d.runs.map(card).join('')}` : '')
-    + (md ? `<h3>${t('project.happening')}</h3><small dir="ltr">${t('project.handoffNote', { file: esc(md.file) })}</small><div class="mmd" dir="auto">${md.text.split('\n').map((l) => /^#/.test(l) ? `<b>${esc(l.replace(/^#+\s*/, ''))}</b>` : esc(l)).join('\n')}</div>` : '') + `</div></div>`;
+  const d = projData, name = d?.name || projDir, parts = name.split(/[\\/]/), leaf = parts.pop(), crumb = parts.join(' / ');
+  const tag = projTag(leaf), cv = (id) => `#project/${encodeURIComponent(projDir)}/c/${esc(id)}`;
+  const ttl = (c) => esc(c.title.replace(tag, '') || c.title), dot = (c) => `<span class="dot ${DOT[c.status] ?? c.status}"></span>`;
+  const meter = (c) => c.status === 'working' ? '<span class="pj-meter" aria-hidden="true"><i></i><i></i><i></i></span>' : dot(c);
+  const back = `<button type="button" class="pj-back" data-mback>${ico(ICO.back, 'fl')}${t('project.back')}</button>`;
+  const menu = `<button type="button" class="smenu" data-pdrawer aria-label="${t('side.seats')}">${ico(ICO.menu)}</button>`;
+  if (d?.error) projFirst = false;   // an error page is the first paint too
+  if (!d || d.error) return $('projects').innerHTML = `<div class="pj"><header class="pj-hero"><div class="pj-top">${menu}${back}</div><h1 class="pj-name"><bdi dir="auto">${esc(leaf)}</bdi></h1><p class="pj-pulse">${d ? t('project.notFound') : ''}</p></header></div>`;
+  const all = [...d.convs, ...d.archived], need = all.filter((c) => c.need.length), live = d.convs.filter((c) => !c.need.length);   // a conversation that needs you shows only there
+  const arch = d.archived.filter((c) => !c.need.length), work = live.filter((c) => ['working', 'waiting'].includes(c.status)), idle = live.filter((c) => !work.includes(c)), g = d.git, md = d.handoff;
+  const last = Math.max(d.mtime || 0, ...all.map((c) => c.updatedAt || 0), ...(g?.commits || []).map((k) => (k.at || 0)));
+  const pulse = [`<b>${t('project.pulseWorking', { n: num(work.length) })}</b>`, need.length && `<b class="pj-hot">${t('project.pulseNeed', { n: num(need.length) })}</b>`, last && t('project.pulseLast', { when: tm(last) })].filter(Boolean).join('<span class="pj-sep" aria-hidden="true"></span>');
+  const head = (k, n) => `<h2 class="pj-h">${t(k)}${n ? ` <span class="pj-count">${num(n)}</span>` : ''}</h2>`;
+  const meta = (c, ...pre) => `<span class="pj-meta">${[...pre, `<bdi dir="ltr" class="pj-num">${usd(c.cost || 0)}</bdi>`, tm(c.updatedAt)].join('<span class="pj-sep" aria-hidden="true"></span>')}</span>`;
+  const row = (c) => `<a class="pj-row" href="${cv(c.id)}">${meter(c)}<span class="pj-rt" dir="auto">${ttl(c)}</span>${meta(c, `<bdi>${esc(c.seat)}</bdi>`, esc(label(c.status)))}</a>`;
+  const spot = work[0];
+  const hero = `<header class="pj-hero"><div class="pj-top">${menu}${back}</div><div class="pj-herorow"><div class="pj-id">`
+    + `${crumb ? `<span class="pj-crumb" dir="ltr">${esc(crumb)} /</span>` : ''}<h1 class="pj-name" title="${esc(projDir)}"><bdi dir="auto">${esc(leaf)}</bdi></h1>`
+    + `<p class="pj-pulse">${pulse}</p>${g ? `<div class="pj-chips"><span class="pj-chip" dir="ltr">${ico(ICO.branch)}${esc(g.branch)}</span><span class="pj-chip ${g.dirty ? 'is-dirty' : 'is-clean'}">${t(g.dirty ? 'project.dirty' : 'project.clean')}</span></div>` : ''}</div>`
+    + `<div class="pj-cta"><button class="primary" data-mchat="${esc(projDir)}">${t('projects.newChat')}</button><button data-mrun="${esc(projDir)}" data-mname="${esc(leaf)}">${t('project.startRun')}</button></div></div></header>`;
+  const attn = need.length
+    ? `<section class="pj-attn" aria-labelledby="pj-attn-h"><div class="pj-attnhead"><span class="pj-count">${num(need.length)}</span><h2 class="pj-h" id="pj-attn-h">${t('project.needs')}</h2></div><ul>${need.map((c) => `<li><a class="pj-need" href="${cv(c.id)}"><span class="pj-why">${c.need.map((k) => t(NEED[k])).join(' · ')}</span><span class="pj-rt" dir="auto">${ttl(c)}</span>${meta(c, `<bdi>${esc(c.seat)}</bdi>`)}<span class="pj-go">${t('project.open')}${ico(ICO.arrow, 'fl')}</span></a></li>`).join('')}</ul></section>`
+    : `<section class="pj-clear">${ico(ICO.check)}<div><b>${t('project.allClear')}</b><span>${t('project.allClearSub')}</span></div></section>`;
+  const working = `<section class="pj-sec pj-work">${head('project.working', work.length)}`
+    + (spot ? `<a class="pj-spot" href="${cv(spot.id)}"><span class="pj-spotseat">${meter(spot)}<bdi>${esc(spot.seat)}</bdi><span>${esc(label(spot.status))}</span></span><span class="pj-spott" dir="auto">${ttl(spot)}</span>${meta(spot)}</a>` : `<p class="pj-quiet">${t('project.noWorking')}</p>`)
+    + (work.length > 1 ? `<div class="pj-list">${work.slice(1).map(row).join('')}</div>` : '') + `</section>`;
+  const runs = d.runs.length ? `<section class="pj-sec pj-runs">${head('project.runs')}${d.runs.map(pjRun).join('')}</section>` : '';
+  const rest = `<section class="pj-sec">${head('project.idle', idle.length)}<div class="pj-list">${idle.map(row).join('') || `<p class="pj-quiet">${t('project.noConvs')}</p>`}</div>`
+    + (arch.length ? `<details class="pj-arch"${projArchOpen ? ' open' : ''}><summary>${t('project.archived')} <span class="pj-num">${num(arch.length + d.archivedCount - d.archived.length)}</span></summary><div class="pj-list">${arch.map(row).join('')}</div></details>` : '') + `</section>`;
+  const side = (md ? `<section class="pj-sec pj-read">${head('project.happening')}<div class="pj-md" dir="auto">${pjMd(md.text)}</div><small class="pj-src" dir="ltr">${t('project.handoffNote', { file: esc(md.file) })}</small></section>` : '')
+    + (g?.commits.length ? `<section class="pj-sec pj-git"><h2 class="pj-h">${t('project.commits')}</h2>`
+      + `<ol class="pj-log">${g.commits.map((k) => `<li><code dir="ltr">${esc(k.hash)}</code><span dir="auto">${esc(k.subject)}</span>${k.at ? tm(k.at) : ''}</li>`).join('')}</ol></section>` : '');
+  $('projects').innerHTML = `<div class="pj${projFirst ? ' enter' : ''}${side ? '' : ' no-side'}">${hero}${attn}<div class="pj-grid"><div class="pj-main">${working}${runs}<div class="pj-rest">${rest}</div></div>${side ? `<div class="pj-side">${side}</div>` : ''}</div></div>`;
+  projFirst = false;
+}
+// A run of this folder: a segmented rail (one segment per task), the task being worked on, every task behind "Show all tasks"; same buttons as its card on the Projects page.
+function pjRun(p) {
+  const done = p.tasks.filter((k) => k.status === 'done').length, cur = p.tasks.find((k) => k.status === 'running');
+  const retry = (task, label = t('projects.retry')) => `<button data-mretry="${esc(p.id)}" data-task="${esc(task)}">${label}</button>`;
+  const acts = (p.status === 'plan-ready' ? `<button class="primary" data-mapprove="${esc(p.id)}">${t('projects.approve')}</button>` : '')
+    + (p.status === 'plan-error' ? retry('plan', t('projects.retryPlan')) : '') + (p.status === 'integrate-error' ? retry('integrate', t('projects.retryIntegration')) : '')
+    + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">${t('projects.cancel')}</button>` : '');
+  const cv = (id) => `#project/${encodeURIComponent(projDir)}/c/${esc(id)}`, tt = (k) => k.conv ? `<a href="${cv(k.conv)}" dir="auto">${esc(k.title)}</a>` : `<span dir="auto">${esc(k.title)}</span>`;
+  const task = (k) => `<li class="pj-task s-${SEG[k.status] || 'queued'}"><i class="pj-sq" aria-hidden="true"></i><div>${tt(k)}<small><bdi>${esc(k.discipline)} → ${esc(k.seat)}</bdi> · ${esc(mstatus(k.status))}${k.status === 'pending' && k.waitUntil ? ' · ' + t('projects.waitsFor', { seat: `<bdi>${esc(k.seat)}</bdi>`, when: when(k.waitUntil) }) : ''}${k.deps.length && k.status !== 'done' ? ' · ' + t('projects.after', { tasks: `<bdi>${esc(k.deps.join(', '))}</bdi>` }) : ''}</small>`
+    + `${k.unknownActions ? `<small class="pj-err" title="${t('conv.unknownTitle')}">${t('conv.unknownActions', { n: num(k.unknownActions) })}</small>` : ''}${k.error || k.sendError ? `<small class="pj-err" dir="auto">${esc(k.error || k.sendError)}</small>` : ''}</div>`
+    + `${['error', 'stuck', 'needs-answer', 'running'].includes(k.status) && p.status === 'running' ? retry(k.id, k.status === 'running' ? t('projects.continue') : t('projects.retry')) : ''}</li>`;
+  const links = [p.planConv && `<a href="${cv(p.planConv)}">${t('projects.planConv')}</a>`, p.integrateConv && `<a href="${cv(p.integrateConv)}">${t('projects.integration')}</a>`].filter(Boolean).join(' · ');
+  return `<article class="pj-run${ACTIVE(p) ? '' : ' is-done'}"><div class="pj-runhead"><h3 dir="auto">${esc(p.name)}</h3><span class="pj-of">${p.tasks.length ? t('project.complete', { done: num(done), n: num(p.tasks.length) }) : esc(mstatus(p.status))}</span></div>`
+    + (p.tasks.length ? `<div class="pj-rail" aria-hidden="true">${p.tasks.map((k) => `<i class="s-${SEG[k.status] || 'queued'}" title="${esc(k.title)}"></i>`).join('')}</div>` : '')
+    + `<small class="pj-runmeta">${esc(mstatus(p.status))} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' && p.waitUntil ? ' · ' + t('projects.waitsFor', { seat: `<bdi>${esc(p.owner)}</bdi>`, when: when(p.waitUntil) }) : ''}${links ? ' · ' + links : ''}</small>`
+    + (cur && ACTIVE(p) ? `<p class="pj-now">${t('project.now', { task: tt(cur) })}</p>` : '')
+    + `${p.error ? `<small class="pj-err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="pj-err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="pj-acts">${acts}</div>` : ''}`
+    + (p.tasks.length ? `<details class="pj-tasks" data-run="${esc(p.id)}"${projOpenRuns.has(p.id) ? ' open' : ''}><summary>${t('project.allTasks')}</summary><ol>${p.tasks.map(task).join('')}</ol></details>` : '') + `</article>`;
+}
+// ---- project context (#project/<dir>/c/<id>): a conversation opened from its project keeps a project bar on top (back, name, the project's live chats) ----
+let projCtx = null, pctxData = null;
+const projTag = (leaf) => new RegExp('^\\s*\\[' + [...leaf.replace(/[^\p{L}\p{N}]/gu, '')].join('[^\\p{L}\\p{N}]*') + '\\]\\s*', 'iu');   // "[MyApp] x" inside my-app shows as "x"
+const ctxHash = () => { const m = location.hash.match(/^#project\/([^/]+)\/(?:c\/([^/]+)|new)$/); if (!m) return null; try { return { dir: decodeURIComponent(m[1]), id: m[2] || null }; } catch { return null; } };
+function setCtx(dir, id) {
+  projCtx = dir || null; document.body.classList.toggle('pctx', !!projCtx);
+  const want = projCtx && `#project/${encodeURIComponent(projCtx)}/${id ? 'c/' + id : 'new'}`;
+  if (want && location.hash !== want) history.replaceState(null, '', want);   // a new chat that just got its id: /new -> /c/<id>, no extra history step
+  else if (!want && ctxHash()) history.replaceState(null, '', location.pathname + location.search);   // opened from the sidebar: the normal view
+  if (projCtx && (pctxData?.dir !== projCtx || (id && !pctxData.d?.convs.some((c) => c.id === id)))) loadPctx();
+  renderPbar(true);
+}
+const dropCtx = () => { projCtx = null; document.body.classList.remove('pctx'); renderPbar(); };
+async function loadPctx() {
+  const dir = projCtx; let r; try { r = await api('/api/project?dir=' + encodeURIComponent(dir)); } catch { r = null; }
+  if (dir === projCtx) { pctxData = { dir, d: r && !r.error ? r : null }; renderPbar(); }
+}
+function newInProject(dir) {   // "New chat here": a fresh draft inside the project (cwd = its folder)
+  const h = `#project/${encodeURIComponent(dir)}/new`;
+  if (location.hash === h) openHash(); else location.hash = h;
+}
+function renderPbar(focusCur) {
+  const bar = $('pbar'); if (!projCtx) { bar.hidden = true; bar.innerHTML = ''; return; }
+  const d = pctxData?.dir === projCtx ? pctxData.d : null, base = `#project/${encodeURIComponent(projCtx)}`;
+  const parts = (d?.name || projCtx.split(/[\\/]/).pop()).split(/[\\/]/), leaf = parts.pop(), tag = projTag(leaf), live = new Map(allConvs().map((c) => [c.id, c]));
+  const ids = (d?.convs || []).map((c) => c.id); if (cur.id && !ids.includes(cur.id)) ids.unshift(cur.id);   // the open one is always there, even when archived
+  const items = ids.map((id) => {
+    const c = live.get(id) || d?.convs.find((k) => k.id === id); if (!c) return '';
+    const need = c.pending || c.needsAnswer || c.need?.length, on = id === cur.id;
+    return `<a class="pb-c${on ? ' on' : ''}${need ? ' need' : ''}" href="${base}/c/${esc(id)}"${on ? ' aria-current="page"' : ''}><span class="dot ${DOT[c.status] ?? c.status}"></span><span class="pb-t" dir="auto">${esc(c.title.replace(tag, '') || c.title)}</span>${need ? `<span class="pb-flag"><span class="pb-sr">${t('project.needs')}</span></span>` : ''}</a>`;
+  }).join('');
+  bar.hidden = false;
+  bar.innerHTML = `<div class="pb-top"><a class="pb-back" href="${base}">${ico(ICO.back, 'fl')}<span>${t('project.backTo')}</span></a>`
+    + `<a class="pb-name" href="${base}">${parts.length ? `<span dir="ltr">${esc(parts.join(' / '))} /</span>` : ''}<b dir="auto">${esc(leaf)}</b></a>`
+    + `<button type="button" class="pb-new" data-pbnew>${t('projects.newChat')}</button>${cur.id ? `<button type="button" class="pb-mv" data-pbmove>${t('conv.moveProject')}</button>` : ''}</div>`
+    + (items ? `<nav class="pb-sw" aria-label="${t('project.switcher')}">${items}</nav>` : '');
+  if (focusCur) bar.querySelector('.pb-c.on')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+}
+$('pbar').onclick = (e) => { if (e.target.closest('[data-pbnew]')) newInProject(projCtx); if (e.target.closest('[data-pbmove]') && cur.id) openMove(cur.id); };
+// ---- Project chip (a new chat only): the folder it opens in. Picked here, set by New chat here, or typed in the folder field; otherwise the
+// server reads it from the first message (GET /api/detect-project = the rule send() uses) and falls back to the projects root. ----
+let draftDir = null, detected = null, detTimer = null;
+const relName = (dir) => (multiData.folders || []).find((f) => f.dir === dir)?.name || dir.split(/[\\/]/).pop();
+function showChip() {
+  const ch = $('projchip'), dir = $('cwd').value.trim(); ch.hidden = !!cur.id || !!seats.find((x) => x.name === cur.seat)?.remote;
+  ch.textContent = dir ? t('composer.project', { name: relName(dir) }) : detected ? t('composer.projectDetected', { name: detected.name }) : t('composer.projectAuto');
+}
+function detectSoon() {
+  clearTimeout(detTimer); if (cur.id) return;
+  detTimer = setTimeout(async () => {
+    const text = $('text').value.trim(), r = text ? await api('/api/detect-project?text=' + encodeURIComponent(text.slice(0, 2000))).catch(() => null) : null;
+    detected = r?.dir ? r : null; showChip();
+  }, 300);
+}
+$('text').addEventListener('input', detectSoon);
+$('cwd').addEventListener('input', () => { draftDir = $('cwd').value.trim() || null; showChip(); });   // a typed folder survives a re-render like a picked one
+$('projchip').onclick = () => openMove(null);
+// ---- Move to project (⋯ menu, project bar): file a conversation under another project folder. Its working folder stays (the CLI keeps
+// a session's history under its cwd); only where the Projects page and the project pages list it changes. Automatic = by its folder again. ----
+let mvId = null;
+function openMove(id) {
+  mvId = id; const d = $('mvproj');   // id null: the project chip of a new chat
+  d.innerHTML = `<form method="dialog"><h3>${t(id ? 'conv.moveTitle' : 'composer.pickTitle')}</h3><small>${t(id ? 'conv.moveHint' : 'composer.pickHint')}</small><input id="mvq" type="search" dir="auto" placeholder="${t('projects.filterPh')}" aria-label="${t('projects.filterPh')}" autocomplete="off" spellcheck="false"><div id="mvlist"></div><div class="racts"><button value="">${t('common.close')}</button></div></form>`;
+  mvList(); d.showModal(); $('mvq').focus();
+}
+function mvList() {
+  const c = mvId ? allConvs().find((x) => x.id === mvId) : { project: $('cwd').value.trim() || null }, q = $('mvq').value.trim().toLowerCase();
+  const all = new Map([...(multiData.projects || []).map((p) => [p.dir, p.dir.split(/[\\/]/).pop()]), ...(multiData.folders || []).map((f) => [f.dir, f.name])]);   // run dirs and folders, one entry per dir (a folder's own name wins)
+  const hits = [...all].filter(([dir, name]) => !q || (name + ' ' + dir).toLowerCase().includes(q)).slice(0, 40);
+  const opt = (dir, label, on) => `<button type="button" class="mvopt" data-mvdir="${esc(dir)}"${on ? ' aria-current="true"' : ''}>${label}</button>`;
+  $('mvlist').innerHTML = opt('', t(mvId ? 'conv.moveAuto' : 'composer.pickAuto'), !c?.project) + hits.map(([dir, name]) => opt(dir, `<bdi dir="ltr">${esc(name)}</bdi>`, c?.project === dir)).join('') + (hits.length ? '' : `<p class="smuted">${t('projects.noFolder')}</p>`);
+}
+$('mvproj').oninput = (e) => { if (e.target.id === 'mvq') mvList(); };
+$('mvproj').onkeydown = (e) => { if (e.target.id === 'mvq' && e.key === 'Enter') e.preventDefault(); };   // Enter in the filter would submit the form = Close
+$('mvproj').onclick = async (e) => {
+  const o = e.target.closest('[data-mvdir]'); if (!o) return;
+  const dir = o.dataset.mvdir || null;
+  if (!mvId) { draftDir = dir; $('cwd').value = dir || ''; $('mvproj').close(); showChip(); return $('text').focus(); }
+  const r = await api('/api/conv-project', { conversationId: mvId, dir });
+  if (r.error) return alert(r.error);
+  $('mvproj').close(); await loadMulti();
+  if (projCtx && mvId === cur.id) { if (dir) location.hash = `#project/${encodeURIComponent(dir)}/c/${mvId}`; else loadPctx(); }   // moved from the project bar: follow it to its new project
+};
+// The head of HANDOFF.md as real text: headings, paragraphs, list items, **bold**, _em_, `code` (code spans are cut out first, so nothing inside them is formatted).
+function pjMd(text) {
+  const inl = (s) => s.split(/(`[^`\n]+`)/).map((x, i) => i % 2 ? `<code>${esc(x.slice(1, -1))}</code>` : esc(x).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/(^|\s)_(.+?)_(?=[\s.,;:]|$)/g, '$1<em>$2</em>')).join('');
+  const units = []; let para = null;   // units: { li } or { html }; consecutive list items share one <ul>
+  for (const line of text.replace(/^#\s+handoff\s*\n/i, '').split('\n')) {   // the file's own "# HANDOFF" title repeats the section name
+    const h = line.match(/^#{1,6}\s+(.*)$/), li = line.match(/^\s{0,3}[-*]\s+(.*)$/);
+    if (!line.trim()) para = null;
+    else if (h) { units.push({ html: `<h3>${inl(h[1])}</h3>` }); para = null; }
+    else if (li) { para = { li: li[1] }; units.push(para); }
+    else if (para) para[para.li !== undefined ? 'li' : 'p'] += ' ' + line.trim();   // a wrapped line continues its item or paragraph
+    else { para = { p: line.trim() }; units.push(para); }
+  }
+  const html = (us) => us.map((u, i) => u.li !== undefined ? `${us[i - 1]?.li === undefined ? '<ul>' : ''}<li>${inl(u.li)}</li>${us[i + 1]?.li === undefined ? '</ul>' : ''}` : u.p !== undefined ? `<p>${inl(u.p)}</p>` : u.html).join('');
+  let cut = 0, len = 0; while (cut < units.length && (cut < 2 || len < 900)) len += (units[cut++].li ?? units[cut - 1].p ?? '').length + 60;   // about 900 characters stay open
+  return cut < units.length ? html(units.slice(0, cut)) + `<details class="pj-more"${projMoreOpen ? ' open' : ''}><summary>${t('project.more')}</summary>${html(units.slice(cut))}</details>` : html(units);   // a long head does not bury the commits under it
 }
 async function loadProject() {
   const dir = projDir; let r; try { r = await api('/api/project?dir=' + encodeURIComponent(dir)); } catch { r = { error: 'x' }; }
   if (dir === projDir) { projData = r; renderProject(); }
 }
 function openProject(dir) {
-  closeSettings(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; renderProject(); showMultiSide(); loadProject();
+  dropCtx(); closeSettings(); closeGuide(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; projFirst = true; projArchOpen = false; projMoreOpen = false; projOpenRuns = new Set(); renderProject(); showMultiSide(); loadProject();
 }
 function openProjects(id) {
-  projDir = null; closeSettings(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
+  dropCtx(); projDir = null; closeSettings(); closeGuide(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
   focusId = id || null; if (multiLoaded) flashCard();   // a direct link before the first load: the card is flashed once the data is in (loadMulti)
 }
 function flashCard() {
@@ -598,16 +743,21 @@ function flashCard() {
 }
 function closeProjects() {
   if (!onProjects()) return; document.body.classList.remove('projects'); showMultiSide();
-  projDir = null; if (location.hash === '#projects' || location.hash.startsWith('#multi-') || location.hash.startsWith('#project/')) history.replaceState(null, '', location.pathname + location.search);   // the same project link works again
+  projDir = null; if (location.hash === '#projects' || location.hash.startsWith('#multi-') || (location.hash.startsWith('#project/') && !ctxHash())) history.replaceState(null, '', location.pathname + location.search);   // the same project link works again
 }
 $('multi').onclick = (e) => { if (e.target.closest('[data-mopen]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; } };
+$('projects').addEventListener('toggle', (e) => {   // a refresh keeps Archived and "Show all tasks" as the user left them
+  if (e.target.classList?.contains('pj-arch')) projArchOpen = e.target.open;
+  else if (e.target.classList?.contains('pj-more')) projMoreOpen = e.target.open;
+  else if (e.target.dataset?.run) projOpenRuns[e.target.open ? 'add' : 'delete'](e.target.dataset.run);
+}, true);
 $('projects').oninput = (e) => { if (e.target.id === 'mfq') { folderQ = e.target.value; $('mfolders').innerHTML = folderList(); } };
 $('projects').onclick = async (e) => {
   if (e.target.closest('[data-pclose]')) return closeProjects();
   if (e.target.closest('[data-mback]')) { if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; return; }
   const mr = e.target.closest('[data-mrun]'); if (mr) { projPrefill = { dir: mr.dataset.mrun, name: mr.dataset.mname }; if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; return; }
   if (e.target.closest('[data-pdrawer]')) return document.body.classList.add('drawer');
-  const nc = e.target.closest('[data-mchat]'); if (nc) { await pick(cur.seat, null); $('cwd').value = nc.dataset.mchat; return $('text').focus(); }
+  const nc = e.target.closest('[data-mchat]'); if (nc) return newInProject(nc.dataset.mchat);
   const st = e.target.closest('[data-mstart]');
   if (st) { const f = $('mform'); f.dir.value = st.dataset.mstart; if (!f.name.value) f.name.value = st.dataset.mname; f.scrollIntoView({ block: 'start' }); f.brief.focus(); return; }
   const ap = e.target.closest('[data-mapprove]'), rt = e.target.closest('[data-mretry]'), cp = e.target.closest('[data-mcancelp]');
@@ -634,6 +784,7 @@ $('seats').onclick = async (e) => {
   const dm = e.target.closest('[data-dismiss]'); if (dm) { menuFor = null; const r = await api('/api/dismiss', { conversationId: dm.dataset.dismiss }); if (r.error) alert(r.error); return; }
   const uw = e.target.closest('[data-unwait]'); if (uw) { const r = await api('/api/quotawait', { conversationId: uw.dataset.unwait }); if (r.error) alert(r.error); return; }
   const kp = e.target.closest('[data-keep]'); if (kp) { menuFor = null; const r = await api('/api/keep', { conversationId: kp.dataset.keep, keep: kp.dataset.to === 'true' }); if (r.error) alert(r.error); return; }
+  const mv = e.target.closest('[data-mvproj]'); if (mv) { menuFor = null; showSeats(); return openMove(mv.dataset.mvproj); }
   const ar = e.target.closest('[data-archive]'); if (ar) { menuFor = null; await api('/api/archive', { conversationId: ar.dataset.archive, archived: ar.dataset.to === 'true' }); return; }
   const de = e.target.closest('[data-del]');
   if (de) {
@@ -682,8 +833,8 @@ $('composer').onsubmit = async (e) => {
   const r = await api('/api/send', { seat: cur.seat, conversationId: cur.id || undefined, text, cwd: run ? undefined : $('cwd').value.trim() || undefined, model: $('model').value || undefined, effort: EFFORTS[$('effort').value] || undefined, mode: $('mode').value, images: pending.filter((p) => !p.file).map((p) => p.id), files: pending.filter((p) => p.file).map((p) => p.id), draftId });
   if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; return; }
   pending.length = 0; showThumbs(); draftId = newDraftId();
-  if (run) { seats = await api('/api/seats'); await pick(cur.seat, cur.id); }
-  else if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId); }
+  if (run) { seats = await api('/api/seats'); await pick(cur.seat, cur.id, projCtx); }
+  else if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId, projCtx); }   // a chat started inside a project stays there
 };
 // On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
 const TOUCH = matchMedia('(pointer: coarse)').matches;
@@ -719,8 +870,18 @@ $('mode').onchange = async () => {
 $('resume').onclick = async () => { const r = await api('/api/resume', { conversationId: cur.id }); if (r.error) $('log').appendChild(div('msg note err', esc(r.error))); };
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {
+  if (location.hash === '#guide') return openGuide();
+  closeGuide();
   if (location.hash === '#settings') return openSettings();
   closeSettings();
+  const x = ctxHash();
+  if (x) {   // #project/<dir>/c/<id> or #project/<dir>/new: a conversation inside its project
+    if (!x.id) { pick(cur.seat, null, x.dir).then(() => { $('cwd').value = x.dir; $('text').focus(); }); return; }
+    const c = allConvs().find((k) => k.id === x.id);
+    if (!c) return openProject(x.dir);
+    if (c.id !== cur.id) return pick(c.seat, c.id, x.dir);
+    closeProjects(); return setCtx(x.dir, c.id);
+  }
   if (location.hash.startsWith('#project/')) { let d = ''; try { d = decodeURIComponent(location.hash.slice(9)); } catch {} return openProject(d); }
   if (location.hash === '#projects' || location.hash.startsWith('#multi-')) return openProjects(location.hash.startsWith('#multi-') ? location.hash.slice(7) : null);
   const c = allConvs().find((x) => x.id === location.hash.slice(1));
@@ -731,7 +892,7 @@ function openHash() {
 async function handoff(seat, result) {
   const c = curConv(); if (!c) return;
   await pick(seat, null);
-  $('cwd').value = c.cwd;
+  $('cwd').value = c.cwd; showChip();
   $('text').value = t('result.continuation', { seat: c.seat, title: c.title }) + `\n\n${result}\n\n`;
   $('text').focus();
 }
@@ -885,7 +1046,7 @@ function showSettings() {
   if (tr.left < nr.left) nav.scrollLeft += tr.left - nr.left - 24; else if (tr.right > nr.right) nav.scrollLeft += tr.right - nr.right + 24;
 }
 async function openSettings(tab) {
-  document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
+  closeGuide(); document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
   if (tab) { setTab = tab; setNote = null; }
   if (!setData) await loadSettings(); showSettings();
 }
@@ -894,6 +1055,31 @@ function closeSettings() {
   if (location.hash === '#settings') history.replaceState(null, '', location.pathname + location.search);
 }
 $('setbtn').onclick = () => { if (location.hash === '#settings') openSettings(); else location.hash = 'settings'; };
+// ---- Guide (#guide): how to use the console, one short answer per task. Button names are filled in from the page's own keys,
+// so the guide always names a button exactly as the page shows it, in every language. ----
+const GUIDE = ['seats', 'start', 'folder', 'attach', 'approve', 'keep', 'auto', 'search', 'projects', 'runs', 'project', 'ctx', 'settings'];
+const onGuide = () => document.body.classList.contains('guide');
+function showGuide() {
+  const b = (k, v) => `<b>${t(k, v)}</b>`;
+  const names = { settings: b('set.title'), foldAll: b('side.foldAll'), use: b('usage.use'), new: b('side.new'), auto: b('mode.auto'), ask: b('mode.ask'), bypass: b('mode.bypass'), effort: b('composer.effort'), chip: b('composer.projectAuto'),
+    attach: b('composer.attach'), stop: b('composer.stop'), allow: b('perm.allow'), deny: b('perm.deny'), needsApproval: b('status.waiting'), needsAnswer: b('conv.needsAnswer'), closeQuestion: b('conv.closeQuestion'),
+    keep: b('conv.keep'), archive: b('conv.archive'), showArchived: b('side.showArchived', { n: '…' }), move: b('conv.moveProject'), tabUsage: b('set.tab.usage'), archiveDone: b('set.usage.archiveDone'), archiveDays: b('set.usage.archive'),
+    openProjects: b('projects.open'), openProject: b('projects.openProject'), newChat: b('projects.newChat'), start: b('projects.start'), startTitle: b('projects.startTitle'), plan: b('projects.plan'), approve: b('projects.approve'),
+    needs: b('project.needs'), allClear: b('project.allClear'), working: b('project.working'), runs: b('project.runs'), allTasks: b('project.allTasks'), happening: b('project.happening'), backTo: b('project.backTo'),
+    tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
+  $('guide').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-gdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('guide.title')}</h2><small>${t('guide.subtitle')}</small></div><button type="button" data-gclose>${t('common.close')}</button></header>`
+    + `<div class="gd">${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p></section>`).join('')}</div>`;
+}
+function openGuide() {
+  closeSettings(); closeProjects(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
+  showGuide(); $('guide').scrollTop = 0;
+}
+function closeGuide() {
+  if (!onGuide()) return; document.body.classList.remove('guide');
+  if (location.hash === '#guide') history.replaceState(null, '', location.pathname + location.search);
+}
+$('guidebtn').onclick = () => { if (location.hash === '#guide') openGuide(); else location.hash = 'guide'; };
+$('guide').onclick = (e) => { if (e.target.closest('[data-gclose]')) return closeGuide(); if (e.target.closest('[data-gdrawer]')) document.body.classList.add('drawer'); };
 const note = (html, err) => { setNote = { tab: setTab, html, err }; };
 async function settingsAct(path, body, okHtml) {
   const r = await api(path, body).catch((x) => ({ error: String(x) }));
@@ -986,7 +1172,7 @@ $('foldall').onclick = () => { const to = $('foldall').dataset.to === 'true'; fo
 let qTimer = 0, qSeq = 0;
 const runSearch = async () => {
   const q = $('q').value.trim(), on = !!q, seq = ++qSeq;
-  $('results').hidden = !on; $('seats').hidden = on; $('routines').hidden = on;
+  $('results').hidden = !on; $('seats').hidden = on; $('routines').hidden = on; $('qclear').hidden = !$('q').value;
   if (!on) return;
   let r; try { r = await (await fetch('/api/search?q=' + encodeURIComponent(q))).json(); } catch { r = { hits: [], error: true }; }
   if (seq !== qSeq) return;   // a newer query was typed meanwhile
@@ -997,6 +1183,11 @@ const runSearch = async () => {
     + (r.hits?.length ? r.hits.map((h) => `<button class="conv qhit ${h.id === cur.id ? 'on' : ''}" data-id="${h.id}" data-seat="${esc(h.seat)}"><span class="dot ${h.status === 'stopped' ? '' : h.status}"></span><span class="t" dir="auto">${h.keep ? '★ ' : ''}${mark(h.title)}</span><span class="qseat">${esc(h.seat)}${h.archived ? ' · ' + t('search.archived') : ''}</span>${h.snippet ? `<small dir="auto">${mark(h.snippet)}</small>` : ''}</button>`).join('')
       : `<p class="qnote">${t(r.error ? 'search.failed' : 'search.none')}</p>`);
 };
-$('q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
-$('q').addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('q').value = ''; runSearch(); } });
+// One click (the x in the field) or Esc in the field: query gone, results closed, the normal list back.
+const clearSearch = () => { clearTimeout(qTimer); $('q').value = ''; runSearch(); };
+$('q').addEventListener('input', () => { $('qclear').hidden = !$('q').value; clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); clearSearch(); } });
+$('qclear').onclick = () => { clearSearch(); $('q').focus(); };
+// The sidebar's top block stays put; a hairline under it only once the list has scrolled beneath it.
+$('sidescroll').addEventListener('scroll', (e) => $('sidetop').classList.toggle('stuck', e.currentTarget.scrollTop > 0), { passive: true });
 $('results').onclick = (e) => { const b = e.target.closest('[data-id]'); if (b) pick(b.dataset.seat, b.dataset.id); };

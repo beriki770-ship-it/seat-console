@@ -14,16 +14,22 @@
 <body>
 <div id="saveBanner" role="alert" data-i18n="banner.saveFailed" hidden>The console cannot save its state file. Conversations are kept in memory only: a restart now would lose what happened since the last good save.</div>
 <aside data-sid="seat-list" data-title="Seats and their conversations">
-  <div class="ahead"><h1>Seat Console</h1><span><button type="button" id="setbtn" data-i18n-title="side.settingsTitle" title="Settings: seats, Telegram, phone access, features">⚙ <span data-i18n="set.title">Settings</span></button> <button type="button" id="foldall" data-i18n="side.foldAll" data-i18n-title="side.foldAllTitle" title="Fold or expand every seat's conversation list">Fold all</button></span></div>
-  <input id="q" type="search" dir="auto" placeholder="Search all conversations (archived too)" aria-label="Search conversations" data-i18n-placeholder="side.searchPh" data-i18n-aria-label="side.searchLabel" autocomplete="off" spellcheck="false">
-  <nav id="results" aria-live="polite" hidden></nav>
-  <section id="multi" data-sid="multi" data-title="Projects: link to the Projects page and the projects still running"></section>
-  <nav id="seats"></nav>
-  <section id="routines" data-sid="routines" data-title="Scheduled routines (ask first, run on tap)"></section>
+  <div id="sidetop">
+    <div class="ahead"><h1>Seat Console</h1><span><button type="button" id="setbtn" data-i18n-title="side.settingsTitle" title="Settings: seats, Telegram, phone access, features">⚙ <span data-i18n="set.title">Settings</span></button> <button type="button" id="foldall" data-i18n="side.foldAll" data-i18n-title="side.foldAllTitle" title="Fold or expand every seat's conversation list">Fold all</button> <button type="button" id="guidebtn" data-i18n="guide.button" data-i18n-title="guide.buttonTitle" title="How to use the console">Guide</button></span></div>
+    <div id="qbox"><input id="q" type="search" dir="auto" placeholder="Search all conversations (archived too)" aria-label="Search conversations" data-i18n-placeholder="side.searchPh" data-i18n-aria-label="side.searchLabel" autocomplete="off" spellcheck="false"><button type="button" id="qclear" aria-label="Clear search" title="Clear search" data-i18n-aria-label="side.searchClear" data-i18n-title="side.searchClear" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <section id="multi" data-sid="multi" data-title="Projects: link to the Projects page and the projects still running"></section>
+  </div>
+  <div id="sidescroll">
+    <nav id="results" aria-live="polite" hidden></nav>
+    <nav id="seats"></nav>
+    <section id="routines" data-sid="routines" data-title="Scheduled routines (ask first, run on tap)"></section>
+  </div>
 </aside>
 <main data-sid="conversation" data-title="Conversation">
   <section id="projects" data-sid="projects" data-title="Projects: start and follow multi-sided projects"></section>
   <section id="settings" data-sid="settings" data-title="Settings: what is set up and what is turned on"></section>
+  <section id="guide" data-sid="guide" data-title="Guide: how to use the console, short answers per task"></section>
+  <div id="pbar" data-sid="project-bar" data-title="Project bar: back to the project and its other conversations" hidden></div>
   <header id="head" dir="auto"></header>
   <div id="ctxscrim" hidden></div>
   <div id="ctxpanel" role="dialog" aria-label="Context window" data-i18n-aria-label="ctx.title" hidden></div>
@@ -37,7 +43,8 @@
     <textarea id="text" rows="2" dir="auto" placeholder="Message this seat. Enter sends, Shift+Enter adds a line." data-i18n-placeholder="composer.placeholder"></textarea>
     <div id="thumbs" hidden></div>
     <div class="row">
-      <input id="cwd" dir="ltr" aria-label="Working folder" data-i18n-aria-label="composer.folder" spellcheck="false">
+      <button type="button" id="projchip" title="The project folder this new chat opens in" data-i18n-title="composer.projectTitle" data-i18n="composer.projectAuto" hidden>Project: auto</button>
+      <input id="cwd" dir="ltr" aria-label="Working folder" data-i18n-aria-label="composer.folder" placeholder="Folder (empty: by project)" data-i18n-placeholder="composer.folderPh" spellcheck="false">
       <select id="mode" aria-label="Permission mode" data-i18n-aria-label="composer.mode"><option value="auto" data-i18n="mode.auto">auto</option><option value="ask" data-i18n="mode.ask">ask</option><option value="bypass" data-i18n="mode.bypass">bypass</option></select>
       <select id="model" aria-label="Model" data-i18n-aria-label="composer.model"><option value="" data-i18n="composer.defaultModel">default model</option><option value="claude-opus-5-5">Opus 5.5</option><option value="claude-fable-5-1">Fable 5.1</option><option value="claude-sonnet-5-5">Sonnet 5.5</option><option value="claude-haiku-5-5">Haiku 5.5</option><optgroup label="More models" data-i18n-label="composer.moreModels"><option value="claude-haiku-4-5">Haiku 4.5</option><option value="claude-sonnet-5">Sonnet 5</option><option value="claude-opus-5">Opus 5</option><option value="claude-fable-5">Fable 5</option><option value="claude-opus-4-8">Opus 4.8</option><option value="claude-opus-4-7">Opus 4.7</option><option value="claude-opus-4-6">Opus 4.6</option><option value="claude-sonnet-4-6">Sonnet 4.6</option></optgroup></select>
       <label class="effort"><span data-i18n="composer.effort">effort</span> <input id="effort" type="range" min="0" max="6" step="1" value="0" aria-label="Effort" data-i18n-aria-label="composer.effort"> <output id="effortOut" data-i18n="composer.effortDefault">default</output></label>
@@ -47,6 +54,7 @@
     </div>
   </form>
 </main>
+<dialog id="mvproj" data-sid="move-project" data-title="Move to project: pick the project a conversation is listed under" aria-label="Move to project" data-i18n-aria-label="conv.moveTitle"></dialog>
 <div id="scrim" onclick="document.body.classList.remove('drawer')"></div>
 <script src="/paths.js"></script>
 <script src="/app.js"></script>
