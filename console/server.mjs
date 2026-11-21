@@ -31,10 +31,11 @@ import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './
 import * as rhost from './rhost.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
 import { allowedDir, convProject, detectProject, gitInfo, handoffHead, newChatCwd } from './project.mjs';
+import { byProject, relatedFor } from './touched.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
 import { openIntents, settle as settleIntent, withUnknown, CLI_CMD as JOURNAL_CMD, CLI_PATH as JOURNAL_CLI } from './journal.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
-import { readSettings, writeJsonAtomic, validateSettings, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
+import { readSettings, writeJsonAtomic, validateSettings, onlyGuide, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { findPaths } = createRequire(import.meta.url)('./public/paths.js');   // the browser's preview detector: the same paths become Telegram attachments
@@ -240,7 +241,7 @@ const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = 
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
-const search = createSearch({ data: DATA, logFile, gzPath: (c) => gzPath(DATA, c) });   // full-text search over titles + chat text (searchidx.mjs)
+const search = createSearch({ data: DATA, logFile, gzPath: (c) => gzPath(DATA, c), root: path.join(HOME, 'Desktop', 'projects') });   // full-text search over titles + chat text, plus the files each one touched (searchidx.mjs)
 // Memory keeps a clipped copy of each logged event (memSlim) plus the byte range of its line in the jsonl, as a non-enumerable `logAt` (never serialized,
 // never spread into a page copy). /api/tool reads the full event back from there (fullEvent). An event without a range (not written yet) stays whole.
 const slimAt = (ev, start, end) => { Object.defineProperty(ev, 'logAt', { value: [start, end] }); return memSlim(ev); };
@@ -1093,9 +1094,31 @@ function projectFolders() {
 const convHits = (dir, dirs) => {
   return Object.values(state.conversations).filter((c) => convProject(c, dirs) === dir).sort((a, b) => !!a.archived - !!b.archived || b.updatedAt - a.updatedAt);   // live ones first, archived after
 };
-function convsUnder(dir, dirs) {
-  const hits = convHits(dir, dirs);
-  return { convs: hits.slice(0, 20).map((c) => ({ id: c.id, title: c.title, seat: c.seat, status: effStatus(c), updatedAt: c.updatedAt, archived: !!c.archived })), convCount: hits.length };
+// What waits on the user in a conversation (its summary v): the "Needs you" queue of a project page and the counts of the Projects page.
+const needOf = (v) => [v.pending && 'perms', v.needsAnswer && 'answer', v.quotaWait && 'quota', v.status === 'error' && 'error'].filter(Boolean);
+// Related conversations (touched.mjs): dir -> [{ c, w, r }] for every listed folder a conversation worked in without being opened there
+// (by cwd or Move to project), minus the folders the user marked "Not related" for it (c.notRelated). Per conversation the split of its touched
+// files over the folders is kept until the folder list or its touched files change (paths.ver, bumped by searchidx; a rebuilt log gets a new map).
+const relMemo = new WeakMap();
+// The touched files of logs that grew since (incremental), for /api/project and /api/multi; at most every 5 s (the page asks on every
+// multi broadcast), and during the first build only what is in so far.
+let touchedAt = 0;
+const freshTouched = async () => { if (Date.now() - touchedAt < 5000) return; touchedAt = Date.now(); await search.refresh(Object.values(state.conversations), { wait: false }); };
+function relatedIndex(dirs) {
+  const key = dirs.join('\0'), out = new Map();
+  for (const c of Object.values(state.conversations)) {
+    const paths = search.touched(c.id); if (!paths?.size) continue;
+    let m = relMemo.get(paths); if (!m || m.key !== key || m.ver !== paths.ver) relMemo.set(paths, m = { key, ver: paths.ver, ...byProject(paths, dirs) });
+    for (const [d, n] of relatedFor(m, convProject(c, dirs), c.notRelated)) (out.get(d) || out.set(d, []).get(d)).push({ c, ...n });
+  }
+  return out;
+}
+// One compact row of the Projects page: counts over the live conversations opened in the folder (opened: dir -> live ones, one pass
+// over the conversations for all folders) and those related to it.
+function folderBrief(dir, opened, rel) {
+  const own = opened.get(dir) || [], related = (rel.get(dir) || []).map((x) => x.c).filter((c) => !c.archived), all = [...own, ...related];
+  const vs = all.map(summary);
+  return { live: own.length, related: related.length, working: vs.filter((v) => ['working', 'waiting'].includes(v.status)).length, need: vs.filter((v) => needOf(v).length).length, last: Math.max(0, ...all.map((c) => c.updatedAt || 0)) };
 }
 
 // ---- multi-sided projects (multi.mjs): discipline -> its FIXED seat (console/disciplines.json); a seat at its limit makes its tasks wait, never another seat ----
@@ -1183,7 +1206,7 @@ function sendZ(req, res, code, type, body) {
   if (buf.length < 1024 || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) { head['Content-Length'] = buf.length; res.writeHead(code, head); return res.end(buf); }
   zlib.gzip(buf, { level: 5 }, (e, z) => { if (e) { res.writeHead(500); return res.end(); } head['Content-Encoding'] = 'gzip'; head['Content-Length'] = z.length; res.writeHead(code, head); res.end(z); });
 }
-const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['app.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/paths.js': ['paths.js', 'text/javascript; charset=utf-8'],
+const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['app.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/paths.js': ['paths.js', 'text/javascript; charset=utf-8'], '/imgedit.js': ['imgedit.js', 'text/javascript; charset=utf-8'], '/tour.js': ['tour.js', 'text/javascript; charset=utf-8'],
   // installable app (PWA): the manifest, its icons and the service worker must be same-origin for Chrome/Edge "Install app"
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/icon-maskable-512.png': ['icon-maskable-512.png', 'image/png'], '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'] };
@@ -1291,8 +1314,8 @@ const changed = (r) => { restartNeeded = true; detectCache = null; return r; };
 async function settingsPost(p, b) {
   const need = (a) => { if (!canWrite(a)) throw new Error(`test instance: start it with --${a} <a copy> to edit this file`); };
   if (p === '/api/settings') {
-    const v = validateSettings(b.settings, SEATS), next = { ...SET(), ...v };
-    writeJsonAtomic(SETTINGS_FILE, next); settingsNow = { settings: next, firstRun: false, error: null };
+    const v = validateSettings(b.settings, SEATS), next = { ...SET(), ...v }, guideFirst = settingsNow.firstRun && onlyGuide(v);   // the tour answer alone is not a first save
+    writeJsonAtomic(SETTINGS_FILE, guideFirst ? { ...readJsonFile(SETTINGS_FILE, {}), ...v } : next); settingsNow = { settings: next, firstRun: guideFirst, error: null };   // first run: only guideOffered goes to disk, so a restart still sees a first run
     console.log('[settings] saved: ' + Object.keys(v).join(', '));
     return { ok: true, restartNeeded };
   }
@@ -1415,10 +1438,17 @@ async function handler(req, res) {
       const folders = projectFolders(), projects = multi.view(), dirs = [...new Set([...folders.map((f) => path.resolve(f.dir)), ...projects.map((p) => path.resolve(p.dir))])];
       const dir = allowedDir(url.searchParams.get('dir'), dirs); if (!dir) return json(res, 404, { error: 'not a project folder' });
       const hits = convHits(dir, dirs), live = hits.filter((c) => !c.archived), arch = hits.filter((c) => c.archived), f = folders.find((x) => path.resolve(x.dir) === dir);
-      const view = (c) => { const v = summary(c); return { id: v.id, title: v.title, seat: v.seat, status: v.status, cost: v.cost, updatedAt: v.updatedAt, need: [v.pending && 'perms', v.needsAnswer && 'answer', v.quotaWait && 'quota', v.status === 'error' && 'error'].filter(Boolean) }; };
-      return json(res, 200, { name: f?.name || path.basename(dir), dir, mtime: f?.mtime || 0, git: await gitInfo(dir), convs: live.map(view), archived: arch.slice(0, 50).map(view), archivedCount: arch.length, runs: projects.filter((p) => path.resolve(p.dir) === dir), handoff: handoffHead(dir) });
+      const view = (c) => { const v = summary(c); return { id: v.id, title: v.title, seat: v.seat, status: v.status, cost: v.cost, updatedAt: v.updatedAt, archived: v.archived, need: needOf(v) }; };
+      await freshTouched();
+      const rel = (relatedIndex(dirs).get(dir) || []).sort((x, y) => y.w - x.w || y.c.updatedAt - x.c.updatedAt);   // most edits first, then the most recent
+      return json(res, 200, { name: f?.name || path.basename(dir), dir, mtime: f?.mtime || 0, git: await gitInfo(dir), convs: live.map(view), archived: arch.slice(0, 50).map(view), archivedCount: arch.length, related: rel.slice(0, 40).map((x) => ({ ...view(x.c), w: x.w, r: x.r })), relatedCount: rel.length, runs: projects.filter((p) => path.resolve(p.dir) === dir), handoff: handoffHead(dir) });
     }
-    if (req.method === 'GET' && url.pathname === '/api/multi') { const projects = multi.view(), folders = projectFolders(), dirs = [...new Set([...folders.map((f) => path.resolve(f.dir)), ...projects.map((p) => path.resolve(p.dir))])]; return json(res, 200, { projects: projects.map((p) => ({ ...p, ...convsUnder(path.resolve(p.dir), dirs) })), disciplines: DISC.map, owner: DISC.owner, off: multiOff() || null, hidden: !SET().multiProjects, folders: folders.map((f) => ({ ...f, ...convsUnder(path.resolve(f.dir), dirs) })) }); }
+    if (req.method === 'GET' && url.pathname === '/api/multi') {   // off in Settings: the sidebar entry hides once nothing is left running
+      const projects = multi.view(), folders = projectFolders(), dirs = [...new Set([...folders.map((f) => path.resolve(f.dir)), ...projects.map((p) => path.resolve(p.dir))])];
+      await freshTouched(); const rel = relatedIndex(dirs), opened = new Map();
+      for (const c of Object.values(state.conversations)) { const d = !c.archived && convProject(c, dirs); if (d) (opened.get(d) || opened.set(d, []).get(d)).push(c); }
+      return json(res, 200, { projects: projects.map((p) => ({ ...p, ...folderBrief(path.resolve(p.dir), opened, rel) })), disciplines: DISC.map, owner: DISC.owner, off: multiOff() || null, hidden: !SET().multiProjects, folders: folders.map((f) => ({ ...f, ...folderBrief(path.resolve(f.dir), opened, rel) })) });
+    }
     if (req.method === 'GET' && url.pathname === '/api/settings') return json(res, 200, await settingsView());
     if (req.method === 'GET' && url.pathname === '/api/digest') return json(res, 200, digestMessage(Date.now(), url.searchParams.get('kind') === 'evening' ? 'evening' : 'morning'));   // the digest text + buttons, nothing is sent
     if (req.method === 'GET' && url.pathname === '/api/conversation') {
@@ -1599,6 +1629,26 @@ async function handler(req, res) {
         if (dir) c.project = dir; else delete c.project;
         saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true, project: dir });
       }
+      if (url.pathname === '/api/not-related') {   // "Not related" on a project page: this conversation is no longer listed as related to that folder
+        const dirs = [...new Set([...projectFolders().map((f) => path.resolve(f.dir)), ...multi.view().map((p) => path.resolve(p.dir))])], dir = allowedDir(b.dir, dirs);
+        if (!dir) return json(res, 404, { error: 'not a project folder' });
+        c.notRelated = [...new Set([...(c.notRelated || []), dir])]; saveState(); broadcast({ multi: true }); return json(res, 200, { ok: true });
+      }
+      if (url.pathname === '/api/conv-cwd') {   // tools/move-conv-cwd.sh: the conversation's real working folder, once its CLI history was copied to the new folder's project dir
+        // Only a quiet Claude conversation (nothing running, nothing waiting, untouched 10 min) and only when the copy is complete: the
+        // session file under the new folder must have the same size as the one under the old (the CLI resumes a session by its cwd).
+        const cwd = typeof b.cwd === 'string' && path.isAbsolute(b.cwd) ? path.resolve(b.cwd) : null;
+        if (!cwd || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) return json(res, 400, { error: 'cwd must be an existing absolute folder' });
+        if (c.remote || SEATS[c.seat]?.agent) return json(res, 409, { error: 'only a local Claude conversation' });
+        if (c.working || c.turns || c.bg?.length || R(c).perms.size || R(c).starting || effStatus(c) === 'working' || Date.now() - c.updatedAt < 10 * 60e3) return json(res, 409, { error: 'busy or touched in the last 10 minutes: try later' });
+        const enc = (d) => d.replace(/[^A-Za-z0-9]/g, '-'), base = path.join(HOME, '.claude-seats', c.seat, 'projects'), sid = c.sessionId || c.id;
+        const size = (d) => fs.statSync(path.join(base, enc(d), sid + '.jsonl'), { throwIfNoEntry: false })?.size;
+        if (size(cwd) == null || (size(c.cwd) != null && size(c.cwd) !== size(cwd))) return json(res, 409, { error: 'the session file is not copied to the new folder (or differs in size)' });
+        if (R(c).proc) await killProc(c);   // an idle process keeps its old cwd: the next message starts it again in the new one
+        if (c.working || c.turns || R(c).starting || R(c).proc) return json(res, 409, { error: 'a message arrived meanwhile: try later' });   // started again during the await: leave its cwd alone
+        const was = c.cwd; c.cwd = cwd; saveState(); broadcast({ conv: summary(c) });
+        console.log(`[cwd] conv=${c.id.slice(0, 8)} ${was} -> ${cwd}`); return json(res, 200, { ok: true, from: was, cwd });
+      }
       if (url.pathname === '/api/keep') { c.keep = !!b.keep; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Keep shown": the row stays when its seat is folded (all devices)
       if (url.pathname === '/api/archive') { c.archived = !!b.archived; if (!c.archived) c.noAutoArchive = true;   /* brought back: not archived on its own again until the user writes */ saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {
@@ -1778,7 +1828,8 @@ function autoArchiveDone() {
 }
 if (!ISOLATED) { setInterval(guard('auto-archive', autoArchive), 10 * 60000).unref(); setInterval(guard('auto-archive-done', autoArchiveDone), 5 * 60000).unref(); setTimeout(guard('auto-archive-done', autoArchiveDone), 40000).unref(); setTimeout(guard('auto-archive', autoArchive), 30000).unref(); }
 // Build the search index in the background after start (the first build reads every log once); later passes only read what was appended.
-setTimeout(() => search.refresh([...Object.values(state.conversations), ...Object.values(state.remoteConvs)]).then(() => console.log('[search] index ready')).catch((e) => console.log('[search] ' + e.message)), 5000).unref();
+const hwm = () => { try { return +/VmHWM:\s+(\d+)/.exec(fs.readFileSync('/proc/self/status', 'utf8'))[1] * 1024; } catch { return process.memoryUsage().rss; } };   // peak RSS (Linux), else the current one
+setTimeout(() => { const t0 = Date.now(); search.refresh([...Object.values(state.conversations), ...Object.values(state.remoteConvs)]).then(() => console.log(`[search] index ready in ${Math.round((Date.now() - t0) / 1000)} s, peak rss ${Math.round(hwm() / 1048576)} MB`)).catch((e) => console.log('[search] ' + e.message)); }, 5000).unref();
 setInterval(() => reapIdle().catch((e) => console.log('[idle] ' + e.message)), Math.min(60000, IDLE_REAP_MS / 2)).unref();
 // A quiet conversation's host-out file holds only what the jsonl already has: empty it so it does not grow for the life of the conversation.
 // Not while a jsonl append failed or a line threw (the file is then the only durable copy); compactFile re-checks that the file really is empty afterwards.

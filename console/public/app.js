@@ -105,7 +105,7 @@ function render(ev, st, target = $('log')) {
     const card = div('msg perm', `<b>${t('perm.wants', { tool: `<bdi>${esc(ev.tool)}</bdi>` })}</b><pre dir="auto">${esc(ev.input.command || ev.blockedPath || JSON.stringify(ev.input, null, 2))}</pre>`
       + (ev.description ? `<small dir="auto">${esc(ev.description)}</small>` : '')
       + `<div class="acts">${live ? `<button class="primary" data-a="1">${t('perm.allow')}</button><button data-a="0">${t('perm.deny')}</button>` : `<em>${t('perm.expired')}</em>`}</div>`);
-    card.dataset.req = ev.requestId; permCards[ev.requestId] = card; out.push(card);
+    card.dataset.req = ev.requestId; card.dataset.guide = 'perm'; permCards[ev.requestId] = card; out.push(card);
   } else if (ev.type === 'console_perm_done') {
     const card = permCards[ev.requestId];
     if (card) card.querySelector('.acts').innerHTML = `<em>${t(ev.allow ? 'perm.allowed' : 'perm.denied')}</em>`;
@@ -294,7 +294,7 @@ const resetsBox = (s) => {
 const meter = (u) => !u ? '' : Object.entries(u.windows).filter(([k, v]) => k === 'five_hour' || v.resetsAt * 1000 > Date.now()).map(([k, v]) => {
   const gone = v.resetsAt * 1000 <= Date.now(), p = gone ? 0 : Math.round(v.utilization * 100);
   const old = u.at && Date.now() - u.at > 30 * 60000 ? ' · ' + t('usage.readAt', { time: clock(u.at) }) : '';   // a stale reading says when it was taken
-  return `<small class="meter" title="${esc(t('usage.resets', { when: dfmt(v.resetsAt * 1000, { dateStyle: 'medium', timeStyle: 'short' }) }))}">${esc(tk('usage.window.', k).replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, p)}%"></i></span> ${pct(p / 100)} <span class="reset">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
+  return `<small class="meter" data-guide="usage" title="${esc(t('usage.resets', { when: dfmt(v.resetsAt * 1000, { dateStyle: 'medium', timeStyle: 'short' }) }))}">${esc(tk('usage.window.', k).replace(/_/g, ' '))} <span class="bar"><i style="width:${Math.min(100, p)}%"></i></span> ${pct(p / 100)} <span class="reset">${resetText(v.resetsAt * 1000)}${old}</span></small>`;
 }).join('');
 // Composer warning at 80 % or more of the 5 h window: this seat's own state ("ops at 85% · resets 14:00", plus its own free resets if any).
 // It never names another seat: each seat's limit is its own, work is not moved to dodge it.
@@ -313,12 +313,12 @@ const fold = (() => { try { return JSON.parse(localStorage.getItem('fold') || '{
 const saveFold = () => { try { localStorage.setItem('fold', JSON.stringify(fold)); } catch {} };
 const showMore = {};   // per seat: list every live conversation, not only the newest 12
 let menuFor = null;   // conversation id whose ⋯ menu is open
-const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}" data-id="${c.id}" data-seat="${seat}">
+const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}"${c.pending || c.needsAnswer ? ' data-guide="needs"' : ''} data-id="${c.id}" data-seat="${seat}">
       <span class="dot ${c.status === 'stopped' ? '' : c.status}"></span><span class="t" dir="auto">${c.keep ? `<span class="kept" title="${t('conv.keptTitle')}">★</span> ` : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="${t('ctx.title')} ${esc(ctxText(c.ctx))}">${pct(c.ctx.pct / 100)}</span>` : ''}
       <span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span>
       <small>${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
       ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
-  + (menuFor === c.id ? `<div class="cmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
+  + (menuFor === c.id ? `<div class="cmenu" data-guide="convmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-guide="keep" data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-guide="archive" data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
 
 function showSeats() {
   showQuota(); menuMark();
@@ -327,8 +327,8 @@ function showSeats() {
   $('seats').innerHTML = seats.map((s) => {
     const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = !!fold[s.name];
     const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.keep || c.pending || c.needsAnswer || c.quotaWait || c.unknownActions))) : (showMore[s.name] ? live : live.slice(0, 12)), hidden = f ? live.filter((c) => !shown.includes(c)).length : 0, more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
-    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${t(f ? 'side.unfoldSeat' : 'side.foldSeat')}">${f ? (RTL.includes(LANG) ? '◂' : '▸') : '▾'}</button>${esc(s.name)}</b><small dir="ltr">${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>
-    ${s.remote && !s.control ? '' : `<button data-new="${s.name}" title="${t('side.newConversation')}">+ ${t('side.new')}</button>`}</div>`
+    return `<section class="seatbox ${f ? 'folded' : ''}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}" data-guide="seat"><div><b><button class="foldbtn" data-fold="${esc(s.name)}" aria-expanded="${!f}" title="${t(f ? 'side.unfoldSeat' : 'side.foldSeat')}">${f ? (RTL.includes(LANG) ? '◂' : '▸') : '▾'}</button>${esc(s.name)}</b><small dir="ltr">${esc(s.email)}</small><small class="role" dir="auto">${esc(s.role)}</small>${meter(s.usage)}${resetsBox(s)}</div>
+    ${s.remote && !s.control ? '' : `<button data-guide="new" data-new="${s.name}" title="${t('side.newConversation')}">+ ${t('side.new')}</button>`}</div>`
     + shown.map((c) => convRow(c, s.name)).join('')
     + (hidden ? `<button class="archtoggle" data-fold="${esc(s.name)}">${tn('side.moreConversations', hidden)}</button>` : '')
     + (more > 0 || (!f && showMore[s.name] && live.length > 12) ? `<button class="archtoggle" data-showmore="${esc(s.name)}">${showMore[s.name] ? t('side.showFewer') : t('side.showMore', { n: num(more) })}</button>` : '')
@@ -386,7 +386,7 @@ async function init() {
   if (!seats.find((s) => s.name === cur.seat && (!s.remote || s.control))) cur.seat = seats[0].name;   // a read-only remote group has no "new conversation" draft
   await pick(cur.seat, null, false);
   openHash(); window.addEventListener('hashchange', openHash);
-  loadSettings().then(() => { if (setData?.firstRun && !onSettings()) openSettings('start'); });   // first start: Settings opens by itself (not awaited: detection may take seconds)
+  loadSettings().then(() => { if (setData?.firstRun && !onSettings()) openSettings('start'); offerTour(); });   // offerTour (tour.js): the one-time "quick tour?" question   // first start: Settings opens by itself (not awaited: detection may take seconds)
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
   loadMulti(); setInterval(() => { if (!document.hidden) loadMulti(); }, 60000);
   setInterval(() => { if (!document.hidden) showSeats(); }, 60000);   // keeps the "in 1:12" countdowns and expired windows current
@@ -513,7 +513,7 @@ $('routines').onclick = async (e) => {
   if (r.conversationId) location.hash = r.conversationId;
 };
 // ---- Projects page (#projects) + multi-sided projects (multi.mjs): a brief -> plan on the owner seat -> one tap approves -> each task on the seat fixed for its discipline ----
-let convRefresh, projDir = null, projData = null, projFirst = false, projArchOpen = false, projMoreOpen = false, projOpenRuns = new Set(), projPrefill = null, multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
+let convRefresh, projDir = null, projData = null, projFirst = false, projArchOpen = false, projMoreOpen = false, projOpenRuns = new Set(), projFinOpen = new Set(), startOpen = false, allOpen = false, projPrefill = null, multiData = { projects: [], disciplines: {}, owner: '', folders: [] }, folderQ = '', multiLoaded = false, focusId = null;
 const mstatus = (s) => tk('mstatus.', s);
 const ACTIVE = (p) => !['done', 'cancelled'].includes(p.status);
 const onProjects = () => document.body.classList.contains('projects');
@@ -524,45 +524,58 @@ async function loadMulti() {
 // Sidebar: one entry to the page + the projects still going, each a link to its card.
 function showMultiSide() {
   const act = multiData.projects.filter(ACTIVE), ask = act.filter((p) => p.status === 'plan-ready' || p.status.endsWith('error') || p.tasks.some((t) => ['error', 'stuck', 'needs-answer'].includes(t.status))).length;
-  $('multi').innerHTML = `<h2>🧩 ${t('projects.title')}</h2><button type="button" data-mopen class="${onProjects() ? 'primary' : ''}">${t('projects.open')}${ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''}</button>`
+  $('multi').innerHTML = `<h2>🧩 ${t('projects.title')}</h2><button type="button" data-guide="projects-open" data-mopen class="${onProjects() ? 'primary' : ''}">${t('projects.open')}${ask ? ' · ' + t('projects.needYou', { n: num(ask) }) : ''}</button>`
     + (act.length ? `<div class="mruns">${act.map((p) => `<a class="mline" href="#project/${encodeURIComponent(p.dir)}"><span dir="auto">${esc(p.name)}</span><small>${esc(mstatus(p.status))}${p.tasks.length ? ` · ${num(p.tasks.filter((x) => x.status === 'done').length)}/${num(p.tasks.length)}` : ''}</small></a>`).join('')}</div>` : '');   // a running run opens its project's page
 }
-const convList = (x) => x.convCount ? `<div class="mconvs"><small>${t('projects.convs', { n: num(x.convCount) })}</small>${x.convs.map((c) => `<a class="mline${c.archived ? ' arch' : ''}" href="#${esc(c.id)}"><span dir="auto">${esc(c.title)}</span><small><bdi>${esc(c.seat)}</bdi> · ${esc(label(c.status))}</small></a>`).join('')}</div>` : '';
-function card(p) {
-  const wait = (x, seat) => x.waitUntil ? ' · ' + t('projects.waitsFor', { seat: `<bdi>${esc(seat)}</bdi>`, when: when(x.waitUntil) }) : '';
-  const retry = (task, label = t('projects.retry')) => `<button data-mretry="${esc(p.id)}" data-task="${esc(task)}">${label}</button>`;
-  const tasks = p.tasks.map((k) => `<div class="mtask st-${esc(k.status)}"><div><span dir="auto">${esc(k.title)}</span><small><bdi>${esc(k.discipline)} → ${esc(k.seat)}</bdi> · ${esc(mstatus(k.status))}${k.status === 'pending' ? wait(k, k.seat) : ''}${k.deps.length ? ' · ' + t('projects.after', { tasks: `<bdi>${esc(k.deps.join(', '))}</bdi>` }) : ''}${k.conv ? ` · <a href="#${esc(k.conv)}">${t('projects.openTask')}</a>` : ''}</small>${k.unknownActions ? `<small class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(k.unknownActions) })}</small>` : ''}`
-    + `${k.error || k.sendError ? `<small class="err" dir="auto">${esc(k.error || k.sendError)}</small>` : ''}</div>${['error', 'stuck', 'needs-answer', 'running'].includes(k.status) && p.status === 'running' ? `<div class="racts">${retry(k.id, k.status === 'running' ? t('projects.continue') : t('projects.retry'))}</div>` : ''}</div>`).join('');
-  const acts = (p.status === 'plan-ready' ? `<button class="primary" data-mapprove="${esc(p.id)}">${t('projects.approve')}</button>` : '')
-    + (p.status === 'plan-error' ? retry('plan', t('projects.retryPlan')) : '') + (p.status === 'integrate-error' ? retry('integrate', t('projects.retryIntegration')) : '')
-    + (ACTIVE(p) ? `<button data-mcancelp="${esc(p.id)}">${t('projects.cancel')}</button>` : '');
-  const done = p.tasks.filter((k) => k.status === 'done').length;
-  return `<div class="mproj" id="multi-${esc(p.id)}"><div class="mphead"><b dir="auto">${esc(p.name)}</b><a class="mopen" href="#project/${encodeURIComponent(p.dir)}">${t('projects.openProject')}</a></div><small>${esc(mstatus(p.status))}${p.tasks.length ? ' · ' + t('projects.tasksDone', { done: num(done), n: num(p.tasks.length) }) : ''} · ${t('projects.owner', { seat: `<bdi>${esc(p.owner)}</bdi>` })} · ${t('projects.started', { when: when(p.createdAt) })}${p.status === 'planning' ? wait(p, p.owner) : ''}</small><small dir="ltr"><a href="#project/${encodeURIComponent(p.dir)}">${esc(p.dir)}</a></small>`
-    + `<small>${p.planConv ? `<a href="#${esc(p.planConv)}">${t('projects.planConv')}</a>` : ''}${p.integrateConv ? ` · <a href="#${esc(p.integrateConv)}">${t('projects.integration')}</a>` : ''}</small>`
-    + `${p.error ? `<small class="err">${esc(p.error)}</small>` : ''}${p.sendError ? `<small class="err">${esc(p.sendError)}</small>` : ''}${acts ? `<div class="racts">${acts}</div>` : ''}${tasks}${convList(p)}</div>`;
+// The Projects page shows only the minimum: one compact row per folder with something going on (live conversations opened there or
+// related to it, or a run), its runs as one line each, finished runs behind a toggle. Tasks, conversations and run controls live on the project page.
+const sameDir = (a, b) => a.replace(/[\\/]+$/, '') === b.replace(/[\\/]+$/, '');
+const runLine = (p) => {
+  const done = p.tasks.filter((k) => k.status === 'done').length, hot = p.status === 'plan-ready' || p.status.endsWith('error') || p.tasks.some((k) => ['error', 'stuck', 'needs-answer'].includes(k.status));
+  return `<a class="po-run${ACTIVE(p) ? '' : ' is-done'}" id="multi-${esc(p.id)}" href="#project/${encodeURIComponent(p.dir)}"><span class="po-rn" dir="auto">${esc(p.name)}</span>`
+    + (p.tasks.length ? `<span class="pj-rail po-rail" aria-hidden="true">${p.tasks.map((k) => `<i class="s-${SEG[k.status] || 'queued'}"></i>`).join('')}</span><span class="pj-of">${t('projects.of', { done: num(done), n: num(p.tasks.length) })}</span>` : '')
+    + `<span class="po-st${hot ? ' pj-hot' : ''}">${esc(mstatus(p.status))}</span></a>`;
+};
+function projRow(x, runs) {
+  const parts = x.name.split(/[\\/]/), leaf = parts.pop(), act = runs.filter(ACTIVE), fin = runs.filter((p) => !ACTIVE(p)), r = act.find((p) => p.status === 'running' && p.tasks.length);
+  const last = Math.max(x.last || 0, ...runs.map((p) => p.updatedAt || p.createdAt || 0));
+  const counts = [x.working && `<b>${t('project.pulseWorking', { n: num(x.working) })}</b>`, x.need && `<b class="pj-hot">${t('project.pulseNeed', { n: num(x.need) })}</b>`, last && tm(last)].filter(Boolean).join('<span class="pj-sep" aria-hidden="true"></span>');
+  const prog = r ? r.tasks.filter((k) => k.status === 'done').length / r.tasks.length : 0;
+  return `<li class="po-row${x.need ? ' is-hot' : ''}"><div class="po-head"><a class="po-id" href="#project/${encodeURIComponent(x.dir)}">${parts.length ? `<span class="po-crumb" dir="ltr">${esc(parts.join(' / '))} /</span>` : ''}<b dir="auto">${esc(leaf)}</b></a>`
+    + `<span class="po-counts">${counts}</span><a class="mopen" data-guide="open-project" href="#project/${encodeURIComponent(x.dir)}">${t('projects.openProject')}</a></div>`
+    + (r ? `<span class="po-prog" aria-hidden="true"><i style="width:${Math.round(prog * 100)}%"></i></span>` : '')
+    + act.map(runLine).join('')
+    + (fin.length ? `<details class="po-fin" data-fin="${esc(x.dir)}"${projFinOpen.has(x.dir) ? ' open' : ''}><summary>${t('projects.finishedN', { n: num(fin.length) })}</summary>${fin.map(runLine).join('')}</details>` : '') + `</li>`;
 }
 function folderList() {
-  const q = folderQ.trim().toLowerCase(), all = multiData.folders || [], hits = q ? all.filter((f) => f.name.toLowerCase().includes(q)) : all;
-  return hits.slice(0, 40).map((f) => `<div class="mfolder"><div><a href="#project/${encodeURIComponent(f.dir)}" dir="ltr">${esc(f.name)}</a><small>${f.mtime ? t('projects.touched', { when: when(f.mtime) }) : ''}</small></div><span class="racts"><a class="mopen" href="#project/${encodeURIComponent(f.dir)}">${t('projects.openProject')}</a><button data-mstart="${esc(f.dir)}" data-mname="${esc(f.name.split(/[\\/]/).pop())}">${t('projects.start')}</button><button data-mchat="${esc(f.dir)}">${t('projects.newChat')}</button></span></div>${convList(f)}`).join('')
+  const q = folderQ.trim().toLowerCase(), all = quietFolders(), hits = q ? all.filter((f) => f.name.toLowerCase().includes(q)) : all;
+  return hits.slice(0, 40).map((f) => `<div class="mfolder"><a href="#project/${encodeURIComponent(f.dir)}" dir="ltr">${esc(f.name)}</a><span class="racts"><a class="mopen" href="#project/${encodeURIComponent(f.dir)}">${t('projects.openProject')}</a><button data-mchat="${esc(f.dir)}">${t('projects.newChat')}</button></span></div>`).join('')
     + (hits.length > 40 ? `<small>${t('projects.moreFolders', { n: num(hits.length - 40) })}</small>` : '') + (!hits.length ? `<small>${t('projects.noFolder')}</small>` : '');
 }
+// A folder is active with a live conversation opened in it or related to it, or a run that is still going.
+const isActive = (x, runs) => x.live || x.related || runs.some(ACTIVE);
+const runsOf = (dir) => multiData.projects.filter((p) => sameDir(p.dir, dir));
+const quietFolders = () => (multiData.folders || []).filter((f) => !isActive(f, runsOf(f.dir)));
 function showProjects() {
   const old = $('mform'), keep = old && { name: old.name.value, dir: old.dir.value, owner: old.owner.value, brief: old.brief.value };   // a re-render never loses a half-typed project
-  const seatsOpt = [...new Set([multiData.owner, ...Object.values(multiData.disciplines)])];
-  const act = multiData.projects.filter(ACTIVE), done = multiData.projects.filter((p) => !ACTIVE(p));
+  const seatsOpt = [...new Set([multiData.owner, ...Object.values(multiData.disciplines)])], folders = multiData.folders || [];
+  // rows: active folders, plus a run whose folder is not listed (its own row, named by its dir); needs-you first, then the latest activity
+  const lone = multiData.projects.filter((p) => !folders.some((f) => sameDir(f.dir, p.dir))).map((p) => p.dir).filter((d, i, a) => a.findIndex((x) => sameDir(x, d)) === i);
+  const rows = [...folders.filter((f) => isActive(f, runsOf(f.dir))), ...lone.map((d) => ({ ...runsOf(d)[0], name: d.split(/[\\/]/).slice(-2).join('/'), dir: d }))]
+    .map((x) => ({ x, runs: runsOf(x.dir), last: Math.max(x.last || 0, ...runsOf(x.dir).map((p) => p.updatedAt || p.createdAt || 0)) })).sort((a, b) => (b.x.need || 0) - (a.x.need || 0) || b.last - a.last);
+  const quiet = quietFolders().length;
   // ☰ (phone: opens the seat list) and Close (back to the conversation), like the Settings page: without them a phone had no way back
   $('projects').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-pdrawer aria-label="${t('side.seats')}">☰</button><div><h2>🧩 ${t('projects.title')}</h2><small>${t('projects.intro')}</small></div><button type="button" data-pclose>${t('common.close')}</button></header>`
-    + `<div class="pgrid"><div class="pcol">`
+    + `<div class="po">`
     + (multiData.off ? `<p class="err">${t('projects.off')} <bdi>${esc(multiData.off)}</bdi></p>` : '')
-    + `<form id="mform"${multiData.off ? ' hidden' : ''}><h3>${t('projects.startTitle')}</h3><input name="name" placeholder="${t('projects.namePh')}" required dir="auto"><input name="dir" placeholder="${t('projects.dirPh')}" dir="auto" spellcheck="false">`
+    + `<details class="po-start" data-guide="run-form"${startOpen ? ' open' : ''}${multiData.off ? ' hidden' : ''}><summary>${t('projects.startRun')}</summary><form id="mform"><input name="name" placeholder="${t('projects.namePh')}" aria-label="${t('projects.namePh')}" required dir="auto"><input name="dir" placeholder="${t('projects.dirPh')}" aria-label="${t('projects.dirPh')}" dir="auto" spellcheck="false">`
     + `<label>${t('projects.ownerLabel')} <select name="owner">${seatsOpt.map((s) => `<option${s === multiData.owner ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></label>`
-    + `<textarea name="brief" rows="7" placeholder="${t('projects.briefPh')}" required dir="auto"></textarea>`
-    + `<small dir="ltr">${Object.entries(multiData.disciplines).map(([d, s]) => `${esc(d)}→${esc(s)}`).join(' · ')}</small><div class="racts"><button type="submit" class="primary">${t('projects.plan')}</button></div></form>`
-    + `<h3>${t('projects.folders')}</h3><input id="mfq" type="search" placeholder="${t('projects.filterPh')}" value="${esc(folderQ)}" dir="auto" spellcheck="false"><div id="mfolders">${folderList()}</div></div>`
-    + `<div class="pcol"><h3>${t('projects.running', { n: num(act.length) })}</h3>${act.map(card).join('') || `<small>${t('projects.nothingRunning')}</small>`}`
-    + (done.length ? `<h3>${t('projects.finished')}</h3>${done.map(card).join('')}` : '') + `</div></div>`;
+    + `<textarea name="brief" rows="7" placeholder="${t('projects.briefPh')}" aria-label="${t('projects.briefPh')}" required dir="auto"></textarea>`
+    + `<small dir="ltr">${Object.entries(multiData.disciplines).map(([d, s]) => `${esc(d)}→${esc(s)}`).join(' · ')}</small><div class="racts"><button type="submit" class="primary">${t('projects.plan')}</button></div></form></details>`
+    + (rows.length ? `<ol class="po-list" data-guide="folders">${rows.map(({ x, runs }) => projRow(x, runs)).join('')}</ol>` : `<p class="pj-quiet">${t('projects.nothingRunning')}</p>`)
+    + `<details class="po-all"${allOpen ? ' open' : ''}><summary>${t('projects.allFolders', { n: num(quiet) })}</summary><input id="mfq" type="search" placeholder="${t('projects.filterPh')}" aria-label="${t('projects.filterPh')}" value="${esc(folderQ)}" dir="auto" spellcheck="false"><div id="mfolders">${folderList()}</div></details></div>`;
   const f = $('mform'); if (keep) for (const k of ['name', 'dir', 'owner', 'brief']) if (keep[k]) f[k].value = keep[k];
-  if (projPrefill) { f.dir.value = projPrefill.dir; if (!f.name.value) f.name.value = projPrefill.name; projPrefill = null; f.scrollIntoView({ block: 'start' }); f.brief.focus(); }   // "Start a run here" on a project page
+  if (projPrefill) { startOpen = f.parentElement.open = true; f.dir.value = projPrefill.dir; if (!f.name.value) f.name.value = projPrefill.name; projPrefill = null; f.scrollIntoView({ block: 'start' }); f.brief.focus(); }   // "Start a run here" on a project page
 }
 // One project's page (#project/<dir>): what is going on in that folder. Data: GET /api/project.
 const NEED = { perms: 'project.needPerms', answer: 'project.needAnswer', quota: 'project.needQuota', error: 'project.needError' };
@@ -581,9 +594,9 @@ function renderProject() {
   const menu = `<button type="button" class="smenu" data-pdrawer aria-label="${t('side.seats')}">${ico(ICO.menu)}</button>`;
   if (d?.error) projFirst = false;   // an error page is the first paint too
   if (!d || d.error) return $('projects').innerHTML = `<div class="pj"><header class="pj-hero"><div class="pj-top">${menu}${back}</div><h1 class="pj-name"><bdi dir="auto">${esc(leaf)}</bdi></h1><p class="pj-pulse">${d ? t('project.notFound') : ''}</p></header></div>`;
-  const all = [...d.convs, ...d.archived], need = all.filter((c) => c.need.length), live = d.convs.filter((c) => !c.need.length);   // a conversation that needs you shows only there
+  const rel = d.related || [], all = [...d.convs, ...d.archived], need = [...all, ...rel].filter((c) => c.need.length), live = d.convs.filter((c) => !c.need.length);   // a conversation that needs the user shows only there
   const arch = d.archived.filter((c) => !c.need.length), work = live.filter((c) => ['working', 'waiting'].includes(c.status)), idle = live.filter((c) => !work.includes(c)), g = d.git, md = d.handoff;
-  const last = Math.max(d.mtime || 0, ...all.map((c) => c.updatedAt || 0), ...(g?.commits || []).map((k) => (k.at || 0)));
+  const last = Math.max(d.mtime || 0, ...all.map((c) => c.updatedAt || 0), ...rel.map((c) => c.updatedAt || 0), ...(g?.commits || []).map((k) => (k.at || 0)));
   const pulse = [`<b>${t('project.pulseWorking', { n: num(work.length) })}</b>`, need.length && `<b class="pj-hot">${t('project.pulseNeed', { n: num(need.length) })}</b>`, last && t('project.pulseLast', { when: tm(last) })].filter(Boolean).join('<span class="pj-sep" aria-hidden="true"></span>');
   const head = (k, n) => `<h2 class="pj-h">${t(k)}${n ? ` <span class="pj-count">${num(n)}</span>` : ''}</h2>`;
   const meta = (c, ...pre) => `<span class="pj-meta">${[...pre, `<bdi dir="ltr" class="pj-num">${usd(c.cost || 0)}</bdi>`, tm(c.updatedAt)].join('<span class="pj-sep" aria-hidden="true"></span>')}</span>`;
@@ -594,18 +607,25 @@ function renderProject() {
     + `<p class="pj-pulse">${pulse}</p>${g ? `<div class="pj-chips"><span class="pj-chip" dir="ltr">${ico(ICO.branch)}${esc(g.branch)}</span><span class="pj-chip ${g.dirty ? 'is-dirty' : 'is-clean'}">${t(g.dirty ? 'project.dirty' : 'project.clean')}</span></div>` : ''}</div>`
     + `<div class="pj-cta"><button class="primary" data-mchat="${esc(projDir)}">${t('projects.newChat')}</button><button data-mrun="${esc(projDir)}" data-mname="${esc(leaf)}">${t('project.startRun')}</button></div></div></header>`;
   const attn = need.length
-    ? `<section class="pj-attn" aria-labelledby="pj-attn-h"><div class="pj-attnhead"><span class="pj-count">${num(need.length)}</span><h2 class="pj-h" id="pj-attn-h">${t('project.needs')}</h2></div><ul>${need.map((c) => `<li><a class="pj-need" href="${cv(c.id)}"><span class="pj-why">${c.need.map((k) => t(NEED[k])).join(' · ')}</span><span class="pj-rt" dir="auto">${ttl(c)}</span>${meta(c, `<bdi>${esc(c.seat)}</bdi>`)}<span class="pj-go">${t('project.open')}${ico(ICO.arrow, 'fl')}</span></a></li>`).join('')}</ul></section>`
-    : `<section class="pj-clear">${ico(ICO.check)}<div><b>${t('project.allClear')}</b><span>${t('project.allClearSub')}</span></div></section>`;
-  const working = `<section class="pj-sec pj-work">${head('project.working', work.length)}`
+    ? `<section class="pj-attn" data-guide="pj-needs" aria-labelledby="pj-attn-h"><div class="pj-attnhead"><span class="pj-count">${num(need.length)}</span><h2 class="pj-h" id="pj-attn-h">${t('project.needs')}</h2></div><ul>${need.map((c) => `<li><a class="pj-need" href="${cv(c.id)}"><span class="pj-why">${c.need.map((k) => t(NEED[k])).join(' · ')}${rel.includes(c) ? `<span class="pj-tag">${t('project.relatedTag')}</span>` : ''}</span><span class="pj-rt" dir="auto">${ttl(c)}</span>${meta(c, `<bdi>${esc(c.seat)}</bdi>`)}<span class="pj-go">${t('project.open')}${ico(ICO.arrow, 'fl')}</span></a></li>`).join('')}</ul></section>`
+    : `<section class="pj-clear" data-guide="pj-needs">${ico(ICO.check)}<div><b>${t('project.allClear')}</b><span>${t('project.allClearSub')}</span></div></section>`;
+  const working = `<section class="pj-sec pj-work" data-guide="pj-working">${head('project.working', work.length)}`
     + (spot ? `<a class="pj-spot" href="${cv(spot.id)}"><span class="pj-spotseat">${meter(spot)}<bdi>${esc(spot.seat)}</bdi><span>${esc(label(spot.status))}</span></span><span class="pj-spott" dir="auto">${ttl(spot)}</span>${meta(spot)}</a>` : `<p class="pj-quiet">${t('project.noWorking')}</p>`)
     + (work.length > 1 ? `<div class="pj-list">${work.slice(1).map(row).join('')}</div>` : '') + `</section>`;
-  const runs = d.runs.length ? `<section class="pj-sec pj-runs">${head('project.runs')}${d.runs.map(pjRun).join('')}</section>` : '';
+  const runs = d.runs.length ? `<section class="pj-sec pj-runs" data-guide="pj-runs">${head('project.runs')}${d.runs.map(pjRun).join('')}</section>` : '';
+  // Related (touched.mjs on the server): conversations opened elsewhere that edited or read files here. Most edits first.
+  const why = (c) => [c.w && tn('project.edited', c.w), c.r && tn('project.read', c.r)].filter(Boolean).join(' · ');
+  const relRow = (c) => `<div class="pj-row pj-relrow${c.archived ? ' is-arch' : ''}">${dot(c)}<div class="pj-relmain"><a class="pj-rt" href="${cv(c.id)}" dir="auto">${ttl(c)}</a>${meta(c, `<bdi>${esc(c.seat)}</bdi>`, esc(label(c.status)), `<span class="pj-why">${why(c)}</span>`)}</div>`
+    + `<div class="pj-relacts"><button type="button" data-pin="${esc(c.id)}">${t('project.pin')}</button><button type="button" data-notrel="${esc(c.id)}">${t('project.notRelated')}</button></div></div>`;
+  const opened = d.convs.length + d.archivedCount;   // a related one that needs the user stays in Related too: Not related must be reachable
+  const branch = (cls, k, n, body) => `<section class="pj-branch ${cls}"><h2 class="pj-bh">${t(k)} <span class="pj-num">${num(n)}</span></h2><div class="pj-twig">${body}</div></section>`;
   const rest = `<section class="pj-sec">${head('project.idle', idle.length)}<div class="pj-list">${idle.map(row).join('') || `<p class="pj-quiet">${t('project.noConvs')}</p>`}</div>`
     + (arch.length ? `<details class="pj-arch"${projArchOpen ? ' open' : ''}><summary>${t('project.archived')} <span class="pj-num">${num(arch.length + d.archivedCount - d.archived.length)}</span></summary><div class="pj-list">${arch.map(row).join('')}</div></details>` : '') + `</section>`;
-  const side = (md ? `<section class="pj-sec pj-read">${head('project.happening')}<div class="pj-md" dir="auto">${pjMd(md.text)}</div><small class="pj-src" dir="ltr">${t('project.handoffNote', { file: esc(md.file) })}</small></section>` : '')
+  const side = (md ? `<section class="pj-sec pj-read" data-guide="pj-happening">${head('project.happening')}<div class="pj-md" dir="auto">${pjMd(md.text)}</div><small class="pj-src" dir="ltr">${t('project.handoffNote', { file: esc(md.file) })}</small></section>` : '')
     + (g?.commits.length ? `<section class="pj-sec pj-git"><h2 class="pj-h">${t('project.commits')}</h2>`
       + `<ol class="pj-log">${g.commits.map((k) => `<li><code dir="ltr">${esc(k.hash)}</code><span dir="auto">${esc(k.subject)}</span>${k.at ? tm(k.at) : ''}</li>`).join('')}</ol></section>` : '');
-  $('projects').innerHTML = `<div class="pj${projFirst ? ' enter' : ''}${side ? '' : ' no-side'}">${hero}${attn}<div class="pj-grid"><div class="pj-main">${working}${runs}<div class="pj-rest">${rest}</div></div>${side ? `<div class="pj-side">${side}</div>` : ''}</div></div>`;
+  const tree = branch('pj-opened', 'project.opened', opened, `${working}<div class="pj-rest">${rest}</div>`), related = rel.length ? branch('pj-relb', 'project.related', d.relatedCount, `<div class="pj-list">${rel.map(relRow).join('')}</div>`) : '';
+  $('projects').innerHTML = `<div class="pj${projFirst ? ' enter' : ''}${side ? '' : ' no-side'}">${hero}${attn}<div class="pj-grid"><div class="pj-main">${tree}${runs}${related}</div>${side ? `<div class="pj-side">${side}</div>` : ''}</div></div>`;
   projFirst = false;
 }
 // A run of this folder: a segmented rail (one segment per task), the task being worked on, every task behind "Show all tasks"; same buttons as its card on the Projects page.
@@ -661,7 +681,7 @@ function renderPbar(focusCur) {
   bar.hidden = false;
   bar.innerHTML = `<div class="pb-top"><a class="pb-back" href="${base}">${ico(ICO.back, 'fl')}<span>${t('project.backTo')}</span></a>`
     + `<a class="pb-name" href="${base}">${parts.length ? `<span dir="ltr">${esc(parts.join(' / '))} /</span>` : ''}<b dir="auto">${esc(leaf)}</b></a>`
-    + `<button type="button" class="pb-new" data-pbnew>${t('projects.newChat')}</button>${cur.id ? `<button type="button" class="pb-mv" data-pbmove>${t('conv.moveProject')}</button>` : ''}</div>`
+    + `<button type="button" class="pb-new" data-pbnew>${t('projects.newChat')}</button>${cur.id ? `<button type="button" class="pb-mv" data-guide="pb-move" data-pbmove>${t('conv.moveProject')}</button>` : ''}</div>`
     + (items ? `<nav class="pb-sw" aria-label="${t('project.switcher')}">${items}</nav>` : '');
   if (focusCur) bar.querySelector('.pb-c.on')?.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
@@ -750,6 +770,9 @@ $('projects').addEventListener('toggle', (e) => {   // a refresh keeps Archived 
   if (e.target.classList?.contains('pj-arch')) projArchOpen = e.target.open;
   else if (e.target.classList?.contains('pj-more')) projMoreOpen = e.target.open;
   else if (e.target.dataset?.run) projOpenRuns[e.target.open ? 'add' : 'delete'](e.target.dataset.run);
+  else if (e.target.dataset?.fin) projFinOpen[e.target.open ? 'add' : 'delete'](e.target.dataset.fin);
+  else if (e.target.classList?.contains('po-start')) startOpen = e.target.open;
+  else if (e.target.classList?.contains('po-all')) allOpen = e.target.open;
 }, true);
 $('projects').oninput = (e) => { if (e.target.id === 'mfq') { folderQ = e.target.value; $('mfolders').innerHTML = folderList(); } };
 $('projects').onclick = async (e) => {
@@ -758,8 +781,8 @@ $('projects').onclick = async (e) => {
   const mr = e.target.closest('[data-mrun]'); if (mr) { projPrefill = { dir: mr.dataset.mrun, name: mr.dataset.mname }; if (location.hash === '#projects') openProjects(); else location.hash = 'projects'; return; }
   if (e.target.closest('[data-pdrawer]')) return document.body.classList.add('drawer');
   const nc = e.target.closest('[data-mchat]'); if (nc) return newInProject(nc.dataset.mchat);
-  const st = e.target.closest('[data-mstart]');
-  if (st) { const f = $('mform'); f.dir.value = st.dataset.mstart; if (!f.name.value) f.name.value = st.dataset.mname; f.scrollIntoView({ block: 'start' }); f.brief.focus(); return; }
+  const pin = e.target.closest('[data-pin]'), nr = e.target.closest('[data-notrel]');   // a related conversation: Pin = Move to project (this one); Not related = hidden here
+  if (pin || nr) { const r = await api(pin ? '/api/conv-project' : '/api/not-related', { conversationId: (pin || nr).dataset[pin ? 'pin' : 'notrel'], dir: projDir }); if (r.error) return alert(r.error); return loadMulti(); }
   const ap = e.target.closest('[data-mapprove]'), rt = e.target.closest('[data-mretry]'), cp = e.target.closest('[data-mcancelp]');
   if (ap && !confirm(t('projects.confirmApprove'))) return;
   if (cp && !confirm(t('projects.confirmCancel'))) return;
@@ -906,7 +929,7 @@ const newDraftId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), (
 let draftId = newDraftId();
 function showThumbs() {
   const box = $('thumbs'); box.hidden = !pending.length;
-  box.innerHTML = pending.map((p, i) => `<span class="thumbwrap">${p.file ? `<span class="fchip" dir="ltr">📎 <bdi>${esc(p.name)}</bdi> · ${sizeText(p.size)}</span>` : `<img class="thumb" alt="${t('composer.attachedImage')}" src="${p.url}">`}<button type="button" data-rm="${i}" aria-label="${t(p.file ? 'composer.removeFile' : 'composer.removeImage')}">×</button></span>`).join('');
+  box.innerHTML = pending.map((p, i) => `<span class="thumbwrap">${p.file ? `<span class="fchip" dir="ltr">📎 <bdi>${esc(p.name)}</bdi> · ${sizeText(p.size)}</span>` : `<img class="thumb" role="button" tabindex="0" data-edit="${i}" alt="${t('composer.attachedImage')}" aria-label="${t('imgedit.edit')}" title="${t('imgedit.edit')}" src="${p.url}">`}<button type="button" data-rm="${i}" aria-label="${t(p.file ? 'composer.removeFile' : 'composer.removeImage')}">×</button></span>`).join('');
 }
 // The API refuses images over 5 MB, so big phone photos are re-encoded smaller in the browser first.
 async function shrink(f) {
@@ -925,14 +948,35 @@ async function attach(files) {
     const r = await fetch('/api/upload' + (cur.id ? '?conv=' + cur.id : '?draft=' + draftId) + '&name=' + encodeURIComponent(name || 'file'), { method: 'POST', headers: { 'X-Seat-Token': TOKEN }, body: f })
       .then((x) => x.json(), () => ({ error: t('composer.uploadFailed') }));
     if (r.error) { $('log').appendChild(div('msg note err', esc(`${name}: ${r.error}`))); continue; }
-    pending.push(r.file ? { id: r.id, file: true, name: r.name, size: r.size } : { id: r.id, url: URL.createObjectURL(f) });
+    pending.push(r.file ? { id: r.id, file: true, name: r.name, size: r.size } : { id: r.id, url: URL.createObjectURL(f), name });
   }
   showThumbs();
 }
 $('attach').onclick = () => $('file').click();
 $('file').onchange = () => { attach([...$('file').files]); $('file').value = ''; };
-$('thumbs').onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { pending.splice(+b.dataset.rm, 1); showThumbs(); } };
-$('text').addEventListener('paste', (e) => { const fs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/')); if (fs.length) { e.preventDefault(); attach(fs); } });
+$('thumbs').onclick = (e) => { const b = e.target.closest('[data-rm]'); if (b) { pending.splice(+b.dataset.rm, 1); showThumbs(); } else if (e.target.dataset.edit) editPending(+e.target.dataset.edit); };
+$('thumbs').onkeydown = (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.edit) { e.preventDefault(); editPending(+e.target.dataset.edit); } };
+// The edited PNG goes through attach() like any file, then takes the old attachment's place.
+async function editPending(i) {
+  const p = pending[i], f = await editImage(p.url, p.name).catch(() => null); if (!f) return;
+  const n = pending.length; await attach([f]);
+  if (pending.length > n) { pending.splice(i, 1, pending.splice(n, 1)[0]); showThumbs(); }
+}
+// Clipboard images (desktop screenshots; iOS/Android long-press Paste put the image in clipboardData.items, sometimes not in .files) get a
+// paste-YYYYMMDD-HHMMSS.ext name instead of the browser's "image.png". Plain-text paste is left to the textarea.
+const imagesOf = (dt) => [...(dt?.files || [])].filter((f) => f.type.startsWith('image/'));
+function pastedImages(dt) {
+  let fs = imagesOf(dt);
+  if (!fs.length) fs = [...(dt?.items || [])].filter((i) => i.kind === 'file' && i.type.startsWith('image/')).map((i) => i.getAsFile()).filter(Boolean);
+  const d = new Date(), z = (n) => String(n).padStart(2, '0'), stamp = `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+  return fs.map((f, i) => new File([f], `paste-${stamp}${fs.length > 1 ? '-' + (i + 1) : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/\+.*/, '')}`, { type: f.type }));
+}
+$('text').addEventListener('paste', (e) => { const fs = pastedImages(e.clipboardData); if (fs.length) { e.preventDefault(); attach(fs); } });
+// Drag and drop onto the composer: any file, same path as the Attach button. dragover must be cancelled or the browser opens the file instead.
+const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+$('composer').addEventListener('dragover', (e) => { if (isFileDrag(e)) { e.preventDefault(); $('composer').classList.add('dropping'); } });
+$('composer').addEventListener('dragleave', (e) => { if (!$('composer').contains(e.relatedTarget)) $('composer').classList.remove('dropping'); });
+$('composer').addEventListener('drop', (e) => { if (!isFileDrag(e)) return; e.preventDefault(); $('composer').classList.remove('dropping'); if (!$('attach').hidden) attach([...e.dataTransfer.files]); });
 // ---- Settings page (#settings, server: settings.mjs + /api/settings*): what is set up, what is turned on. First run (no settings.json) opens it with a checklist. ----
 let setData = null, setTab = 'start', draft = null, setNote = null;   // setNote: { tab, html } the last action's result (a login command, an error)
 const onSettings = () => document.body.classList.contains('settings');
@@ -962,7 +1006,7 @@ function checklist() {
   return `<ol class="scheck">${rows.map(([tab, title, ok, text]) => `<li class="${ok ? 'done' : ''}"><span class="smark">${ok ? '✓' : ''}</span><span><b>${title}</b><small>${esc(text)}</small></span><button type="button" data-stab="${tab}">${t('set.open')}</button></li>`).join('')}</ol>`;
 }
 // Settings > Language: the language's own name; '' = the browser's language (the bot then speaks English).
-const langRow = () => `<label class="snum"><span><b>${t('set.lang.title')}</b><small>${t('set.lang.hint')}</small></span><select data-set="language" data-str="1"><option value="">${t('set.lang.auto')}</option>`
+const langRow = () => `<label class="snum" data-guide="set-lang"><span><b>${t('set.lang.title')}</b><small>${t('set.lang.hint')}</small></span><select data-set="language" data-str="1"><option value="">${t('set.lang.auto')}</option>`
   + Object.entries(setData.languages || {}).map(([c, n]) => `<option value="${c}" lang="${c}"${draft.language === c ? ' selected' : ''}>${esc(n)}</option>`).join('') + '</select></label>';
 function seatRow(s) {
   const kind = s.agent === 'codex' ? 'Codex' : s.agent === 'agy' ? 'Antigravity' : 'Claude';
@@ -1003,13 +1047,13 @@ const TABS = {
     + tog('quotaWarning', t('set.usage.warn', { pct: pct(0.9) }), t('set.usage.warnHint', { pct: pct(0.9) }))
     + `<h3>${t('set.usage.resets')}</h3>` + tog('claudeResets', t('set.usage.claudeResets'), t('set.usage.claudeResetsHint'))
     + tog('codexResets', t('set.usage.codexResets'), t('set.usage.codexResetsHint', { cmd: '<code dir="ltr">codex app-server</code>' }))
-    + `<h3>${t('set.usage.housekeeping')}</h3><label class="snum"><span><b>${t('set.usage.archive')}</b><small>${t('set.usage.archiveHint')}</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> ${t('set.usage.days')}</label>`
+    + `<h3>${t('set.usage.housekeeping')}</h3><label class="snum" data-guide="archive-days"><span><b>${t('set.usage.archive')}</b><small>${t('set.usage.archiveHint')}</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> ${t('set.usage.days')}</label>`
     + `<label class="snum"><span><b>${t('set.usage.reap')}</b><small>${t('set.usage.reapHint')}</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> ${t('set.usage.min')}</label>`
-    + `<label class="snum"><span><b>${t('set.usage.archiveDone')}</b><small>${t('set.usage.archiveDoneHint')}</small></span><input type="number" min="0" max="10080" data-set="autoArchiveDoneMin" value="${draft.autoArchiveDoneMin}"> ${t('set.usage.min')}</label>`,
+    + `<label class="snum" data-guide="archive-done"><span><b>${t('set.usage.archiveDone')}</b><small>${t('set.usage.archiveDoneHint')}</small></span><input type="number" min="0" max="10080" data-set="autoArchiveDoneMin" value="${draft.autoArchiveDoneMin}"> ${t('set.usage.min')}</label>`,
   projects: () => {
     const d = setData.disciplines || { owner: setData.detected.seats[0]?.name, disciplines: {} };
     return `<h3>${t('set.proj.title')}</h3>` + tog('multiProjects', t('set.proj.page'), t('set.proj.pageHint'))
-      + `<label class="snum"><span><b>${t('set.proj.fresh')}</b><small>${t('set.proj.freshHint')}</small></span><input type="number" min="0" max="95" data-set="projectsFreshAtPct" value="${draft.projectsFreshAtPct ?? 40}"> %</label>`
+      + `<label class="snum" data-guide="set-fresh"><span><b>${t('set.proj.fresh')}</b><small>${t('set.proj.freshHint')}</small></span><input type="number" min="0" max="95" data-set="projectsFreshAtPct" value="${draft.projectsFreshAtPct ?? 40}"> %</label>`
       + `<h3>${t('set.proj.disciplines')}</h3><form class="sform" data-form="disc"><small><b>${t('set.proj.rule')}</b></small>`
       + `<label>${t('set.proj.owner')} <select name="owner">${seatOpts(d.owner)}</select></label><div id="discrows">${Object.entries(d.disciplines).map(([k, v]) => discRow(k, v)).join('') || discRow()}</div>`
       + `<div class="racts"><button type="button" data-discadd>${t('set.proj.add')}</button><button type="submit" class="primary">${t('set.proj.save')}</button></div>${setData.disciplines?.off ? `<small class="sno">${t('set.proj.nowOff')} <bdi>${esc(setData.disciplines.off)}</bdi></small>` : ''}</form>`;
@@ -1037,7 +1081,7 @@ function showSettings() {
     + (setData.firstRun && setTab === 'start' ? `<p class="sfirst"><b>${t('set.first.title')}</b><span>${t('set.first.text')}</span></p>` : '')
     + (setData.error ? `<p class="sbar err" dir="auto">${esc(setData.error)}</p>` : '')
     + (setData.restartNeeded ? `<p class="sbar"><span>${t('set.restartNote')}${sup ? '' : ' ' + t('set.noSupervisor')}</span><button type="button" class="primary" data-restart>${t('set.restartNow')}</button></p>` : '')
-    + `<nav class="stabs" role="tablist">${STABS.map((k) => `<button type="button" role="tab" data-stab="${k}" aria-selected="${k === setTab}">${t('set.tab.' + k)}</button>`).join('')}</nav>`
+    + `<nav class="stabs" role="tablist">${STABS.map((k) => `<button type="button" role="tab" data-guide="tab-${k}" data-stab="${k}" aria-selected="${k === setTab}">${t('set.tab.' + k)}</button>`).join('')}</nav>`
     + `<div class="spanel">${setNote && setNote.tab === setTab ? `<p class="snote ${setNote.err ? 'err' : ''}">${setNote.html}</p>` : ''}${TABS[setTab]()}</div>`
     + `<div class="ssave"${setData.firstRun || dirty() ? '' : ' hidden'}><span>${t(setData.firstRun ? 'set.nothingSaved' : 'set.unsaved')}</span><button type="button" data-ssave class="primary">${t('common.save')}</button></div>`;
   box.scrollTop = y;
@@ -1064,11 +1108,11 @@ function showGuide() {
   const names = { settings: b('set.title'), foldAll: b('side.foldAll'), use: b('usage.use'), new: b('side.new'), auto: b('mode.auto'), ask: b('mode.ask'), bypass: b('mode.bypass'), effort: b('composer.effort'), chip: b('composer.projectAuto'),
     attach: b('composer.attach'), stop: b('composer.stop'), allow: b('perm.allow'), deny: b('perm.deny'), needsApproval: b('status.waiting'), needsAnswer: b('conv.needsAnswer'), closeQuestion: b('conv.closeQuestion'),
     keep: b('conv.keep'), archive: b('conv.archive'), showArchived: b('side.showArchived', { n: '…' }), move: b('conv.moveProject'), tabUsage: b('set.tab.usage'), archiveDone: b('set.usage.archiveDone'), archiveDays: b('set.usage.archive'),
-    openProjects: b('projects.open'), openProject: b('projects.openProject'), newChat: b('projects.newChat'), start: b('projects.start'), startTitle: b('projects.startTitle'), plan: b('projects.plan'), approve: b('projects.approve'),
-    needs: b('project.needs'), allClear: b('project.allClear'), working: b('project.working'), runs: b('project.runs'), allTasks: b('project.allTasks'), happening: b('project.happening'), backTo: b('project.backTo'),
+    openProjects: b('projects.open'), openProject: b('projects.openProject'), newChat: b('projects.newChat'), allFolders: b('projects.allFolders', { n: '…' }), startRun: b('projects.startRun'), plan: b('projects.plan'), approve: b('projects.approve'),
+    needs: b('project.needs'), allClear: b('project.allClear'), working: b('project.working'), runs: b('project.runs'), allTasks: b('project.allTasks'), happening: b('project.happening'), backTo: b('project.backTo'), opened: b('project.opened'), related: b('project.related'), pin: b('project.pin'), notRelated: b('project.notRelated'),
     tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
   $('guide').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-gdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('guide.title')}</h2><small>${t('guide.subtitle')}</small></div><button type="button" data-gclose>${t('common.close')}</button></header>`
-    + `<div class="gd">${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p></section>`).join('')}</div>`;
+    + `<div class="gd"><p class="gd-full"><button type="button" class="primary" data-gtour="full">${t('tour.full')}</button></p>${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p><button type="button" class="gd-show" data-gtour="${k}">${t('tour.show')}</button></section>`).join('')}</div>`;
 }
 function openGuide() {
   closeSettings(); closeProjects(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
@@ -1079,7 +1123,7 @@ function closeGuide() {
   if (location.hash === '#guide') history.replaceState(null, '', location.pathname + location.search);
 }
 $('guidebtn').onclick = () => { if (location.hash === '#guide') openGuide(); else location.hash = 'guide'; };
-$('guide').onclick = (e) => { if (e.target.closest('[data-gclose]')) return closeGuide(); if (e.target.closest('[data-gdrawer]')) document.body.classList.add('drawer'); };
+$('guide').onclick = (e) => { const g = e.target.closest('[data-gtour]'); if (g) return startTour(g.dataset.gtour); if (e.target.closest('[data-gclose]')) return closeGuide(); if (e.target.closest('[data-gdrawer]')) document.body.classList.add('drawer'); };
 const note = (html, err) => { setNote = { tab: setTab, html, err }; };
 async function settingsAct(path, body, okHtml) {
   const r = await api(path, body).catch((x) => ({ error: String(x) }));

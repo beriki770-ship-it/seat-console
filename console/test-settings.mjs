@@ -32,6 +32,8 @@ t('read: missing = first run with defaults; a broken file = defaults + the reaso
   assert.equal(r.firstRun, false); assert.equal(r.settings.claudeResets, false); assert.match(r.error, /claudeResets/);
   fs.writeFileSync(file, '{"claudeResets": true, "models": {"gone": "x", "dev": "m"}}');   // a removed seat's model does not throw the file away
   assert.deepEqual(readSettings(file, { seats }).settings.models, { dev: 'm' }); assert.equal(readSettings(file, { seats }).settings.claudeResets, true);
+  fs.writeFileSync(file, '{"guideOffered": "later"}'); assert.equal(readSettings(file, { seats }).firstRun, true); assert.equal(readSettings(file, { seats }).settings.guideOffered, 'later');   // the tour answer alone keeps the first run
+  assert.throws(() => validateSettings({ guideOffered: 'yes' }, seats), /guideOffered/);
 });
 t('atomic write: whole file, no temp left, read back', () => {
   writeJsonAtomic(file, { ...defaults({ seats }), claudeResets: true });

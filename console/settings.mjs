@@ -27,6 +27,7 @@ export function validateSettings(input, seats) {
     else if (k === 'autoArchiveDays') { if (!Number.isInteger(v) || v < 0 || v > 365) throw new Error('autoArchiveDays must be a whole number 0-365 (0 = never)'); out[k] = v; }
     else if (k === 'autoArchiveDoneMin') { if (!Number.isInteger(v) || v < 0 || v > 10080) throw new Error('autoArchiveDoneMin must be a whole number 0-10080 (0 = off)'); out[k] = v; }
     else if (k === 'idleReapMinutes') { if (!Number.isInteger(v) || v < 1 || v > 1440) throw new Error('idleReapMinutes must be a whole number 1-1440'); out[k] = v; }
+    else if (k === 'guideOffered') { if (v !== 'later' && v !== 'done') throw new Error('guideOffered must be later or done'); out[k] = v; }   // the first-run tour question (public/tour.js)
     else if (k === 'language') { if (v !== '' && !Object.hasOwn(LANGS, v)) throw new Error('unknown language ' + v); out[k] = v; }
     else if (k === 'models') {
       if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('models must be an object seat -> model id');
@@ -42,6 +43,9 @@ export function validateSettings(input, seats) {
   return out;
 }
 
+// A file holding only the tour answer is still a first run: answering the tour question must not skip the first-run Settings page.
+export const onlyGuide = (o) => Object.keys(o).every((k) => k === 'guideOffered');
+
 // { settings, firstRun, error }: no file = first run (the page opens Settings); a broken file = the defaults and the reason, never a crash.
 export function readSettings(file, ctx) {
   const base = defaults(ctx);
@@ -49,7 +53,7 @@ export function readSettings(file, ctx) {
   try {
     const saved = JSON.parse(raw.replace(/^\uFEFF/, ''));
     if (saved?.models && typeof saved.models === 'object') for (const s of Object.keys(saved.models)) if (!Object.hasOwn(ctx.seats || {}, s)) delete saved.models[s];   // a removed seat's default model is dropped, not the whole file
-    return { settings: { ...base, ...validateSettings(saved, ctx.seats || {}) }, firstRun: false, error: null };
+    return { settings: { ...base, ...validateSettings(saved, ctx.seats || {}) }, firstRun: Object.keys(saved).length > 0 && onlyGuide(saved), error: null };
   }
   catch (e) { return { settings: base, firstRun: false, error: 'settings.json ignored: ' + e.message }; }
 }

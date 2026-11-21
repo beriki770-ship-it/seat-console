@@ -44,8 +44,8 @@ for (const c of files) {
 if (CATS.length !== 6) fail('plural categories');
 
 // ---- every key the code asks for is in en.json (dynamic ones: their known values) ----
-const SRC = ['public/app.js', 'public/index.html', 'telegram.mjs', 'digest.mjs', 'routines.mjs', 'server.mjs'];
-const PREFIX = /^(bot|set|conv|side|composer|mode|status|perm|log|result|ctx|usage|quota|pins|code|file|run|routines|projects|mstatus|common|time|search|banner)\./;
+const SRC = ['public/app.js', 'public/tour.js', 'public/index.html', 'telegram.mjs', 'digest.mjs', 'routines.mjs', 'server.mjs'];
+const PREFIX = /^(bot|set|conv|side|composer|mode|status|perm|log|result|ctx|usage|quota|pins|code|file|run|routines|projects|mstatus|common|time|search|banner|tour)\./;
 for (const f of SRC) {
   const s = read(f);
   const keys = [...s.matchAll(/'([a-z]+(?:\.[A-Za-z0-9_-]+)+)'/g), ...s.matchAll(/data-i18n(?:-[a-z-]+)?="([^"]+)"/g)].map((m) => m[1]).filter((k) => PREFIX.test(k) && !/\.(json|mjs|js|log|txt)$/.test(k));
