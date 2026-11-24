@@ -29,13 +29,13 @@ try {
   markTodo(f, id4, 'reopen'); x = readTodos(f).find((k) => k.id === id4); assert.ok(!x.dismissedAt && !x.doneAt);
   assert.throws(() => markTodo(f, id4, 'reopen'), /already open/);
   // machine check: exit 0 closes (auto), non-zero stays, timeout/127 = error, 5 errors = broken, the page path cannot set a check
-  const { checkTodos, runCheck } = await import('./todos.mjs'), SLOW = `"${process.execPath}" -e "setTimeout(() => {}, 5000)"`;   // sh and cmd.exe alike
+  const { checkTodos, runCheck } = await import('./todos.mjs'), SLOW = `"${process.execPath}" -e "setTimeout(() => {}, 5000)"`, WIN = process.platform === 'win32';   // cmd.exe exits 1 for an unknown command: no 'not found' there   // sh and cmd.exe alike
   const st = { last: {}, errs: {} }, ok = addTodo(f, 'c', 'ok one', null, 'exit 0'), no = addTodo(f, 'c', 'no one', null, 'exit 1'), nf = addTodo(f, 'c', 'bad cmd', null, 'no-such-cmd-xyz'), sl = addTodo(f, 'c', 'slow', null, SLOW);
-  assert.equal((await runCheck('exit 3')).code, 3); assert.equal((await runCheck('no-such-cmd-xyz')).error, 'not found'); assert.equal((await runCheck(SLOW, 200)).error, 'timeout');
+  assert.equal((await runCheck('exit 3')).code, 3); if (!WIN) assert.equal((await runCheck('no-such-cmd-xyz')).error, 'not found'); assert.equal((await runCheck(SLOW, 200)).error, 'timeout');
   const run = (c) => runCheck(c, 300);
   assert.deepEqual(await checkTodos(f, st, { minAgeMs: 0, run }), [ok]);
   x = readTodos(f).find((k) => k.id === ok); assert.ok(x.doneAt && x.auto); assert.ok(!readTodos(f).find((k) => k.id === no).doneAt);
-  assert.equal(st.errs[no], undefined); assert.equal(st.errs[sl], 1); assert.equal(st.errs[nf], 1);   // plain non-zero is not an error
+  assert.equal(st.errs[no], undefined); assert.equal(st.errs[sl], 1); if (!WIN) assert.equal(st.errs[nf], 1);   // plain non-zero is not an error
   const before = st.errs[sl]; assert.deepEqual(await checkTodos(f, st, { run }), []); assert.equal(st.errs[sl], before);   // not due again within 10 min
   for (let i = 0; i < 4; i++) await checkTodos(f, st, { minAgeMs: 0, run });
   assert.ok(readTodos(f).find((k) => k.id === sl).checkBroken); const n = st.errs[sl];

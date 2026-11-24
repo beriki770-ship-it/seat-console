@@ -1533,7 +1533,7 @@ const ROLL_PCM = URL.createObjectURL(new Blob([`registerProcessor('pcm16', class
 });`], { type: 'text/javascript' }));
 const rollFixes = [];   // { m, f, old, now }: the corrections "Undo last correction" can take back, newest last
 const rollText = (a, b) => { const r = document.createRange(); r.setStartAfter(a); r.setEndBefore(b); return edText(r.cloneContents()); };
-const rollEnd = (m, i) => m.fin[i + 1]?.mk || m.span;   // a final's text runs to the next final's mark, the last one to the end mark
+const rollEnd = (m, i) => m.fin[i + 1]?.mk || m.span;   // a final runs to the mark of the next final, the last one to the end mark
 const rollSend = (m, x) => { if (m.roll?.ws.readyState === 1 && !m.roll.closed) m.roll.ws.send(JSON.stringify(x)); };
 function rollStart(m) {
   let ws; try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/voice`, ['seat', TOKEN]); } catch { return; }   // the token as subprotocol: a WebSocket cannot carry headers
