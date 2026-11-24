@@ -34,7 +34,12 @@ import { allowedDir, convProject, detectProject, gitInfo, handoffHead, newChatCw
 import { byProject, relatedFor } from './touched.mjs';
 import { createMulti, loadDisciplines } from './multi.mjs';
 import { openIntents, settle as settleIntent, withUnknown, CLI_CMD as JOURNAL_CMD, CLI_PATH as JOURNAL_CLI } from './journal.mjs';
+import { readTodos, markTodo, addTodo, parseDue, checkTodos } from './todos.mjs';
+import { createIdeas, digestDue } from './ideas.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
+import { createVoice, geminiTranscribe, VOICE_PY, VOICE_MODELS, VOICE_LANGS, SMART_MODELS, VOICE_MAX, VOICE_MAX_SEC } from './voice.mjs';
+import { createRolling } from './roll.mjs';
+import { listSkills, readSnippets, validateSnippets } from './slash.mjs';
 import { readSettings, writeJsonAtomic, validateSettings, onlyGuide, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -63,6 +68,7 @@ await new Promise((ok) => {
     if (e.code === 'EADDRINUSE') { console.log(`[listen] 127.0.0.1:${PORT} is taken by a running console: exiting`); process.exit(0); }
     console.log(`[listen] 127.0.0.1: ${e.message}`); process.exit(1);
   });
+  first.on('upgrade', (req, socket) => { try { wsUpgrade(req, socket); } catch { socket.destroy(); } });   // /ws/voice (rolling correction); wsUpgrade is defined further down (not yet during startup)
   first.listen(PORT, '127.0.0.1', () => { bound = true; ok(); });
 });
 fs.mkdirSync(DATA, { recursive: true });
@@ -121,6 +127,17 @@ const settingsCtx = () => ({ seats: SEATS, disciplines: fs.existsSync(DISCIPLINE
 let settingsNow = readSettings(SETTINGS_FILE, settingsCtx());
 if (settingsNow.error) console.log('[settings] ' + settingsNow.error);
 const SET = () => settingsNow.settings;
+// Voice input: a warm faster-whisper worker on this machine (voice.mjs). VOICE_PY = a python with faster_whisper (default: console/voice/.venv).
+const voice = createVoice({ python: VOICE_PY, script: path.join(HERE, 'voice', 'worker.py'), log: console.log });
+// Rolling correction (roll.mjs, /ws/voice): its own worker, so a phrase never waits behind a Smart finish clip; 10 threads (one stream ≈ 10
+// cores, measured), unloaded after 10 min without a dictation. The page offers its token as the WebSocket subprotocol.
+const rolling = createRolling({
+  voice: createVoice({ python: VOICE_PY, script: path.join(HERE, 'voice', 'worker.py'), idleMs: 10 * 60000, env: { VOICE_THREADS: '10' }, log: console.log }),
+  auth: (tok) => same(tok, TOKEN) && SET().voice !== false && SET().voiceRolling !== false, loadavg: () => os.loadavg()[0], log: console.log,
+});
+const wsUpgrade = (req, socket) => { socket.on('error', () => {}); let p = ''; try { p = new URL(req.url, 'http://x').pathname; } catch {} if (ready && p === '/ws/voice') rolling.upgrade(req, socket); else socket.destroy(); };   // ('GET //' makes URL throw: never a crash)
+// Smart finish with Gemini runs the Antigravity CLI on its Google login (voice.mjs geminiTranscribe). A test instance only uses it when SMART_AGY_BIN names one.
+const SMART_AGY = ISOLATED ? (process.env.SMART_AGY_BIN || '') : (process.env.AGY_BIN || path.join(HOME, '.local', 'bin', 'agy'));
 useLanguage(() => SET().language || 'en');   // the bot speaks the language chosen in Settings, from its next message on (no choice yet: English)
 let restartNeeded = false;   // a config file the server reads only at start was changed (seats, remotes, disciplines): the page offers "Restart now"
 const canWrite = (argName) => !ISOLATED || !!arg(argName);   // a test instance never edits the real config files
@@ -216,6 +233,68 @@ function openOf(id) {
 }
 // Open intents of OTHER conversations (the earlier conversations of a project task): each carries its journal file for the record command.
 const openElsewhere = (ids) => ids.filter(Boolean).flatMap((id) => openOf(id).map((x) => ({ ...x, file: journalOf(id) })));
+const SNIPPETS_FILE = path.join(DATA, 'snippets.json');   // the composer's "@" snippets (slash.mjs), the owner's own text: gitignored like settings.json
+// The owner's task board (todos.mjs): seats add what only the owner can do; a seat's add is seen by polling the file's mtime, the page is told to reload.
+const TODOS_FILE = path.join(DATA, 'todos.jsonl'), TODOS_CLI = path.join(HERE, 'todos.mjs');
+fs.watchFile(TODOS_FILE, { interval: 2000 }, () => { sendAll({ todos: true }); setTimeout(() => todoTick().catch(() => {}), 500); });
+function todosView() {
+  const all = readTodos(TODOS_FILE).map(({ check, ...x }) => { const c = x.conv && convOf(x.conv); return { ...x, hasCheck: !!check, title: c?.title || null, seat: c?.seat || null }; });   // the check command never leaves the server
+  return { open: all.filter((x) => !x.doneAt && !x.dismissedAt), done: all.filter((x) => x.doneAt).slice(0, 30), dismissed: all.filter((x) => x.dismissedAt).slice(0, 30) };
+}
+// Done / comment from the page or the Telegram ✅ button: recorded, then told to the conversation that asked. told:false = no conversation
+// (added by hand, or deleted) or the send failed; the board stays the record either way.
+async function todoAct(id, action, text) {
+  const kind = ['done', 'comment', 'dismiss', 'reopen'].includes(action) ? action : '';
+  const x = markTodo(TODOS_FILE, id, kind, text);
+  sendAll({ todos: true });
+  const note = String(text || '').trim(), conv = x.conv && convOf(x.conv);
+  if (!conv) return { told: false };
+  const msg = (kind === 'done' ? `✅ The user marked this task as DONE on their task board: "${x.what}"` : kind === 'dismiss' ? `🚫 The user marked the task "${x.what}" as not relevant anymore` : kind === 'reopen' ? `↩️ The user reopened the task "${x.what}" (open again)` : `💬 The user commented on the task "${x.what}" (still open)`) + (note ? `\n${kind === 'dismiss' ? 'Their reason' : 'Their comment'}: ${note}` : '') + (kind === 'done' ? '\nContinue from there.' : kind === 'dismiss' ? '\nDrop it, no need to continue with it.' : '');
+  try { await send({ conversationId: conv.id, text: msg }); } catch (e) { return { told: false, error: String(e.message || e) }; }
+  return { told: true };
+}
+// Telegram: every new task once, then once an hour while it is past its due time, never 23:00-07:00 (this machine's
+// local time) so it does not wake the owner. state.todoTg[id] = when it was last sent. The ✅ under the message = done (callback v:<id>).
+// The message is mapped to the asking conversation, so replying to it in Telegram writes into that chat.
+state.todoTg ??= {}; state.todoTgMsg ??= {};   // todoTgMsg[id] = { m: message id, text } so a task closed elsewhere gets its card edited
+// Machine checks (todos.mjs checkTodos): every 10 min, and with minAge 0 right before a Telegram nag; local seats only (the command runs here).
+const todoCheckState = { last: {}, errs: {} };
+async function todoChecks(minAgeMs) {
+  const skip = (x) => !!(x.conv && convOf(x.conv)?.remote);
+  const ids = await checkTodos(TODOS_FILE, todoCheckState, { minAgeMs, skip });
+  for (const id of ids) { console.log('[todos] ' + id + ' verified automatically'); await todoNotifyAuto(id).catch(() => {}); }
+  if (ids.length) sendAll({ todos: true });
+}
+async function todoNotifyAuto(id) {
+  const x = readTodos(TODOS_FILE).find((k) => k.id === id), conv = x?.conv && convOf(x.conv);
+  if (conv) await send({ conversationId: conv.id, text: `✅ The task "${x.what}" was done — verified automatically` });
+}
+const TODO_NAG_MS = 3600000, quietHour = (d) => d.getHours() >= 23 || d.getHours() < 7;
+async function todoTick(now = Date.now()) {
+  if (!tg.readCfg()?.chatId) return;
+  await todoChecks(0).catch((e) => console.log('[todos] check failed: ' + e.message));   // a task that is already done must not be nagged
+  const view = todosView(), open = view.open; let dirty = false;
+  for (const id of Object.keys(state.todoTg)) if (!open.some((x) => x.id === id)) {   // done or gone: forget it, and say so on its card
+    const card = state.todoTgMsg[id], y = [...view.done, ...view.dismissed].find((k) => k.id === id);
+    if (card && y) await tg.edit(card.m, `${card.text}\n\n${y.dismissedAt ? '🚫 ' + t('bot.todo.closedDismissed') : y.auto ? '✅ ' + t('bot.todo.closedAuto') : '✅ ' + t('bot.todo.closedDone')}`, []).catch(() => {});
+    delete state.todoTg[id]; delete state.todoTgMsg[id]; dirty = true;
+  }
+  if (quietHour(new Date(now))) { if (dirty) saveState(); return; }   // night: nothing is sent, a task added now is announced at 07:00
+  for (const x of open) {
+    const last = state.todoTg[x.id], late = now >= Date.parse(x.due);
+    if (!Number.isFinite(Date.parse(x.due)) || (last && (!late || now - last < TODO_NAG_MS))) continue;   // a hand-edited bad due never blocks the others
+    dirty = true;
+    const head = last ? '⏰ ' + t('bot.todo.nag', { since: hm(Date.parse(x.due)) }) : '📝 ' + t('bot.todo.new');
+    const text = `${head}\n<b>${esc(x.what)}</b>${x.title ? `\n<i>${esc(x.seat || '')} · ${esc(String(x.title).slice(0, 60))}</i>` : ''}${last ? '' : `\n🕒 ${t('bot.todo.due', { time: hm(Date.parse(x.due)) })}`}`;
+    state.todoTg[x.id] = now;   // set first: a failed send is not retried every 5 minutes
+    const m = await tg.send(text, [[{ text: '✅ ' + t('bot.todo.doneBtn'), callback_data: 'v:' + x.id }, { text: '🚫 ' + t('bot.todo.dismissBtn'), callback_data: 'vx:' + x.id }]]).catch((e) => { notifyFailed(e); return null; });
+    if (m && x.conv) state.telegramMsgs[m.message_id] = x.conv;
+    if (m) state.todoTgMsg[x.id] = { m: m.message_id, text };
+  }
+  if (dirty) saveState();
+}
+setInterval(() => todoTick().catch((e) => console.log('[todos] tick failed: ' + e.message)), 60000);
+setInterval(() => todoChecks(600000).then(() => {}, (e) => console.log('[todos] check failed: ' + e.message)), 60000);   // each task's own 10-min clock is in checkTodos
 const liveHosts = new Set(Object.values(state.conversations).filter((c) => { try { const i = hostInfoOf(c); return i && (c.remote || pidAlive(i.pid)); } catch { return false; } }).map((c) => c.id)); // a malformed entry is handled (and logged) by reattachAll; a remote host is asked over ssh after the start (reattachRemotes)
 const crashLoopStart = crashLoop(state, Date.now()); state.lastExit = null; state.lastStartAt = Date.now();
 const crashed = markInterrupted(state, liveHosts) || crashLoopStart; saveState();
@@ -687,10 +766,12 @@ async function startProc(c) {
   // Idempotency first, journal second. Not for a remote: its claude runs there and cannot write this machine's journal. The CLI is named by its
   // absolute path (JOURNAL_CMD), so the same command works in bash, cmd and PowerShell; SEAT_JOURNAL (env) tells it which file is this conversation's.
   const JOURNAL_RULE = `Make external actions SAFE TO REPEAT whenever you can: deploy/upload with a sync or deploy script that can simply be re-run (rsync, an idempotent deploy script), and give one-shot publish scripts a guard (a state file that refuses a second post/send). Only for an external action that is NOT safe to repeat (sending an email or chat message, posting or commenting on a site, a payment, creating an issue/ticket, a non-idempotent API write) record it: \`${JOURNAL_CMD} intent "<what>" --check "<how to verify it happened>"\` before (it prints an id), \`${JOURNAL_CMD} done <id> "<result>"\` (or \`fail <id> "<error>"\`) after. Local file edits are not external actions.`;
-  const journalEnv = { SEAT_JOURNAL: journalOf(c.id), SEAT_JOURNAL_CLI: JOURNAL_CLI };
+  const journalEnv = { SEAT_JOURNAL: journalOf(c.id), SEAT_JOURNAL_CLI: JOURNAL_CLI, SEAT_TODOS: TODOS_FILE, SEAT_TODO_CLI: TODOS_CLI, SEAT_CONV: c.id };
+  // A step only the user can do gets lost in a long reply: it goes on their task board as well.
+  const TODO_RULE = 'When a step needs the user themselves (open or sign up for an account, log in, verify an email or phone, pay, sign, a call, a decision that blocks you), say it in the reply AND put it on their task board: `node "$SEAT_TODO_CLI" add "<what to do, where (URL), why>" --due <+30m | +2h | 2026-11-24T10:00> --check "<shell command>"` (one line, their language; --due = by when it has to be done, default one hour; past it they are reminded on Telegram every hour). Give --check when the result is machine-checkable (exit 0 = done, e.g. a `claude auth status` that shows the email, a curl that returns HTTP 200, `test -f <file>`): the console runs it every ~10 minutes and closes the task by itself. When they tick it or comment, you get a message in this conversation; continue from there. When you later see the step was done (they tell you, or you verify it), close it yourself: `node "$SEAT_TODO_CLI" done <id> "<evidence>"` (`dismiss <id> "<why>"` if it no longer matters).'.replaceAll('node "$SEAT_TODO_CLI"', `node "${TODOS_CLI}"`);   // the absolute path: the same command in bash, cmd and PowerShell (as JOURNAL_RULE)
   const ending = 'End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.';
   const role = rem ? `You are a Claude session on the remote machine '${rem.name}', driven from the user's Seat Console. ${ending}`
-    : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${JOURNAL_RULE} ${ending}`;
+    : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${JOURNAL_RULE} ${TODO_RULE} ${ending}`;
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...MODE_ARGS[c.mode],
     '--append-system-prompt', role, '--name', `seat:${c.seat}`];
   // First start pins the session id to the conversation id; every later start resumes it.
@@ -943,6 +1024,7 @@ function binBody(req, max) {
     let n = 0; const chunks = [];
     req.on('data', (x) => { n += x.length; if (n > max) { no(new Error(`over ${max / 1024 / 1024} MB`)); req.destroy(); } else chunks.push(x); });
     req.on('end', () => ok(Buffer.concat(chunks)));
+    req.on('error', no); req.on('aborted', () => no(new Error('upload aborted')));   // a client that leaves mid-upload must not leave the handler hanging
   });
 }
 
@@ -1070,7 +1152,7 @@ async function tgRecover(which) { // 'all' or a conversation id prefix; a conver
 }
 const tgFind = (short) => { const c = Object.values(state.conversations).find((x) => x.id.startsWith(short)); return c && { id: c.id, seat: c.seat, title: c.title }; };
 const notifyFailed = (e) => console.log('telegram notify failed: ' + (e?.message || e));
-const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${tn('bot.multi.starting', p.tasks.length)}`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
+const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onTodoDone: async (id) => { const r = await todoAct(id, 'done', ''); return '✅ ' + t('bot.todo.doneToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onTodoDismiss: async (id) => { const r = await todoAct(id, 'dismiss', ''); return '🚫 ' + t('bot.todo.dismissToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onIdea: (x) => ideaFromTelegram(x), ideaCapture: () => SET().ideasTelegram !== false, onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${tn('bot.multi.starting', p.tasks.length)}`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
 
 // The Projects page lists project folders to start from: a folder under projectsDir (2 levels deep) that has one of these markers. Read at most once a minute.
 const PROJECT_MARKERS = ['.git', 'package.json', 'CLAUDE.md', 'BRIEF.md', 'PLAN.md', 'HANDOFF.md', path.join('docs', 'HANDOFF.md')];
@@ -1123,10 +1205,58 @@ function folderBrief(dir, opened, rel) {
 // ---- multi-sided projects (multi.mjs): discipline -> its FIXED seat (console/disciplines.json); a seat at its limit makes its tasks wait, never another seat ----
 // No disciplines.json (or one naming an unknown seat): the console runs as usual, only multi-sided projects are off and say why.
 let DISC; try { DISC = loadDisciplines(DISCIPLINES_FILE, SEATS); } catch (e) { DISC = { map: {}, owner: Object.keys(SEATS)[0], off: e.code === 'ENOENT' ? 'copy console/disciplines.example.json to console/disciplines.json to turn multi-sided projects on' : e.message }; console.log('[multi] off: ' + DISC.off); }
+// ---- Ideas inbox (ideas.mjs): captures from the page and Telegram, transcribed by the local Whisper worker, briefed by a cheap claude -p run on
+// the "Ideas processor" seat (Settings > Ideas, default: the first Claude seat), listed on #ideas. Private data: ideas.jsonl + ideas-media/ (gitignored). ----
+const IDEAS_FILE = path.join(DATA, 'ideas.jsonl'), IDEAS_MEDIA = path.join(DATA, 'ideas-media'), IDEAS_STAGED = path.join(IDEAS_MEDIA, '_staged');
+const IDEAS_MODEL = 'claude-haiku-5-5', IDEAS_VOICE_MODEL = 'large-v3-turbo';   // no one waits for a voice note: the slower model that spells Hebrew better
+// The cheapest call that does the job: Haiku, low effort, no tools, no MCP, no settings/hooks/CLAUDE.md, nothing saved (measured: ~550 tokens of overhead).
+// A seat at its limit (5-hour or weekly window full) is not asked: the idea waits for the reset; a limit hit mid-call waits the same way.
+async function ideasLlm(prompt) {
+  const seat = SET().ideasSeat || Object.keys(SEATS).find((n) => !SEATS[n].agent);
+  if (!hasKey(SEATS, seat) || SEATS[seat].agent) throw new Error(`Ideas processor seat "${seat}" is not a Claude seat (Settings > Ideas)`);
+  const full = Object.values(state.usage[seat]?.windows || {}).find((w) => w.utilization >= 1 && w.resetsAt * 1000 > Date.now());
+  if (full) throw Object.assign(new Error(`${seat} is at its usage limit`), { quota: true, until: full.resetsAt * 1000 + 60000 });
+  await initSeat(seat);
+  const args = [...CLAUDE_CMD.slice(1), '-p', '--output-format', 'json', '--model', IDEAS_MODEL, '--effort', 'low', '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--system-prompt', 'You turn a captured idea into a work brief. Output exactly one JSON object, nothing else.'];
+  const out = await new Promise((ok, no) => { const p = execFile(CLAUDE_CMD[0], args, { cwd: os.tmpdir(), env: { ...cleanEnv(), CLAUDE_CONFIG_DIR: path.join(HOME, '.claude-seats', seat) }, timeout: 180000, maxBuffer: 8e6 }, (e, so, se) => (e && !so ? no(new Error('claude -p failed: ' + String(se || e.message).slice(0, 300))) : ok(so))); p.stdin.on('error', () => {}); p.stdin.end(prompt); });
+  let j; try { j = JSON.parse(out); } catch { throw new Error('claude -p gave no JSON result'); }
+  if (j.is_error) { const m = String(j.result || j.subtype || 'error'); throw Object.assign(new Error(m.slice(0, 300)), /limit|quota|rate/i.test(m) ? { quota: true, until: Date.now() + 30 * 60000 } : {}); }
+  console.log(`[ideas] brief made on ${seat}: ${j.usage?.input_tokens ?? '?'}+${j.usage?.cache_creation_input_tokens ?? 0}+${j.usage?.cache_read_input_tokens ?? 0} in, ${j.usage?.output_tokens ?? '?'} out, $${(j.total_cost_usd ?? 0).toFixed(4)}`);
+  return String(j.result || '');
+}
+async function ideasTranscribe(file) {
+  try { return (await voice.transcribe(fs.readFileSync(file), { model: IDEAS_VOICE_MODEL, lang: SET().voiceLang })).text; }
+  catch (e) { if (e.code === 'BUSY') throw Object.assign(new Error('voice worker busy'), { quota: true, until: Date.now() + 60000 }); throw e; }   // the mic is using it: try again in a minute
+}
+async function ideasRelated(keywords) {   // earlier conversations about the same thing: the sidebar search index, one keyword at a time
+  const all = [...Object.values(state.conversations), ...Object.values(state.remoteConvs)]; await search.refresh(all, { wait: false });
+  const seen = new Map();
+  for (const k of keywords) for (const h of search.query(k, all, 5)) if (!seen.has(h.id)) { const c = viewOf(h.id), v = c && viewSummary(c); if (v) seen.set(h.id, { id: h.id, title: v.title, seat: v.seat }); }
+  return [...seen.values()];
+}
+const ideaUrl = (id) => `${PHONE}/#ideas/${id}`;
+const ideas = createIdeas({ file: IDEAS_FILE, mediaDir: IDEAS_MEDIA, transcribe: ideasTranscribe, llm: ideasLlm, related: ideasRelated, folders: () => projectFolders(), disciplines: () => DISC, log: console.log,
+  onChange: () => sendAll({ ideas: true }),
+  onReady: async (x) => {   // a Telegram capture: its "💡 Saved" message gets the title and an Open button
+    if (!x.tgMsg) return;
+    await tg.edit(x.tgMsg, `💡 ${t('bot.idea.savedTitle')} <b>${esc(x.brief.title)}</b>${x.brief.projectName ? ` · <i>${esc(x.brief.projectName)}</i>` : ''}`, [[{ text: '↗ ' + t('bot.idea.open'), url: ideaUrl(x.id) }]]).catch((e) => console.log('[ideas] telegram edit failed: ' + e.message));
+  } });
+setTimeout(() => ideas.kick(), 5000);   // what was captured or half done before a restart
+const ideaFromTelegram = ({ text, audio, photos, tgMsg }) => ideas.capture({ src: 'telegram', text, audio, photos, tgMsg });
+// Once a day (Settings > Ideas: time, how old), never 23:00-07:00: the ready ideas nobody looked at, one Open button each.
+async function ideasDigestTick(now = Date.now()) {
+  if (!tg.readCfg()?.chatId) return;
+  const due = digestDue({ now, last: state.ideasDigestAt || 0, at: SET().ideasDigestAt, staleH: SET().ideasStaleH, ideas: ideas.list() }); if (!due) return;
+  state.ideasDigestAt = now; saveState();   // first: a failed send is not repeated every minute
+  const list = due.slice(0, 8);
+  await tg.send(`💡 <b>${t('bot.idea.digest', { n: due.length })}</b>\n` + list.map((x) => `• ${esc(x.brief?.title || '')}${x.brief?.projectName ? ` · <i>${esc(x.brief.projectName)}</i>` : ''}`).join('\n'),
+    list.map((x) => [{ text: '↗ ' + String(x.brief?.title || x.id).slice(0, 40), url: ideaUrl(x.id) }])).catch(notifyFailed);
+}
+setInterval(() => ideasDigestTick().catch((e) => console.log('[ideas] digest failed: ' + e.message)), 60000);
 const multiOff = () => (!SET().multiProjects ? 'turned off in Settings' : DISC.off);
 const multiOn = () => { if (multiOff()) throw new Error('multi-sided projects are off: ' + multiOff()); return multi; };
 // The Claude models a task may name: the main list of the page's model menu (keep in step with public/index.html select#model).
-const CLAUDE_MODELS = [{ id: 'claude-opus-5-5', name: 'Opus 5.5 (strongest)' }, { id: 'claude-fable-5-1', name: 'Fable 5.1' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5 (balanced)' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5 (fast, cheap)' }];
+const CLAUDE_MODELS = [{ id: 'claude-opus-5-5', name: 'Opus 5.5 (strongest)' }, { id: 'claude-fable-5-2', name: 'Fable 5.2' }, { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5 (balanced)' }, { id: 'claude-haiku-5-5', name: 'Haiku 5.5 (fast, cheap)' }];
 let modelsSnap = {};
 const multi = createMulti({ state, save: saveState, broadcast: () => broadcast({ multi: true }), deps: {
   map: DISC.map, owner: DISC.owner, seats: SEATS, root: DEFAULT_CWD, windows: (seat) => state.usage[seat]?.windows, log: console.log,
@@ -1201,7 +1331,7 @@ const body = (req) => new Promise((ok, no) => {
 // Build id shown on the page (Guide footer) and sent on every event stream: the page compares it with its own and offers a reload after a restart
 // with new code. Commit short hash + a hash of the page files, so uncommitted page edits count as a new build too.
 const BUILD = (() => { let g = 'nogit'; try { g = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: HERE, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
-  const h = crypto.createHash('sha1'); for (const f of ['index.html', 'app.js', 'app.css', 'tour.js']) try { h.update(fs.readFileSync(path.join(HERE, 'public', f))); } catch {}
+  const h = crypto.createHash('sha1'); for (const f of ['index.html', 'app.js', 'app.css', 'tour.js', 'smartfinish.js', 'rolling.js']) try { h.update(fs.readFileSync(path.join(HERE, 'public', f))); } catch {}
   return `${g}.${h.digest('hex').slice(0, 4)}`; })();
 // Optional diagnostics (the page side is OFF by default, DIAG_UNTIL = 0 in app.js): what a phone's composer receives, one JSON line per event,
 // no message text. data/client-log.jsonl keeps the newest 500 lines. Remove with the page's DIAG block once the question is answered.
@@ -1220,7 +1350,7 @@ function sendZ(req, res, code, type, body) {
   if (buf.length < 1024 || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) { head['Content-Length'] = buf.length; res.writeHead(code, head); return res.end(buf); }
   zlib.gzip(buf, { level: 5 }, (e, z) => { if (e) { res.writeHead(500); return res.end(); } head['Content-Encoding'] = 'gzip'; head['Content-Length'] = z.length; res.writeHead(code, head); res.end(z); });
 }
-const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['app.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/paths.js': ['paths.js', 'text/javascript; charset=utf-8'], '/imgedit.js': ['imgedit.js', 'text/javascript; charset=utf-8'], '/tour.js': ['tour.js', 'text/javascript; charset=utf-8'],
+const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['app.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/paths.js': ['paths.js', 'text/javascript; charset=utf-8'], '/smartfinish.js': ['smartfinish.js', 'text/javascript; charset=utf-8'], '/rolling.js': ['rolling.js', 'text/javascript; charset=utf-8'], '/imgedit.js': ['imgedit.js', 'text/javascript; charset=utf-8'], '/tour.js': ['tour.js', 'text/javascript; charset=utf-8'],
   // installable app (PWA): the manifest, its icons and the service worker must be same-origin for Chrome/Edge "Install app"
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/icon-maskable-512.png': ['icon-maskable-512.png', 'image/png'], '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'] };
@@ -1426,6 +1556,16 @@ async function handler(req, res) {
       if (!fromPage(req)) return json(res, 403, { error: 'file previews are served to the console page only' });
       return await serveFile(req, res, url);   // await: a throw inside it still ends in the 500 below
     }
+    if (url.pathname === '/api/idea-media' && req.method === 'GET') {   // an idea's voice note / photo: to the console page only, like /api/file
+      if ((site && site !== 'same-origin' && site !== 'none') || !fromPage(req)) return json(res, 403, { error: 'served to the console page only' });
+      const f = ideas.media(url.searchParams.get('id') || '', url.searchParams.get('f') || ''); if (!f) return json(res, 404, { error: 'no such file' });
+      const ext = path.extname(f).slice(1).toLowerCase(), type = { webm: 'audio/webm', ogg: 'audio/ogg', oga: 'audio/ogg', mp4: 'audio/mp4', m4a: 'audio/mp4', mp3: 'audio/mpeg', wav: 'audio/wav' }[ext] || MIME[ext] || 'application/octet-stream';
+      const size = fs.statSync(f).size, r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || ''), head = { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
+      if (!size) { res.writeHead(200, { ...head, 'Content-Length': 0 }); return void res.end(); }   // an empty Telegram file: createReadStream(end -1) would throw
+      let a = 0, z = size - 1; if (r && (r[1] || r[2])) { a = r[1] ? +r[1] : Math.max(0, size - +r[2]); z = r[1] && r[2] ? Math.min(+r[2], size - 1) : size - 1; if (a > z) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); return void res.end(); } }   // phone players seek with Range
+      res.writeHead(r && (r[1] || r[2]) ? 206 : 200, { ...head, 'Content-Length': z - a + 1, ...(r && (r[1] || r[2]) ? { 'Content-Range': `bytes ${a}-${z}/${size}` } : {}) });
+      return void fs.createReadStream(f, { start: a, end: z }).on('error', () => res.destroy()).pipe(res);
+    }
     if (req.method === 'GET' && STATIC[url.pathname]) {
       const [file, type] = STATIC[url.pathname];
       const raw = fs.readFileSync(path.join(HERE, 'public', file));
@@ -1439,6 +1579,15 @@ async function handler(req, res) {
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ready: true });
     if (req.method === 'GET' && url.pathname === '/api/seats') return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify(seatsView()));
     if (req.method === 'GET' && url.pathname === '/api/routines') return json(res, 200, routines.view());
+    if (req.method === 'GET' && url.pathname === '/api/todos') { todoChecks(60000).catch(() => {}); return json(res, 200, todosView()); }   // checks run behind the page load; a close reloads it by SSE
+    if (req.method === 'GET' && url.pathname === '/api/skills') {   // the composer's "/" list for one seat; conv = the open chat (its folder's .claude/), cwd = a new chat's folder
+      const seat = url.searchParams.get('seat') || '', c = convOf(url.searchParams.get('conv') || '');
+      if (!hasKey(SEATS, seat)) return json(res, 200, { skills: [], none: 'remote' });   // a remote group: its claude reads the other machine's folders
+      if (SEATS[seat].agent) return json(res, 200, { skills: [], none: SEATS[seat].agent });   // codex / agy adapters pass text through: no slash commands of their own (agents/*.mjs)
+      return json(res, 200, { skills: listSkills({ configDir: path.join(HOME, '.claude-seats', seat), shared: path.join(HOME, '.claude'), cwd: c?.cwd || url.searchParams.get('cwd') || '', home: HOME }) });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/snippets') return json(res, 200, { snippets: readSnippets(SNIPPETS_FILE) });
+    if (req.method === 'GET' && url.pathname === '/api/ideas') return json(res, 200, { ideas: ideas.list() });
     if (req.method === 'GET' && url.pathname === '/api/models') {   // the model menu of an agent seat: what THAT CLI offers on its own login (null = the page's Claude list)
       const seat = url.searchParams.get('seat') || '';
       if (!hasKey(SEATS, seat) || !SEATS[seat].agent) return json(res, 200, { models: null });
@@ -1517,6 +1666,48 @@ async function handler(req, res) {
         const stored = storeFile(dir, buf, url.searchParams.get('name'), conv ? null : draft);
         return json(res, 200, { ok: true, file: true, id: `${dir}/${stored}`, name: fileLabel(stored.replace(/^[0-9a-f]{16}-/, '')), size: buf.length });
       }
+      if (url.pathname === '/api/transcribe') {   // the mic button: raw recorded audio in the body -> { text, lang, ms }. Logs sizes and times only, never the audio or the text.
+        if (SET().voice === false) return json(res, 403, { error: 'voice input is off in Settings', code: 'off' });
+        if (+req.headers['content-length'] > VOICE_MAX) return json(res, 413, { error: 'recording over 25 MB', code: 'big' });
+        let audio; try { audio = await binBody(req, VOICE_MAX); } catch { return json(res, 413, { error: 'recording over 25 MB', code: 'big' }); }
+        if (!audio.length) return json(res, 422, { error: 'empty recording', code: 'empty' });
+        // ?smart=1: Smart finish (the live dictation's recording, checked after it stops) uses its own model; ?lang=auto lets Whisper detect the language
+        const smart = url.searchParams.get('smart') === '1', ql = url.searchParams.get('lang'), from = Math.min(VOICE_MAX_SEC, Math.max(0, +url.searchParams.get('from') || 0) / 1000);   // ?from=ms: only the tail rolling correction left (Smart finish)
+        const q = url.searchParams.get('model'), model = VOICE_MODELS.includes(q) ? q : smart ? (SET().voiceSmartModel || SMART_MODELS[0]) : SET().voiceModel;   // ?model= only for the test (small loads fastest)
+        const lang = ql === 'auto' ? '' : ql && VOICE_LANGS.includes(ql) ? ql : SET().voiceLang;
+        // Smart finish asks Gemini first (Settings > Voice > Smart finish engine); no agy, quota, no capacity, an error or 20 s without an answer = Whisper below
+        let fellBack = null;
+        // ?engine=whisper (tests) can only keep audio here, never send it to Google against Settings; a tiny clip is left to Whisper's own empty check
+        if (smart && url.searchParams.get('engine') !== 'whisper' && SET().voiceSmartEngine === 'gemini' && audio.length >= 2048) {
+          try {
+            const g = await geminiTranscribe(audio, { agy: SMART_AGY, model: SET().voiceGeminiModel, from });
+            console.log(`[voice] ${audio.length} bytes, ${g.ms} ms, ${g.model} smart langs=${g.langs.join('+') || '-'}`);
+            return json(res, 200, { text: g.text, lang: g.lang, langs: g.langs, prob: null, engine: 'gemini', ms: g.ms });
+          } catch (e) { fellBack = e.code === 'NOAGY' ? 'noagy' : e.code === 'QUOTA' ? 'quota' : e.code === 'BUSY' ? 'busy' : e.code === 'TIMEOUT' ? 'timeout' : e.code === 'EMPTY' ? 'empty' : e.code === 'BLOCKED' ? 'blocked' : 'error'; console.log(`[voice] Gemini failed (${fellBack}): ${String(e.message || e).slice(0, 120)}${url.searchParams.get('engine') === 'gemini' ? '' : ', Whisper instead'}`); }
+        }
+        // ?engine=gemini: Gemini or nothing (rolling correction already settled this dictation with Whisper; reading it again with Whisper adds nothing)
+        if (smart && url.searchParams.get('engine') === 'gemini') return json(res, 503, { error: 'Gemini not available', code: 'nogemini', fallback: fellBack || (SET().voiceSmartEngine === 'gemini' ? 'small' : 'off') });
+        try {
+          const r = await voice.transcribe(audio, { model, lang, mode: smart && !lang ? 'segments' : '', from });   // Smart finish: each piece of speech in its own language
+          console.log(`[voice] ${audio.length} bytes, ${(r.audioMs / 1000).toFixed(1)} s audio, ${r.ms} ms, ${model}${smart ? ' smart' : ''}${lang ? '' : ' auto=' + (r.langs ? r.langs.join('+') || '-' : r.lang)}${r.segments ? ` segs=${r.segments.length}` : ''}`);
+          return json(res, 200, { text: r.text, lang: r.lang, prob: r.prob, first: r.first, segments: r.segments, langs: r.langs, engine: 'whisper', fallback: fellBack, ms: r.ms });
+        } catch (e) {
+          const code = e.code === 'BUSY' ? 'busy' : e.code === 'EMPTY' ? 'empty' : e.code === 'BADAUDIO' ? 'badaudio' : 'failed';
+          if (code === 'failed') console.log('[voice] failed: ' + String(e.message || e).slice(0, 200));
+          return json(res, code === 'busy' ? 503 : code === 'failed' ? 500 : 422, { error: String(e.message || e), code });
+        }
+      }
+      if (url.pathname === '/api/idea-file') {   // a voice note or photo for an idea being captured on the page: staged here, claimed by /api/idea capture
+        const kind = url.searchParams.get('kind') === 'audio' ? 'audio' : 'photo';
+        if (+req.headers['content-length'] > VOICE_MAX) return json(res, 413, { error: 'over 25 MB' });
+        let buf; try { buf = await binBody(req, VOICE_MAX); } catch { return json(res, 413, { error: 'over 25 MB' }); }
+        if (!buf.length) return json(res, 422, { error: 'empty file' });
+        fs.mkdirSync(IDEAS_STAGED, { recursive: true, mode: 0o700 });
+        for (const n of fs.readdirSync(IDEAS_STAGED)) { try { if (Date.now() - fs.statSync(path.join(IDEAS_STAGED, n)).mtimeMs > 86400000) fs.rmSync(path.join(IDEAS_STAGED, n)); } catch {} }   // abandoned captures
+        const e = (/\.([a-z0-9]{1,5})$/i.exec(url.searchParams.get('name') || '') || [])[1]?.toLowerCase(), ext = /^(webm|ogg|oga|opus|m4a|mp4|mp3|wav|jpe?g|png|gif|webp|heic)$/.test(e || '') ? e : kind === 'audio' ? 'webm' : 'jpg';
+        const id = `${crypto.randomBytes(8).toString('hex')}-${kind}.${ext}`; fs.writeFileSync(path.join(IDEAS_STAGED, id), buf, { mode: 0o600 });
+        return json(res, 200, { ok: true, id });
+      }
       const b = await body(req);
       if (url.pathname === '/api/client-log') return json(res, 200, { ok: true, n: clientLog(b, req) });   // optional diagnostics, see clientLog
       if (url.pathname === '/api/restart') {   // Settings "Restart now": the supervisor (run-server.sh / .ps1) starts it again; conversations live in their hosts and are reattached
@@ -1531,6 +1722,38 @@ async function handler(req, res) {
         const sl = convOf(b.conversationId) && /^\/(context|compact)(?:\s+([\s\S]*))?$/i.exec(b.text.trim());
         if (sl) { try { await runSlash(convOf(b.conversationId), sl[1].toLowerCase(), sl[2]); } catch (e) { return json(res, 409, { error: String(e.message || e) }); } return json(res, 200, { ok: true, conversationId: b.conversationId }); }
         const c = await send(b); return json(res, 200, { ok: true, conversationId: c.id, sessionId: c.sessionId });
+      }
+      if (url.pathname === '/api/snippets') {   // Settings > Snippets saves the whole list (add, edit, delete, reorder)
+        try { const snippets = validateSnippets(b.snippets, Object.keys(SEATS)); writeJsonAtomic(SNIPPETS_FILE, { snippets }, 0o600); return json(res, 200, { ok: true, snippets }); } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
+      }
+      if (url.pathname === '/api/todo') {   // the owner ticks a task (done, optional comment) or sends a comment on the page
+        try { return json(res, 200, { ok: true, ...await todoAct(String(b.id || ''), b.action, b.text) }); } catch (e) { return json(res, 400, { error: e.message }); }
+      }
+      if (url.pathname === '/api/idea') {   // the Ideas page: capture (text + staged files), edit, retry, start a chat, make a task, archive, delete
+        try {
+          const id = String(b.id || '');
+          if (b.action === 'capture') {
+            const audio = [], photos = [], used = [], files = b.files ?? [];
+            if (!Array.isArray(files) || files.length > 12) throw new Error('files: at most 12 staged ids');
+            for (const f of files) {
+              const m = /^[0-9a-f]{16}-(audio|photo)\.[a-z0-9]{1,5}$/.exec(String(f)); if (!m) throw new Error('bad file id');
+              const p = path.join(IDEAS_STAGED, m[0]); (m[1] === 'audio' ? audio : photos).push({ data: fs.readFileSync(p), name: m[0] }); used.push(p);
+            }
+            const x = ideas.capture({ src: 'console', text: b.text, audio, photos });
+            for (const p of used) fs.rm(p, { force: true }, () => {});   // claimed: never fails the capture
+            return json(res, 200, { ok: true, idea: x });
+          }
+          if (b.action === 'update') return json(res, 200, { ok: true, idea: ideas.update(id, { brief: b.brief, status: b.status, chat: b.chat }) });
+          if (b.action === 'retry') return json(res, 200, { ok: true, idea: ideas.retry(id) });
+          if (b.action === 'delete') { ideas.del(id); return json(res, 200, { ok: true }); }
+          if (b.action === 'start') return json(res, 200, { ok: true, idea: ideas.update(id, { status: 'done', chat: b.chat }) });   // the chat opened from it was sent: done, linked to that chat
+          if (b.action === 'todo') {   // "Make task": on My tasks, due in a day (not the hourly nag of a seat's urgent step)
+            const x = ideas.get(id); if (!x?.brief) throw new Error('idea not ready');
+            const tid = addTodo(TODOS_FILE, null, `💡 ${x.brief.title}${x.brief.prep?.goal ? ': ' + x.brief.prep.goal : ''}`, parseDue('+1d'));
+            sendAll({ todos: true }); return json(res, 200, { ok: true, idea: ideas.update(id, { status: 'done', todo: tid }) });
+          }
+          return json(res, 400, { error: 'unknown action' });
+        } catch (e) { return json(res, 400, { error: String(e.message || e) }); }
       }
       if (url.pathname === '/api/retention') {   // test instance only: run the retention pass now (the smoke test checks the archive round trip)
         if (!ISOLATED) return json(res, 403, { error: 'test instance only' });
@@ -1707,7 +1930,7 @@ function bindTailscale() {
   // https://<tsName> requests (tailscale serve) get 403 forever. Keep re-detecting every tick until the name is known too (2026-10-14).
   if (tsServer) { if (!tsName) detectTailscale(); return; }
   if (!detectTailscale()) return;
-  const s = tsServer = http.createServer(handler).on('error', (e) => {
+  const s = tsServer = http.createServer(handler).on('upgrade', wsUpgrade).on('error', (e) => {
     if (e.message !== tsBindErr) { tsBindErr = e.message; console.log(`[listen] ${tsIp}: ${e.message} (retrying)`); }
     if (tsServer === s) tsServer = null; // the next tick binds again
   });

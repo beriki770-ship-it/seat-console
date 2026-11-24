@@ -41,7 +41,11 @@
     model: { k: 'model', h: 'composer.model', p: 'tour.model.p', go: toDraft },
     effort: { k: 'effort', h: 'composer.effort', p: 'tour.effort.p', go: toDraft },
     attach: { k: 'attach', h: 'composer.attach', p: 'tour.attach.p', go: toDraft },
+    mic: { k: 'mic', h: 'composer.mic', p: 'tour.mic.p', go: toDraft },
+    slash: { k: 'reply', h: 'tour.slash.h', p: 'tour.slash.p', go: toDraft },   // the "/" and "@" lists open inside the message box
     stop: { k: 'stop', h: 'composer.stop', p: 'tour.stop.p', go: main },
+    ideasOpen: { k: 'ideas-open', h: 'ideas.button', p: 'tour.ideas.p', go: side },
+    ideaCapture: { k: 'idea-capture', h: 'ideas.save', p: 'tour.ideaCapture.p', go: async () => { await main(); hashTo('#ideas'); } },
     needs: { k: 'needs', h: 'tour.needs.h', p: 'tour.needs.p', go: side },
     perm: { k: 'perm', h: 'tour.perm.h', p: 'tour.perm.p', go: openWaiting },
     reply: { k: 'reply', h: 'tour.reply.h', p: 'tour.reply.p', go: main },
@@ -68,12 +72,12 @@
   };
   // One tour per Guide section (the keys of GUIDE in app.js); "full" chains the main ones.
   const TOURS = {
-    seats: ['seat', 'usage', 'foldall'], start: ['new', 'folder', 'mode', 'model', 'effort', 'attach'], folder: ['folder'], attach: ['attach', 'stop'],
+    seats: ['seat', 'usage', 'foldall'], start: ['new', 'folder', 'mode', 'model', 'effort', 'attach', 'mic'], folder: ['folder'], attach: ['attach', 'stop'], voice: ['mic'], slash: ['slash'], ideas: ['ideasOpen', 'ideaCapture'],
     approve: ['needs', 'perm', 'reply'], keep: ['menu', 'keep', 'archive', 'archiveDone'], auto: ['archiveDone', 'archiveDays'], search: ['search'],
     projects: ['projOpen', 'folders', 'openProject'], runs: ['runForm'], project: ['pjNeeds', 'pjWorking', 'pjRuns', 'pjHappening'], ctx: ['pbar', 'pbMove'],
     settings: ['settings', 'lang', 'tabUsage', 'fresh'],
   };
-  TOURS.full = [...TOURS.seats, ...TOURS.start, 'menu', 'keep', 'archive', ...TOURS.search, ...TOURS.projects, ...TOURS.project, ...TOURS.ctx, ...TOURS.settings];
+  TOURS.full = [...TOURS.seats, ...TOURS.start, ...TOURS.slash, ...TOURS.ideas, 'menu', 'keep', 'archive', ...TOURS.search, ...TOURS.projects, ...TOURS.project, ...TOURS.ctx, ...TOURS.settings];
 
   // ---- the overlay: a dim layer with a cut-out around the target (one box-shadow), and a callout beside it ----
   let steps = [], at = 0, root = null, target = null, before = null, seq = 0;

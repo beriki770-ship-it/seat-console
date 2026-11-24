@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { t, tn, hm, num, pct, lang } from './i18n.mjs';
+import { IDEA_MARK } from './ideas.mjs';
 
 const PLACEHOLDER = /^PASTE/i;
 // Counted and cut in characters (code points), never in UTF-16 units: slicing through the middle of an emoji leaves a lone surrogate that Telegram rejects.
@@ -161,7 +162,7 @@ export function buildDigest(data, now, base) {
 // Uploads of every conversation share ONE serial queue (see sendFiles).
 let fileQueue = Promise.resolve();
 export const TG_FILE_MAX = 20 * 1024 * 1024;   // Telegram's own limit for a bot's getFile download
-export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000, retryMs = 30000 }) {
+export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, onTodoDone = null, onTodoDismiss = null, onIdea = null, ideaCapture = () => true, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000, retryMs = 30000 }) {
   let warned = false;
   const base = () => (typeof phoneBase === 'function' ? phoneBase() : phoneBase); // a function when the console URL can change after start (Tailscale coming up late)
   const readCfg = () => {
@@ -272,12 +273,17 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     const cm = convId && /^\/compact(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
     if (cm) { let out; try { await onCompact(convId, cm[1]); out = '🗜️ ' + t('bot.compact.running'); } catch (e) { out = errLine(t('bot.compact.failed'), e.message); } return void (await say(out)); }
     if (convId) return void (await deliver(convId, text, msg, say, reqs));
+    // Ideas inbox (ideas.mjs): "/idea …" or a text that starts with 💡 / רעיון is always an idea; with capture on in Settings, a voice note or a
+    // photo sent on its own is one too (it used to get only the "reply to a notification" hint). Plain text keeps opening the seat picker,
+    // which has a "💡 Save as idea" button.
+    const im = onIdea && /^\/idea(?:@\w+)?(?:\s+([\s\S]*))?$/i.exec(text);
+    if (im || (onIdea && ideaCapture() && IDEA_MARK.test(text))) return void (await saveIdea(msg, im ? (im[1] || '').trim() : text.replace(IDEA_MARK, ''), say, reqs));
     // 2. commands
     if (/^\/(start|help)\b/i.test(text)) return void (await say([
       '<b>🤖 Seat Console</b>', '',
       '✍️ ' + t('bot.help.plain'),
       '⚡ ' + t('bot.help.direct', { cmd: `<code>/${esc(seats[0] || 'seat')} ${t('bot.help.text')}</code>`, seats: seats.map((s) => '/' + esc(s)).join(' ') }),
-      '📊 /status: ' + t('bot.cmd.status'), '☀️ /digest: ' + t('bot.help.digest', { time: hm(new Date(2000, 0, 1, 8).getTime()) }), '🌆 /evening: ' + t('bot.help.evening', { time: hm(new Date(2000, 0, 1, 21).getTime()) }), '🧩 /multi: ' + t('bot.cmd.multi'), '🗂 /list: ' + t('bot.cmd.list'), '🔄 /recover: ' + t('bot.cmd.recover'), '⏰ /routines: ' + t('bot.cmd.routines'), '↩️ ' + t('bot.help.reply'), '🗜️ ' + t('bot.help.compact', { cmd: '<code>/compact</code>' })].join('\n')));
+      '📊 /status: ' + t('bot.cmd.status'), '☀️ /digest: ' + t('bot.help.digest', { time: hm(new Date(2000, 0, 1, 8).getTime()) }), '🌆 /evening: ' + t('bot.help.evening', { time: hm(new Date(2000, 0, 1, 21).getTime()) }), '🧩 /multi: ' + t('bot.cmd.multi'), '🗂 /list: ' + t('bot.cmd.list'), '🔄 /recover: ' + t('bot.cmd.recover'), '⏰ /routines: ' + t('bot.cmd.routines'), '↩️ ' + t('bot.help.reply'), '🗜️ ' + t('bot.help.compact', { cmd: '<code>/compact</code>' }), ...(onIdea ? ['💡 /idea: ' + t('bot.help.idea')] : [])].join('\n')));
     if (isStatusRequest(text)) { const d = buildDigest(await onStatus(), Date.now(), base()); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }
     if (/^\/digest(@\w+)?$/i.test(text) && onDigest) { const d = await onDigest('morning'); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }   // the morning digest on demand
     if (/^\/(evening(@\w+)?|digest(@\w+)?\s+evening)$/i.test(text) && onDigest) { const d = await onDigest('evening'); return void (await say(d.text, d.rows ? { reply_markup: kb(d.rows) } : {})); }   // the evening digest on demand
@@ -301,12 +307,24 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     if (text.startsWith('/')) return void (await say('🤷 ' + t('bot.unknownCommand', { help: '<code>/help</code>' })));
     // 3. a plain message: continues the conversation picked with "continue", else becomes a new task
     if (live(cont)) { const c = cont; cont = null; return void (await deliver(c.convId, text, msg, say, reqs)); }
+    if (onIdea && ideaCapture() && (msg.voice || msg.audio || msg.photo?.length)) return void (await saveIdea(msg, text, say, reqs));
     if (msg.photo?.length || doc) return void (await say('📎 ' + t('bot.filesReply')));
     if (!text) return;
     const pid = Math.random().toString(16).slice(2, 8);
     for (const [k, v] of pickers) if (!live(v)) pickers.delete(k);
     pickers.set(pid, { text, at: Date.now() });
-    await say(`${taskQuote(text)}\n${t('bot.pick.seat')}`, { reply_markup: seatKb(pid, await onUsage().catch(() => ({}))) });
+    const pk = seatKb(pid, await onUsage().catch(() => ({})));
+    if (onIdea && ideaCapture()) pk.inline_keyboard.push([{ text: '💡 ' + t('bot.idea.saveBtn'), callback_data: `i:${pid}` }]);
+    await say(`${taskQuote(text)}\n${t('bot.pick.seat')}`, { reply_markup: pk });
+  }
+  // The ack goes first so its message id rides with the idea: the server edits it to "💡 Saved: <title>" once the brief is ready.
+  async function saveIdea(msg, text, say, reqs) {
+    const voice = !!(msg.voice || msg.audio), photo = !!msg.photo?.length;
+    if (!text && !voice && !photo) return void (await say('💡 ' + t('bot.idea.usage')));
+    let got = []; if (voice || photo) { try { got = await reqs(); } catch (e) { return void (await say(e.tooBig ? `📎 <b>${t('bot.file.tooBigTitle')}</b> · ${t('bot.file.tooBig')}` : `❌ <b>${t('bot.file.downloadFailed')}</b>`)); } }
+    const ack = await say('💡 ' + t('bot.idea.saved'));
+    try { await onIdea({ text, audio: voice ? got : [], photos: photo ? got : [], tgMsg: ack?.message_id || null }); }
+    catch (e) { const cfg = readCfg(); if (ack && cfg) await callH(cfg, 'editMessageText', { chat_id: cfg.chatId, message_id: ack.message_id, text: errLine(t('bot.idea.failed'), e.message) }).catch(() => {}); }
   }
   async function deliver(convId, text, msg, say, reqs) {
     let images = [], files = [];
@@ -345,6 +363,24 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       if (!/^[0-9a-f]{8}$/.test(a)) return t('bot.toast.unknownButton');
       let out; try { out = await onMultiApprove(a); } catch (e) { return String(e.message || e).slice(0, 190); }
       await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+      return out;
+    }
+    if (kind === 'i' && onIdea) {   // "💡 Save as idea" under the seat picker: the picked text becomes an idea instead of a task
+      const p = pickers.get(a); if (!live(p)) return t('bot.toast.expired');
+      pickers.delete(a);
+      try { await onIdea({ text: p.text, audio: [], photos: [], tgMsg: cb.message.message_id }); } catch (e) { return String(e.message || e).slice(0, 190); }
+      await edit(`${taskQuote(p.text)}\n💡 ${t('bot.idea.saved')}`); return '💡 ' + t('bot.idea.saved');
+    }
+    if (kind === 'v' && onTodoDone) {   // ✅ under a task-board message (server.mjs todoTick): the task is done, the button goes
+      if (!/^[0-9a-f]{6}$/.test(a)) return t('bot.toast.unknownButton');
+      let out; try { out = await onTodoDone(a); } catch (e) { out = String(e.message || e).slice(0, 190); }
+      await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
+      return out;
+    }
+    if (kind === 'vx' && onTodoDismiss) {   // 🚫 under a task-board message: not relevant anymore; the card is edited to say so, the buttons go
+      if (!/^[0-9a-f]{6}$/.test(a)) return t('bot.toast.unknownButton');
+      let out; try { out = await onTodoDismiss(a); } catch (e) { out = String(e.message || e).slice(0, 190); }
+      await edit(`${esc(cb.message.text || '')}\n\n${out}`);   // editMessageText without reply_markup drops the buttons
       return out;
     }
     if (kind === 'k') {   // "Compact" button on a finished-message
@@ -389,7 +425,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     const cb = u.callback_query;
     if (!cb || !cfg.chatId) return;
     if (String(cb.message?.chat?.id) !== String(cfg.chatId)) { await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {}); return; } // strangers are ignored
-    if (/^[smdcrqkx]:/.test(cb.data || '')) { let toast; try { toast = await pickerStep(cfg, cb); } catch (e) { toast = t('bot.toast.failed', { error: e.message }); } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(toast, 190) }).catch(() => {}); return; }
+    if (/^(?:[smdcrqkxvi]|vx):/.test(cb.data || '')) { let toast; try { toast = await pickerStep(cfg, cb); } catch (e) { toast = t('bot.toast.failed', { error: e.message }); } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(toast, 190) }).catch(() => {}); return; }
     const p = parseCallback(cb.data);
     let outcome;
     if (!p) outcome = t('bot.toast.unknownButton');
@@ -422,7 +458,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       try {
         if (!cfg.chatId) ensureLinkCode();
         if (commandsFor && commandsFor.split('|')[0] !== cfg.botToken) { offset = 0; setOffset(0); } // the token changed while running: another bot's update ids start over
-        if (commandsFor !== cfg.botToken + '|' + lang()) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: t('bot.cmd.status') }, ...seats.map((s) => ({ command: s, description: t('bot.cmd.seat', { seat: s }) })), { command: 'digest', description: t('bot.cmd.digest') }, { command: 'evening', description: t('bot.cmd.evening') }, { command: 'list', description: t('bot.cmd.list') }, { command: 'recover', description: t('bot.cmd.recover') }, { command: 'routines', description: t('bot.cmd.routines') }, { command: 'multi', description: t('bot.cmd.multi') }] }); commandsFor = cfg.botToken + '|' + lang(); }   // the menu follows a language change too
+        if (commandsFor !== cfg.botToken + '|' + lang()) { await call(cfg, 'setMyCommands', { commands: [{ command: 'status', description: t('bot.cmd.status') }, ...seats.map((s) => ({ command: s, description: t('bot.cmd.seat', { seat: s }) })), { command: 'digest', description: t('bot.cmd.digest') }, { command: 'evening', description: t('bot.cmd.evening') }, { command: 'list', description: t('bot.cmd.list') }, { command: 'recover', description: t('bot.cmd.recover') }, { command: 'routines', description: t('bot.cmd.routines') }, { command: 'multi', description: t('bot.cmd.multi') }, ...(onIdea ? [{ command: 'idea', description: t('bot.cmd.idea') }] : [])] }); commandsFor = cfg.botToken + '|' + lang(); }   // the menu follows a language change too
         const ups = await call(cfg, 'getUpdates', { offset, timeout: 30, allowed_updates: ['message', 'callback_query'] }, 45000);
         for (const u of ups) { offset = u.update_id + 1; setOffset(offset); await handleUpdate(readCfg() || cfg, u); }
       } catch (e) {

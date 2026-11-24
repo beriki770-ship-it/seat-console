@@ -60,7 +60,8 @@ function next() {
   const args = [`-p=${prompt}`, '--output-format', 'stream-json', ...perm, ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : []), ...(conv ? ['--conversation', conv] : [])];
   let last = '', done = null, stderr = '', convId = conv;
   const turnAt = Date.now() - 2000;
-  const started = new Set();
+  const started = new Set(), texts = new Map();   // agy streams agent_response text as deltas per step; the DONE line carries only the last one
+  const t0 = Date.now();
   child = spawn(AGY_CMD[0], [...AGY_CMD.slice(1), ...args], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
   child.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
   readline.createInterface({ input: child.stdout }).on('line', (l) => {
@@ -74,18 +75,22 @@ function next() {
         const { parameters, name, ...rest } = info;
         toolResult(id, rest.output ?? rest.result ?? (Object.keys(rest).length ? JSON.stringify(rest) : 'done'), b.state !== 'DONE');
       }
-    } else if (e.event === 'step_update' && b.step_type === 'agent_response' && b.state === 'DONE' && b.text_delta?.trim()) { last = b.text_delta.trim(); say(last); }
+    } else if (e.event === 'step_update' && b.step_type === 'agent_response') {
+      const t = (texts.get(b.step_index) || '') + (b.text_delta || ''); texts.set(b.step_index, t);
+      if (b.state === 'DONE') { texts.delete(b.step_index); if (t.trim()) { last = t.trim(); say(last); } }
+    }
     else if (e.event === 'result') done = b;
   });
   child.on('close', (code, signal) => {
     child = null;
+    for (const t of texts.values()) if (t.trim()) { last = t.trim(); say(last); }   // a step cut off before DONE (interrupt, crash) still shows what streamed
     const imgs = convId ? collectImages(path.join(os.homedir(), '.gemini', 'antigravity-cli', 'brain', convId), turnAt) : [];   // agy's own folder for generated images
     if (imgs.length) { const line = imgs.map((p) => `Image: ${p}`).join('\n'); say(line); if (done) done.response = `${(done.response || last).trim()}\n\n${line}`; else last = last ? `${last}\n\n${line}` : line; }
     const ok = done && done.status === 'SUCCESS';
     const err = ok ? null : done?.error || (signal ? `antigravity stopped (${signal})` : `agy exited ${code}: ${stderr.trim().split('\n').slice(-3).join(' ') || 'no output'}`);
     const u = done?.usage || {};
     const limit = !!err && /quota|resource.?exhausted|rate.?limit|usage limit|429/i.test(err);   // a limit stop: resumed on this same seat after the reset (quotawait.mjs)
-    out({ type: 'result', subtype: err ? 'error_during_execution' : 'success', is_error: !!err, result: err || (done?.response || last).trim(), total_cost_usd: 0, ...(limit ? { api_error: 'usage_limit_reached' } : {}),
+    out({ type: 'result', subtype: err ? 'error_during_execution' : 'success', is_error: !!err, result: err || (done?.response || last).trim(), total_cost_usd: 0, duration_ms: Date.now() - t0, ...(limit ? { api_error: 'usage_limit_reached' } : {}),
       usage: { input_tokens: u.input_tokens || 0, output_tokens: u.output_tokens || 0, cache_read_input_tokens: u.cache_read_tokens || 0 } });
     next();
   });

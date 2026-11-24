@@ -404,7 +404,8 @@ function scheduleSeats() {
 }
 async function pick(seat, id, ctx = null) {   // ctx: a project dir = open it inside that project (project bar on top); null = the normal view
   if (!id && seats.find((s) => s.name === seat && s.remote && !s.control)) seat = seats.find((s) => !s.remote).name;   // a read-only remote group has no new-conversation draft (no composer)
-  cur = { seat, id }; localStorage.setItem('seat', seat); if (id && fold[seat] === undefined) { fold[seat] = false; saveFold(); } closeProjects(); closeSettings(); closeGuide(); draftDir = null; if (ctx !== false) setCtx(ctx, id);   // false (first paint): leave the address alone, openHash reads it next; an opened conversation unfolds its seat unless the user folded that seat himself (fold true)
+  ideaDraft = null;   // any switch (another chat, another new draft): only the draft ideaStartChat set up right after this pick is linked to its idea
+  cur = { seat, id }; localStorage.setItem('seat', seat); if (id && fold[seat] === undefined) { fold[seat] = false; saveFold(); } closeProjects(); closeSettings(); closeGuide(); closeTodos(); closeIdeas(); draftDir = null; if (ctx !== false) setCtx(ctx, id);   // false (first paint): leave the address alone, openHash reads it next; an opened conversation unfolds its seat unless the user folded that seat himself (fold true)
   pending.length = 0; showThumbs();
   if (id) delete convo[id];                // events of a conversation that was not watched were not delivered: always load it fresh
   watch(true);                             // the stream carries full events only for the open conversation
@@ -450,6 +451,7 @@ async function takeShare() {
     await c.delete(k);
   }
   diag({ k: 'share', files: files.map((f) => f.type || '?'), text: !!text });
+  if ((text || files.some((f) => /^(image|audio)\//.test(f.type))) && confirm(t('ideas.shareAsk'))) return ideaFromShare(text, files);   // Ideas inbox: OK = save as an idea, Cancel = the new chat below
   if (text) $('text').value = text;
   if (files.length) await attach(files);
   caretEnd();
@@ -461,6 +463,7 @@ async function init() {
   await pick(cur.seat, null, false);
   if (new URLSearchParams(location.search).has('share')) await takeShare(); else openHash(); window.addEventListener('hashchange', openHash);
   loadSettings().then(() => { if (setData?.firstRun && !onSettings()) openSettings('start'); offerTour(); });   // offerTour (tour.js): the one-time "quick tour?" question   // first start: Settings opens by itself (not awaited: detection may take seconds)
+  loadSnippets();
   loadRoutines(); setInterval(() => { if (!document.hidden) loadRoutines(); }, 30000);
   loadMulti(); setInterval(() => { if (!document.hidden) loadMulti(); }, 60000);
   setInterval(() => { if (!document.hidden) showSeats(); }, 60000);   // keeps the "in 1:12" countdowns and expired windows current
@@ -480,6 +483,8 @@ function onEvent(m) {
     return;
   }
   if (d.multi) { loadMulti(); return; }
+  if (d.todos) { loadTodos(); return; }
+  if (d.ideas) { loadIdeas(); return; }
   if (d.resets) { const s = seats.find((x) => x.name === d.resets.seat); if (s) { s.resets = d.resets; scheduleSeats(); } return; }
   if (d.usage) { const hit = seats.filter((x) => x.name === d.usage.seat || x.account === d.usage.seat); for (const s of hit) s.usage = { windows: d.usage.windows, at: d.usage.at }; if (hit.length) scheduleSeats(); return; }   // a remote group with that account mirrors the seat's meter
   if (d.hello) {   // before d.conv: a hello carries `conv` as a plain id string, not a summary object
@@ -618,7 +623,7 @@ function projRow(x, runs) {
   const counts = [x.working && `<b>${t('project.pulseWorking', { n: num(x.working) })}</b>`, x.need && `<b class="pj-hot">${t('project.pulseNeed', { n: num(x.need) })}</b>`, last && tm(last)].filter(Boolean).join('<span class="pj-sep" aria-hidden="true"></span>');
   const prog = r ? r.tasks.filter((k) => k.status === 'done').length / r.tasks.length : 0;
   return `<li class="po-row${x.need ? ' is-hot' : ''}"><div class="po-head"><a class="po-id" href="#project/${encodeURIComponent(x.dir)}">${parts.length ? `<span class="po-crumb" dir="ltr">${esc(parts.join(' / '))} /</span>` : ''}<b dir="auto">${esc(leaf)}</b></a>`
-    + `<span class="po-counts">${counts}</span><a class="mopen" data-guide="open-project" href="#project/${encodeURIComponent(x.dir)}">${t('projects.openProject')}</a></div>`
+    + `<span class="po-counts">${counts}</span><span class="po-acts"><button type="button" data-mchat="${esc(x.dir)}">${t('projects.newChat')}</button><a class="mopen" data-guide="open-project" href="#project/${encodeURIComponent(x.dir)}">${t('projects.openProject')}</a></span></div>`
     + (r ? `<span class="po-prog" aria-hidden="true"><i style="width:${Math.round(prog * 100)}%"></i></span>` : '')
     + act.map(runLine).join('')
     + (fin.length ? `<details class="po-fin" data-fin="${esc(x.dir)}"${projFinOpen.has(x.dir) ? ' open' : ''}><summary>${t('projects.finishedN', { n: num(fin.length) })}</summary>${fin.map(runLine).join('')}</details>` : '') + `</li>`;
@@ -827,10 +832,10 @@ async function loadProject() {
   if (dir === projDir) { projData = r; renderProject(); }
 }
 function openProject(dir) {
-  dropCtx(); closeSettings(); closeGuide(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; projFirst = true; projArchOpen = false; projMoreOpen = false; projOpenRuns = new Set(); renderProject(); showMultiSide(); loadProject();
+  dropCtx(); closeSettings(); closeGuide(); closeTodos(); closeIdeas(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; projFirst = true; projArchOpen = false; projMoreOpen = false; projOpenRuns = new Set(); renderProject(); showMultiSide(); loadProject();
 }
 function openProjects(id) {
-  dropCtx(); projDir = null; closeSettings(); closeGuide(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
+  dropCtx(); projDir = null; closeSettings(); closeGuide(); closeTodos(); closeIdeas(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
   focusId = id || null; if (multiLoaded) flashCard();   // a direct link before the first load: the card is flashed once the data is in (loadMulti)
 }
 function flashCard() {
@@ -935,7 +940,7 @@ $('composer').onsubmit = async (e) => {
   if (r.error) { $('log').appendChild(div('msg note err', esc(r.error))); $('text').value = text; caretEnd(); return; }
   pending.length = 0; showThumbs(); draftId = newDraftId();
   if (run) { seats = await api('/api/seats'); await pick(cur.seat, cur.id, projCtx); }
-  else if (!cur.id) { cur.id = r.conversationId; await pick(cur.seat, r.conversationId, projCtx); }   // a chat started inside a project stays there
+  else if (!cur.id) { if (ideaDraft?.seat === cur.seat) { api('/api/idea', { id: ideaDraft.id, action: 'start', chat: r.conversationId }).then(loadIdeas); ideaDraft = null; } cur.id = r.conversationId; await pick(cur.seat, r.conversationId, projCtx); }   // a chat started inside a project stays there; one started from an idea is linked to it
 };
 // On a touch screen Enter only adds a line and Send sends: a phone keyboard's Enter would send half-written messages.
 const TOUCH = matchMedia('(pointer: coarse)').matches;
@@ -976,6 +981,99 @@ ED.addEventListener('beforeinput', (e) => {
     if (fs.length && !$('attach').hidden) attach(fs); insertPlain(e.dataTransfer.getData('text/plain'));
   }
 });
+// ---- "/" skills and "@" snippets (server: slash.mjs) ----
+// "/" or "@" typed at a line start or after a space opens one list at the caret; the letters after it filter (name first, then description).
+// A skill goes in as "/name " (a token on screen, plain text underneath): claude runs "/name args" itself (measured), so nothing is rewritten.
+// A snippet is replaced by its full text, editable before sending. A query nothing matches closes the list, so paths and e-mail addresses type as usual.
+const POP = $('slashpop'), SRC_KEY = { seat: 'slash.src.seat', shared: 'slash.src.shared', plugin: 'slash.src.plugin', project: 'slash.src.project', builtin: 'slash.src.builtin' };
+let pop = null, popMute = false, snippets = [], snipDraft = null;   // pop: { kind, q, all, list, sel, none }; snipDraft: Settings rows a failed save keeps
+const skillCache = {};   // seat|chat|folder -> { at, r }: one fetch a minute at most
+const loadSnippets = () => api('/api/snippets').then((r) => { snippets = r.snippets || []; }).catch(() => {});
+async function popSource(kind) {
+  if (kind === '@') return { all: snippets.filter((s) => !s.seats?.length || s.seats.includes(cur.seat)) };
+  const key = `${cur.seat}|${cur.id || ''}|${$('cwd').value}`, hit = skillCache[key];
+  if (hit && Date.now() - hit.at < 60000) return hit.r;   // a promise: letters typed while the first fetch runs wait for that one
+  const r = api(`/api/skills?seat=${encodeURIComponent(cur.seat)}&conv=${encodeURIComponent(cur.id || '')}&cwd=${encodeURIComponent($('cwd').value)}`).catch(() => { delete skillCache[key]; return { skills: [] }; }).then((j) => ({ all: j.skills || [], none: j.none }));   // a failed fetch is tried again on the next letter
+  skillCache[key] = { at: Date.now(), r }; return r;
+}
+function popToken() {   // the "/xx" or "@xx" right before the caret, or null
+  const sel = getSelection(); if (!sel.rangeCount || !sel.isCollapsed || !ED.contains(sel.anchorNode)) return null;
+  const pre = document.createRange(); pre.selectNodeContents(ED); pre.setEnd(sel.anchorNode, sel.anchorOffset);
+  const m = /(^|\s)([/@])([^\s/@]{0,40})$/.exec(edText(pre.cloneContents()));
+  return m && { kind: m[2], q: m[3].toLowerCase() };
+}
+const subseq = (q, s) => { let i = 0; for (const ch of s) if (ch === q[i]) i++; return i === q.length; };
+function popRank(all, q, kind) {   // 0 name starts with it, 1 name holds it, 2 its letters in order, 3 the description / label / text holds it
+  const score = (x) => { const n = x.name.toLowerCase(), d = (kind === '@' ? `${x.label || ''} ${x.text}` : x.description || '').toLowerCase();
+    return !q || n.startsWith(q) ? 0 : n.includes(q) ? 1 : subseq(q, n) ? 2 : d.includes(q) ? 3 : 9; };
+  return all.map((x) => [score(x), x]).filter(([s]) => s < 9).sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name)).slice(0, 60).map(([, x]) => x);
+}
+async function popUpdate() {
+  if (popMute) return;   // popChoose's own edits
+  if (mic) return popClose();   // live dictation types into the box: never a list under it
+  const tk = popToken(); if (!tk) return popClose();
+  const src = await popSource(tk.kind), now = popToken();
+  if (!now || now.kind !== tk.kind || now.q !== tk.q) return;   // typed on while the list loaded: that input's own update draws it
+  const list = popRank(src.all, tk.q, tk.kind);
+  const msg = !tk.q && (src.none || (tk.kind === '@' && !src.all.length));   // a bare "/" on Codex / a remote, a bare "@" with no snippets yet: one line saying so
+  if (!list.length && !msg) return popClose();
+  pop = { kind: tk.kind, q: tk.q, list, sel: 0, none: src.none };
+  popDraw();
+}
+const PROV_NAME = { codex: 'Codex', agy: 'Antigravity' };
+function popDraw() {
+  const { kind, list, none } = pop;
+  POP.setAttribute('aria-label', t(kind === '@' ? 'slash.listSnippets' : 'slash.listSkills'));
+  POP.innerHTML = list.length ? list.map((x, i) => `<div role="option" class="sp-row" id="sp-${i}" data-i="${i}" aria-selected="${i === pop.sel}">`
+      + (kind === '@' ? `<b dir="ltr">@${esc(x.name)}</b>${x.label ? `<span class="sp-lab" dir="auto">${esc(x.label)}</span>` : ''}<small dir="auto">${esc(x.text.split('\n').find((l) => l.trim()) || '')}</small>`
+        : `<b dir="ltr">/${esc(x.name)}</b><span class="sp-src">${t(SRC_KEY[x.source] || 'slash.src.shared')}</span><small dir="auto">${esc(x.key ? t(x.key) : x.description || '')}</small>`) + '</div>').join('')
+    : `<p class="sp-none">${kind === '@' ? t('slash.noSnippets') : none === 'remote' ? t('slash.noneRemote') : t('slash.noneAgent', { agent: PROV_NAME[none] || none })}</p>`;
+  POP.hidden = false; ED.setAttribute('aria-expanded', 'true'); ED.setAttribute('aria-activedescendant', list.length ? 'sp-' + pop.sel : '');
+  popPlace(); POP.querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' });
+}
+function popPlace() {   // above the caret (on a phone that is above the keyboard too), never past the screen's edges; RTL opens toward the left
+  const sel = getSelection(); let r = sel.rangeCount ? sel.getRangeAt(0).getClientRects()[0] : null;
+  if (!r || (!r.top && !r.height)) r = ED.getBoundingClientRect();   // a collapsed caret at a line start can report an empty rect
+  const w = Math.min(440, innerWidth - 16), rtl = getComputedStyle(ED).direction === 'rtl';
+  POP.style.width = w + 'px';
+  POP.style.left = Math.max(8, Math.min((rtl ? r.right - w : r.left), innerWidth - w - 8)) + 'px';
+  POP.style.bottom = (innerHeight - r.top + 6) + 'px';
+  POP.style.maxHeight = Math.max(132, Math.min(340, r.top - 12 - (visualViewport?.offsetTop || 0))) + 'px';
+}
+function popClose() { if (!pop && POP.hidden) return; pop = null; POP.hidden = true; ED.setAttribute('aria-expanded', 'false'); ED.removeAttribute('aria-activedescendant'); }
+function popChoose(i) {
+  const x = pop?.list[i], now = popToken(); if (!x || now?.kind !== pop.kind || now.q !== pop.q) return popClose();   // the caret moved away from the "/xx" since the list was drawn
+  const { kind, q } = pop, sel = getSelection(); popMute = true;
+  try {
+    for (let k = 0; k <= [...q].length; k++) sel.modify('extend', 'backward', 'character');   // the "/" or "@" and the letters typed after it (per character, as modify counts)
+    document.execCommand('delete');
+    if (kind === '@') insertPlain(x.text);
+    else document.execCommand('insertHTML', false, `<span class="stok" contenteditable="false" dir="ltr">/${esc(x.name)}</span> `);   // the space in the same step: a caret right after a non-editable span at the end has no text node to sit in
+  } finally { popMute = false; }
+  popClose(); ED.focus();
+}
+ED.setAttribute('aria-controls', 'slashpop'); ED.setAttribute('aria-autocomplete', 'list');
+ED.addEventListener('input', popUpdate);
+ED.addEventListener('click', popUpdate);
+ED.addEventListener('keyup', (e) => { if (/^(Arrow(Left|Right)|Home|End)$/.test(e.key)) popUpdate(); });   // the caret moved: list for the token under it, or none
+ED.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ED) popClose(); }, 150));
+// Capture: runs before the composer's own Enter / Esc handling, so Enter picks a row instead of sending while the list is open.
+ED.addEventListener('keydown', (e) => {
+  if (!pop || e.isComposing) return;
+  if (e.key === 'Enter' && e.shiftKey) return popClose();   // Shift+Enter stays a new line (its beforeinput must not pick a row)
+  const n = pop.list.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { if (!n) return; pop.sel = (pop.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n; popDraw(); }
+  else if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') { if (!n) { popClose(); if (e.key === 'Tab') return; } else popChoose(pop.sel); }
+  else if (e.key === 'Escape') popClose();
+  else return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true);
+ED.addEventListener('beforeinput', (e) => {   // a phone keyboard's Enter while the list is open picks the highlighted row
+  if (pop?.list.length && (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') && !e.isComposing) { e.preventDefault(); e.stopImmediatePropagation(); popChoose(pop.sel); }
+}, true);
+POP.addEventListener('pointerdown', (e) => e.preventDefault());   // the composer keeps focus and caret
+POP.addEventListener('click', (e) => { const r = e.target.closest('[data-i]'); if (r) popChoose(+r.dataset.i); });
+addEventListener('resize', () => pop && popPlace());
 $('stop').onclick = () => cur.id && api('/api/stop', { conversationId: cur.id });
 // Permission mode applies at once, also mid-turn (server setMode): no message needed. A remote run has no process of its own (the composer continues it).
 $('mode').onchange = async () => {
@@ -989,7 +1087,9 @@ $('resume').onclick = async () => { const r = await api('/api/resume', { convers
 // A phone link from Telegram ends in #<conversationId>.
 function openHash() {
   if (location.hash === '#guide') return openGuide();
-  closeGuide();
+  if (location.hash === '#todos') return openTodos();
+  if (/^#ideas(\/|$)/.test(location.hash)) return openIdeas(location.hash.slice(7) || null);   // #ideas/<id>: the Telegram digest's Open button
+  closeGuide(); closeTodos(); closeIdeas();
   if (location.hash === '#settings') return openSettings();
   closeSettings();
   const x = ctxHash();
@@ -1096,10 +1196,464 @@ const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
 $('composer').addEventListener('dragover', (e) => { if (isFileDrag(e)) { e.preventDefault(); $('composer').classList.add('dropping'); } });
 $('composer').addEventListener('dragleave', (e) => { if (!$('composer').contains(e.relatedTarget)) $('composer').classList.remove('dropping'); });
 $('composer').addEventListener('drop', (e) => { if (!isFileDrag(e)) return; e.preventDefault(); $('composer').classList.remove('dropping'); if (!$('attach').hidden) attach([...e.dataTransfer.files]); });
+// ---- Voice input: the mic next to Send (server: POST /api/transcribe, voice.mjs; Settings > Voice). Tap = record, tap again = stop and transcribe,
+// the text goes in at the caret and is never sent by itself. ✕ / Esc cancels. Desktop: hold Ctrl+Space to talk, let go to stop (no other shortcut uses it).
+// The recording format is whatever this browser records (webm/opus: Chrome, Edge, Firefox; mp4/AAC: Safari); the server decodes them all with ffmpeg.
+// The DIAG beacon gets the steps, sizes and times, never the text. Live dictation (the default where the browser has it) is the next block. ----
+const MIC = $('mic'), REC = $('rec'), MIC_MAX_MS = 300000;   // the server's 5-minute cap: the recording stops by itself there
+const MIC_TYPES = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'];
+let mic = null;   // { rec, stream, chunks, t0, timer, raf, ctx, range, cancelled, hold }
+let micBusy = false;   // a clip is uploading / transcribing: a second one waits for it
+const micTime = (ms) => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+function micShow(state, html = '') {   // state: rec | live (dictating) | busy | err | '' (hidden)
+  const on = state === 'rec' || state === 'live'; MIC.dataset.state = on ? 'rec' : state === 'err' ? '' : state; MIC.setAttribute('aria-pressed', String(on));
+  MIC.title = t(on ? 'composer.micStop' : 'composer.micTitle'); MIC.setAttribute('aria-label', MIC.title); MIC.disabled = state === 'busy';
+  REC.hidden = !state; REC.className = state; $('recmsg').innerHTML = html;
+  if (state !== 'rec') $('reclvl').firstChild.style.width = '0';
+}
+const micErr = (key, v) => { micShow('err', t(key, v)); diag({ k: 'mic', step: 'error', why: key }); };
+function micSaveRange() {   // where the text goes: the caret if it is in the composer, else the end (restored when the text arrives)
+  const sel = getSelection(); return sel.rangeCount && ED.contains(sel.getRangeAt(0).startContainer) ? sel.getRangeAt(0).cloneRange() : null;
+}
+async function micStart({ hold = false } = {}) {
+  if (mic || micBusy) return;
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) {   // plain http (http://<ip>:4850): browsers give no microphone there
+    const url = HTTPS_URL ? HTTPS_URL + location.pathname + location.hash : '';
+    return micErr(isSecureContext ? 'voice.unsupported' : 'voice.https', { url: url ? `<a href="${esc(url)}" dir="ltr">${esc(HTTPS_URL)}</a>` : 'https://' });
+  }
+  if (liveOn()) return liveStart(hold);
+  if (!window.MediaRecorder) return micErr('voice.unsupported');
+  const range = micSaveRange(); let stream;
+  const m = mic = { starting: true, hold, range, cancelled: false };   // set before the permission prompt: a second tap / key while it is open does nothing
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }); }
+  catch (x) {
+    if (mic === m) mic = null; diag({ k: 'mic', step: 'perm', ok: false, err: x.name });
+    return micErr(x.name === 'NotAllowedError' || x.name === 'SecurityError' ? (TOUCH ? 'voice.deniedPhone' : 'voice.denied') : x.name === 'NotFoundError' || x.name === 'OverconstrainedError' ? 'voice.noMic' : x.name === 'NotReadableError' ? 'voice.micInUse' : 'voice.unsupported');
+  }
+  diag({ k: 'mic', step: 'perm', ok: true, hold });
+  if (m.cancelled || mic !== m) { stream.getTracks().forEach((tr) => tr.stop()); return; }   // let go / cancelled while the prompt was open
+  const type = MIC_TYPES.find((m) => MediaRecorder.isTypeSupported?.(m)) || '';
+  const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  Object.assign(m, { starting: false, rec, stream, chunks: [], t0: Date.now() });
+  rec.ondataavailable = (e) => { if (e.data.size) m.chunks.push(e.data); };
+  rec.start(1000);
+  stream.getTracks().forEach((tr) => { tr.onended = () => { if (mic === m) micStop(); }; });   // mic unplugged / taken away: keep what was said
+  micShow('rec'); $('rectime').value = '0:00';
+  m.timer = setInterval(() => { const ms = Date.now() - m.t0; $('rectime').value = micTime(ms); if (ms >= MIC_MAX_MS) micStop(); }, 250);
+  try {   // the live level: RMS of the microphone signal drives the bar's width
+    const AC = window.AudioContext || window.webkitAudioContext; m.ctx = new AC(); const an = m.ctx.createAnalyser(); an.fftSize = 512;
+    m.ctx.createMediaStreamSource(stream).connect(an); const buf = new Uint8Array(an.fftSize), bar = $('reclvl').firstChild;
+    const tick = () => { an.getByteTimeDomainData(buf); let s = 0; for (const v of buf) s += (v - 128) ** 2; bar.style.width = Math.min(100, Math.sqrt(s / buf.length) * 4) + '%'; m.raf = requestAnimationFrame(tick); };
+    tick();
+  } catch {}   // no meter is fine, the recording still works
+}
+function micEnd(m) { clearInterval(m.timer); cancelAnimationFrame(m.raf); m.ctx?.close().catch(() => {}); m.stream?.getTracks().forEach((tr) => tr.stop()); }
+function micCancel() {
+  if (!mic) { if (!REC.hidden && !micBusy) micShow(''); return; }   // the ✕ of an error line just closes it
+  if (mic.live) { const m = mic; m.stopping = true; m.drop = true; return liveEnd(m); }   // live: what was already typed stays, the interim words go (and no Smart finish)
+  const m = mic; mic = null; m.cancelled = true; if (m.starting) return;
+  m.rec.onstop = null; try { m.rec.stop(); } catch {} micEnd(m); micShow(''); diag({ k: 'mic', step: 'cancel', ms: Date.now() - m.t0 });
+}
+function micStop() {
+  const m = mic; if (!m) return;
+  if (m.live) return liveStop(m);
+  if (m.starting) { m.cancelled = true; mic = null; return; }   // let go before the permission prompt was answered
+  mic = null; micBusy = true; micShow('busy', t('composer.transcribing'));
+  m.rec.onstop = () => { micEnd(m); micSend(m, new Blob(m.chunks, { type: m.rec.mimeType || 'audio/webm' })); };
+  try { m.rec.stop(); } catch { micEnd(m); micBusy = false; micErr('voice.unsupported'); }   // the recorder already stopped itself: never leave the button disabled
+}
+async function micSend(m, blob) {
+  const ms = Date.now() - m.t0, t0 = Date.now();
+  diag({ k: 'mic', step: 'stop', ms, bytes: blob.size, mime: blob.type });
+  if (ms < 500 || blob.size < 1000) { micBusy = false; return micErr('voice.empty'); }
+  let r, status = 0;
+  try { const res = await fetch('/api/transcribe', { method: 'POST', headers: { 'Content-Type': blob.type || 'application/octet-stream', 'X-Seat-Token': TOKEN }, body: blob }); status = res.status; r = await res.json().catch(() => ({})); }
+  catch (x) { r = { error: String(x.message || x), code: 'net' }; }
+  micBusy = false;
+  diag({ k: 'mic', step: 'result', status, code: r.code || null, serverMs: r.ms ?? null, roundMs: Date.now() - t0, lang: r.lang || null });
+  if (status !== 200) return micErr(r.code === 'busy' ? 'voice.busy' : r.code === 'empty' ? 'voice.empty' : r.code === 'big' ? 'voice.tooBig' : r.code === 'off' ? 'voice.off' : 'voice.failed', { error: esc(r.error || String(status)) });
+  const text = (r.text || '').trim(); if (!text) return micErr('voice.empty');
+  micShow('');
+  ED.focus(); const sel = getSelection();
+  if (m.range && m.range.startContainer.isConnected && ED.contains(m.range.startContainer)) { sel.removeAllRanges(); sel.addRange(m.range); } else caretEnd();
+  const pre = document.createRange(); pre.selectNodeContents(ED); pre.setEnd(sel.getRangeAt(0).startContainer, sel.getRangeAt(0).startOffset);
+  const before = edText(pre.cloneContents());
+  insertPlain((before && !/\s$/.test(before) ? ' ' : '') + text);   // a space after what was there, never glued to the previous word
+}
+// ---- Live dictation (Settings > Voice > engine "live", the default): the browser's own speech recognition writes while you speak.
+// Interim words show greyed in a span at the caret, final ones are typed in front of it (undo works). Chrome ends a session after silence or ~60 s:
+// it is started again until you stop. Firefox (no SpeechRecognition) and engine "local" use the Whisper recording above instead.
+// The audio goes to the browser vendor's speech service (Google for Chrome, Microsoft for Edge); Settings says so. ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const ANDROID = /Android/i.test(navigator.userAgent);
+const LIVE_LANG = { '': 'he-IL', he: 'he-IL', en: 'en-US', de: 'de-AT' };
+const LIVE_FATAL = { 'not-allowed': TOUCH ? 'voice.deniedPhone' : 'voice.denied', 'service-not-allowed': 'voice.service', network: 'voice.service', 'audio-capture': 'voice.noMic', 'language-not-supported': 'voice.langUnsupported' };
+const liveOn = () => !!SR && (setData?.settings?.voiceEngine ?? 'live') === 'live';
+const smartOn = () => setData?.settings?.voiceSmart !== false && !!window.MediaRecorder;   // Settings > Voice > Smart finish (default on)
+const rollOn = () => setData?.settings?.voiceRolling !== false && !!window.AudioWorkletNode && !!window.WebSocket;   // Settings > Voice > Rolling correction (default on)
+const BROWSER = (() => {   // for the DIAG beacon: Edge and Chrome send the audio to different speech services (UA-CH brands, else the UA string)
+  const b = (navigator.userAgentData?.brands || []).map((x) => x.brand), ua = navigator.userAgent;
+  return b.includes('Microsoft Edge') || /Edg\//.test(ua) ? 'edge' : b.includes('Google Chrome') || /Chrome\//.test(ua) ? 'chrome' : /Firefox\//.test(ua) ? 'firefox' : /Safari\//.test(ua) ? 'safari' : 'other';
+})();
+// ---- The dictation language chip (HE / EN / DE left of the mic). Live dictation hears one language per session (the Web Speech API cannot
+// detect it), so the owner picks it here: tap = the next one, hold or right-click = the list. Remembered on this device; until then
+// Settings > Voice > Spoken language (Detect = Hebrew). Switching while dictating keeps what is typed and listens on in the new language. ----
+const MICLANG = $('miclang'), LIVE_LANGS = ['he', 'en', 'de'];
+const liveLang = () => { let v = null; try { v = localStorage.getItem('voiceLiveLang'); } catch {} return LIVE_LANGS.includes(v) ? v : LIVE_LANGS.includes(setData?.settings?.voiceLang) ? setData.settings.voiceLang : 'he'; };
+function langChip() { const c = liveLang(); MICLANG.textContent = c.toUpperCase(); MICLANG.title = t('voice.langChip', { lang: esc(setData?.languages?.[c] || c) }); MICLANG.setAttribute('aria-label', MICLANG.title); }
+function setLiveLang(c) {
+  try { localStorage.setItem('voiceLiveLang', c); } catch {}
+  langChip(); diag({ k: 'mic', engine: 'live', step: 'lang', lang: c, during: !!mic?.live });
+  if (mic?.live && !mic.stopping && !mic.ended && c !== mic.lang) liveSwitch(mic);   // the same language again: nothing to restart
+}
+function langMenu() {
+  let mn = $('miclangmenu');
+  if (!mn) {
+    mn = document.createElement('div'); mn.id = 'miclangmenu'; mn.setAttribute('role', 'menu'); mn.hidden = true; document.body.append(mn);
+    mn.onclick = (e) => { const b = e.target.closest('button'); if (!b) return; langMenuClose(); setLiveLang(b.dataset.lang); };
+    mn.onkeydown = (e) => { if (e.key === 'Escape') { e.stopPropagation(); langMenuClose(); MICLANG.focus(); } };   // before the document's Esc (which would stop the dictation)
+  }
+  if (!mn.hidden) return;   // a touch long-press fires both the timer and 'contextmenu'
+  const c = liveLang();
+  mn.innerHTML = LIVE_LANGS.map((l) => `<button type="button" role="menuitemradio" aria-checked="${l === c}" data-lang="${l}"><b dir="ltr">${l.toUpperCase()}</b> <span lang="${l}">${esc(setData?.languages?.[l] || l)}</span></button>`).join('');
+  mn.hidden = false; MICLANG.setAttribute('aria-expanded', 'true');
+  const r = MICLANG.getBoundingClientRect();
+  mn.style.top = Math.max(4, r.top - mn.offsetHeight - 6) + 'px'; mn.style.left = Math.min(innerWidth - mn.offsetWidth - 4, Math.max(4, r.left)) + 'px';
+  if (!mic?.live) mn.querySelector('[aria-checked=true]').focus();   // while dictating the focus stays in the box
+}
+function langMenuClose() { const mn = $('miclangmenu'); if (mn) mn.hidden = true; MICLANG.setAttribute('aria-expanded', 'false'); }
+let langHoldT = 0, langHeld = false;
+MICLANG.addEventListener('pointerdown', (e) => { if (e.button) return; langHeld = false; clearTimeout(langHoldT); langHoldT = setTimeout(() => { langHeld = true; langMenu(); }, 500); });
+for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) MICLANG.addEventListener(ev, () => clearTimeout(langHoldT));
+MICLANG.addEventListener('contextmenu', (e) => { e.preventDefault(); clearTimeout(langHoldT); langHeld = true; langMenu(); });
+MICLANG.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') langHeld = false; });   // a keyboard press is never the tail of a long-press
+MICLANG.onclick = () => { if (langHeld) { langHeld = false; return; } setLiveLang(LIVE_LANGS[(LIVE_LANGS.indexOf(liveLang()) + 1) % LIVE_LANGS.length]); };
+document.addEventListener('pointerdown', (e) => { const mn = $('miclangmenu'); if (mn && !mn.hidden && !mn.contains(e.target) && e.target !== MICLANG) langMenuClose(); }, true);
+function liveStart(hold) {
+  const range = micSaveRange(); ED.focus(); const sel = getSelection();
+  if (range) { sel.removeAllRanges(); sel.addRange(range); } else caretEnd();
+  const span = document.createElement('span'); span.className = 'vi'; span.contentEditable = 'false';
+  const r = sel.getRangeAt(0); r.collapse(false); r.insertNode(span);
+  // Smart finish / rolling correction mark where this dictation starts (an empty, non-editable span; the interim span marks the end): only the text between the two is ever replaced
+  const smart = smartOn(), roll = rollOn();
+  const m0 = smart || roll ? Object.assign(document.createElement('span'), { className: 'vm', contentEditable: 'false' }) : null; if (m0) span.before(m0);
+  r.setStartBefore(span); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);   // caret before the span (after the start mark), nothing selected
+  const m = mic = { live: true, hold, span, m0, conv: cur.id, t0: Date.now(), stopping: false, quick: 0, langs: new Set(), smart, fin: roll ? [] : null };   // fin: the typed finals (rolling correction)
+  m.timer = setInterval(() => { $('rectime').value = micTime(Date.now() - m.t0); }, 250);
+  $('rectime').value = '0:00'; micShow('live', t('voice.listening'));
+  diag({ k: 'mic', engine: 'live', step: 'start', hold, browser: BROWSER, smart, roll }); $('rollstate').hidden = true;
+  liveRec(m);
+  if (m0) sfRecord(m);
+}
+function liveRec(m) {
+  const rec = m.rec = new SR(); m.lang = liveLang(); m.langs.add(m.lang); rec.lang = LIVE_LANG[m.lang]; rollSend(m, { type: 'lang', lang: m.lang }); rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
+  m.err = null; m.done = new Map(); m.lastFinal = 0; m.tRec = Date.now(); m.gap = false;
+  rec.onstart = () => { if (!m.started) { m.started = true; diag({ k: 'mic', engine: 'live', step: 'perm', ok: true, lang: rec.lang }); } };
+  rec.onresult = (e) => {
+    if (mic !== m || m.rec !== rec) return;   // a session ended by a language switch can still deliver a late result
+    if (cur.id !== m.conv) { m.drop = true; return liveEnd(m); }   // another chat was opened: its composer must not get these words
+    if (!m.span.isConnected) { caretEnd(); getSelection().getRangeAt(0).insertNode(m.span); }   // the box was cleared or rewritten mid-dictation: carry on at the end
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i], txt = res[0].transcript;
+      if (!res.isFinal) { interim += txt; continue; }
+      // Android Chrome may deliver a final result twice, or a final that repeats the previous one plus new words: only the new part is typed
+      if (m.done.get(i) === txt) continue;
+      const prev = m.done.get(i) ?? [...m.done.values()].pop() ?? '', echo = ANDROID && prev && Date.now() - m.lastFinal < 1500 && txt.trim().startsWith(prev.trim());   // the repeat bug is Android's; elsewhere a repeated word is meant
+      const add = echo ? txt.trim().slice(prev.trim().length) : txt; m.done.set(i, txt); m.lastFinal = Date.now();
+      if (add.trim()) liveCommit(m, add);
+    }
+    if (!interim) m.segT = 0; else if (!m.segT) m.segT = Date.now();   // when the words now interim started showing (rolling correction maps phrases by time)
+    const pv = m.span.previousSibling;   // a space in front when the interim words would touch the previous word
+    m.span.textContent = interim && pv?.nodeType === 3 && pv.data && !/\s$/.test(pv.data) && !/^\s/.test(interim) ? ' ' + interim : interim;
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'audio-capture' && (m.sf || m.roll) && !m.sfShared) { m.sfShared = true; sfDrop(m); rollStop(m, 'shared-mic'); diag({ k: 'mic', engine: 'live', step: 'smart', ok: false, err: 'shared-mic' }); return; }   // a recognizer that wants the mic alone (some phones): drop the parallel recording, keep dictating
+    m.err = e.error; if (e.error !== 'no-speech' && e.error !== 'aborted') diag({ k: 'mic', engine: 'live', step: 'error', err: e.error });
+  };
+  rec.onend = () => {
+    if (mic !== m || m.rec !== rec) return;
+    if (m.stopping || LIVE_FATAL[m.err]) return liveEnd(m, m.stopping ? null : LIVE_FATAL[m.err]);
+    // Edge ends a session after a short pause, often before its last words became final: they are typed now, the next session's first result would overwrite them
+    const pend = m.span.textContent; m.span.textContent = ''; if (pend.trim()) liveCommit(m, pend);
+    if (m.switching) { m.switching = false; m.quick = 0; return liveRec(m); }   // the language chip: listen on in the new language at once
+    const quick = Date.now() - m.tRec < 1000;
+    if (quick && ++m.quick > 3) return liveEnd(m, 'voice.service');   // ends at once again and again: the service is not answering
+    if (!quick) m.quick = 0;
+    // Chrome's silent end after a pause or ~60 s: keep listening until the owner stops. A session that ended at once waits 250 / 500 / 750 ms
+    // before the next: restarting in a tight loop is what made Edge drop words.
+    m.gap = true; m.restartT = setTimeout(() => { if (mic !== m || m.stopping) return; try { liveRec(m); } catch { liveEnd(m, 'voice.service'); } }, quick ? 250 * m.quick : 0);
+  };
+  rec.start();
+}
+function liveSwitch(m) {   // a new language mid-dictation: the words heard so far stay typed, the next ones are heard in the new language
+  const txt = m.span.textContent; m.span.textContent = ''; if (txt.trim()) liveCommit(m, txt);
+  if (m.gap) return;   // between two sessions: the next one starts in the new language anyway
+  if (m.switching) return;   // a second tap before the first restart finished
+  m.switching = true; try { m.rec.abort(); } catch {}
+}
+function liveCommit(m, text) {   // typed in front of the interim span, with a space if it would glue onto the previous word
+  if (document.activeElement !== ED) ED.focus({ preventScroll: true });
+  // rolling correction: an empty mark in front of each final, so a phrase read again later replaces exactly the finals typed in its time
+  const mk = m.fin && m.span.isConnected ? Object.assign(document.createElement('span'), { className: 'vm', contentEditable: 'false' }) : null; if (mk) m.span.before(mk);
+  const sel = getSelection(), r = document.createRange(); r.setStartBefore(m.span); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+  const pre = document.createRange(); pre.selectNodeContents(ED); pre.setEnd(r.startContainer, r.startOffset);
+  const before = edText(pre.cloneContents());
+  m.committing = true; try { insertPlain((before && !/\s$/.test(before) ? ' ' : '') + text.trim()); } finally { m.committing = false; }
+  if (mk) { const now = Date.now(); m.fin.push({ mk, s: m.segT || Math.max(m.fin.at(-1)?.e ?? 0, now - 2000), e: now, st: 'open', text: rollText(mk, m.span) }); m.segT = 0; rollTry(m); }
+}
+// The caret sits at the end of the dictated part, so the owner's own typing there lands between the marks: that dictation is then not replaced.
+ED.addEventListener('beforeinput', () => {
+  const m = mic; if (!m?.live || !m.m0 || m.committing || !m.m0.isConnected || !m.span.isConnected) return;
+  const s = getSelection(); if (!s.rangeCount) return; const c = s.getRangeAt(0), seg = sfRange(m);
+  if (seg.isPointInRange(c.startContainer, c.startOffset) || seg.isPointInRange(c.endContainer, c.endOffset)) m.edited = true;
+});
+function liveEnd(m, errKey) {
+  if (m.ended) return; m.ended = true;   // stop timer and 'end' can both arrive
+  if (mic === m) mic = null;
+  clearInterval(m.timer); clearTimeout(m.stopT); clearTimeout(m.restartT); try { m.rec.abort(); } catch {}
+  // stopped (or the service failed) before the last words became final: they are kept. Cancel, Send and a chat switch (m.drop) drop them.
+  if (!m.drop && m.span.isConnected && m.span.textContent.trim()) liveCommit(m, m.span.textContent);
+  rollStop(m);   // the last phrase is still read (the stream says 'end'); a dropped dictation closes it
+  // DIAG: which way Smart finish went (BUG #1: a dictation with switches ended with no 'smart' line and no way to tell why)
+  const marks = !!m.m0 && m.m0.isConnected && m.span.isConnected;
+  const smart = !m.m0 || !m.smart ? 'off' : m.drop ? 'drop' : !m.sf ? (m.sfShared ? 'shared-mic' : 'no-recording') : !marks ? 'marks' : 'check';
+  if (smart === 'check') { m.span.textContent = ''; m.span.className = 'vm'; sfFinish(m); }   // the span stays as the end mark
+  else if (m.roll && !m.drop && marks) {   // rolling correction without Smart finish: the marks stay until its last phrase is in
+    m.span.textContent = ''; m.span.className = 'vm'; sfDrop(m); m.waiting = true; sfOpen.add(m); sfDot();
+    rollAfter(m, () => { m.waiting = false; sfDot(); rollKeep(m); });
+  } else { sfDrop(m); rollClose(m); m.m0?.remove(); m.span.remove(); rollUnmark(m); }
+  ED.normalize();
+  diag({ k: 'mic', engine: 'live', step: 'end', ms: Date.now() - m.t0, err: errKey || null, smart, langs: [...m.langs] });
+  if (errKey) micErr(errKey); else micShow('');
+}
+function liveStop(m) {   // the last words may still arrive as a final result before 'end'; never wait longer than 2 s for it
+  if (m.stopping) return; m.stopping = true;
+  if (m.gap) return liveEnd(m);   // between two sessions: no 'end' will come
+  try { m.rec.stop(); } catch {} m.stopT = setTimeout(() => liveEnd(m), 2000);
+}
+// ---- Smart finish (Settings > Voice, default on; decision: smartfinish.js). While live dictation runs, the same speech is recorded here too;
+// when it stops, Whisper on this server reads the recording with language detection. Another language it is sure of, or clearly more words
+// (Edge drops words), replaces exactly the text this dictation typed (between its two marks), with "Improved by Whisper · Undo" for 8 s.
+// Text typed before or after is never touched; an edit inside the dictated part, or sending first, cancels the check. DIAG gets counts, never text. ----
+const sfOpen = new Set();   // dictations whose marks are still in the box (Whisper reading, or the Undo note showing)
+const sfRange = (m) => { const r = document.createRange(); r.setStartAfter(m.m0); r.setEndBefore(m.span); return r; };
+const sfText = (m) => edText(sfRange(m).cloneContents());
+const sfDot = () => { if ([...sfOpen].some((m) => m.waiting)) MIC.dataset.check = ''; else delete MIC.dataset.check; };
+async function sfRecord(m) {   // the speech service opens the microphone on its own (no way to hand it a stream); Chrome and Edge let a second capture run beside it
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }); }
+  catch (x) { diag({ k: 'mic', engine: 'live', step: 'smart', ok: false, err: x.name }); return; }   // no recording = plain live dictation, as before
+  if (mic !== m || m.stopping || m.ended) { stream.getTracks().forEach((tr) => tr.stop()); if (m.ended) diag({ k: 'mic', engine: 'live', step: 'smart', ok: false, err: 'late-mic' }); return; }
+  m.stream = stream; if (m.fin) rollStart(m);   // one microphone capture for both: the recording below and the rolling stream
+  if (!m.smart) return;
+  try {
+    const type = MIC_TYPES.find((x) => MediaRecorder.isTypeSupported?.(x)) || '', rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined), sf = m.sf = { rec, stream, chunks: [], t0: Date.now() };
+    rec.ondataavailable = (e) => { if (e.data.size) sf.chunks.push(e.data); }; rec.start(1000);
+    // BUG #1 (2026-11-24): the recording can end by itself mid-dictation (its track ended or the recorder failed; suspected on Edge when
+    // the speech service restarts for a language switch). sfFinish used to wait for an 'onstop' that had already fired: no check, no DIAG.
+    rec.onstop = () => { sf.endedAt = Date.now(); diag({ k: 'mic', engine: 'live', step: 'smart-rec-ended', ms: sf.endedAt - sf.t0, track: stream.getAudioTracks()[0]?.readyState || null }); };
+  } catch (x) { if (!m.roll) stream.getTracks().forEach((tr) => tr.stop()); m.sf = null; diag({ k: 'mic', engine: 'live', step: 'smart', ok: false, err: x.name }); }
+}
+function sfDrop(m) { const sf = m.sf; if (!sf) return; m.sf = null; sf.rec.onstop = null; sf.dropped = true; try { sf.rec.stop(); } catch {} sf.stream.getTracks().forEach((tr) => tr.stop()); }
+function sfFinish(m) {
+  const sf = m.sf; m.sf = null; m.sfLive = sfText(m); m.waiting = true; sfOpen.add(m); sfDot();
+  // the caret sits at the end of the dictated part: move it past the end mark, so typing on while Whisper reads goes after it, not into it
+  const sel = getSelection(), seg = sfRange(m), c = sel.rangeCount && sel.getRangeAt(0);
+  if (c && c.collapsed && seg.isPointInRange(c.startContainer, c.startOffset)) { const tail = document.createRange(); tail.setStart(c.startContainer, c.startOffset); tail.setEndBefore(m.span); if (!edText(tail.cloneContents())) { const r = document.createRange(); r.setStartAfter(m.span); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); } }
+  // Whatever happens, sfCheck runs exactly once: on 'stop', at once when the recorder already stopped, or after 3 s without a 'stop'.
+  // A recording that ended more than 0.4 s before the dictation, or whose 'stop' never came, may miss the last words: it is partial,
+  // checked and logged, never used to replace (sf.partial).
+  // With rolling correction: its last phrases come in first, then Smart finish reads only the tail it did not settle (rollTailStart).
+  let once = false; const go = (late) => {
+    if (once) return; once = true; clearTimeout(sf.stopT); sf.stream.getTracks().forEach((tr) => tr.stop()); sf.partial = late === true || (!!sf.endedAt && Date.now() - sf.endedAt > 400);
+    const blob = new Blob(sf.chunks, { type: sf.rec.mimeType || 'audio/webm' }), recMs = (sf.endedAt || Date.now()) - sf.t0;
+    rollAfter(m, () => { if (rollTailStart(m, sf)) sfCheck(m, blob, recMs, sf); else { m.waiting = false; sfDot(); rollKeep(m); } });
+  };
+  if (sf.rec.state === 'inactive') return go();
+  sf.rec.onstop = () => go(); sf.stopT = setTimeout(() => go(true), 3000);
+  try { sf.rec.stop(); } catch { go(); }
+}
+async function sfCheck(m, blob, recMs, sf) {
+  const t0 = Date.now(); let r = {}, status = 0;
+  if (recMs >= 700 && blob.size >= 1000 && !m.drop) {
+    try { const res = await fetch('/api/transcribe?smart=1&lang=auto' + (m.sfGemini ? '&engine=gemini' : m.sfFrom ? '&from=' + m.sfFrom : ''), { method: 'POST', headers: { 'Content-Type': blob.type || 'application/octet-stream', 'X-Seat-Token': TOKEN }, body: blob }); status = res.status; r = await res.json().catch(() => ({})); }
+    catch {}   // no server answer = the live text stays, as before
+  }
+  m.waiting = false; sfDot();
+  const here = !m.drop && m.m0.isConnected && m.span.isConnected && ED.contains(m.m0) && ED.offsetParent && cur.id === m.conv && !m.edited
+    && ![...sfOpen, mic].some((o) => o && o !== m && o.m0?.isConnected && sfRange(m).intersectsNode(o.m0)), live = here ? sfText(m) : '';   // composer hidden, typed into, or another dictation inside: no replacement
+  // why not here (DIAG, session 1 of 2026-11-24 said only 'gone'): sent / chat switched, marks removed, composer hidden, typed into, another dictation inside
+  const gone = m.drop ? 'drop' : !(m.m0.isConnected && m.span.isConnected && ED.contains(m.m0)) ? 'marks' : !ED.offsetParent ? 'hidden' : cur.id !== m.conv ? 'conv' : m.edited ? 'typed' : 'nested';
+  const d = status === 200 && here && live === m.sfLive && !sf?.partial ? smartDecide({ live, whisper: r.text || '', liveLangs: [...m.langs], lang: r.lang, prob: r.prob, segments: r.segments, langs: r.langs, engine: r.engine })
+    : { replace: false, why: sf?.partial ? 'partial' : status !== 200 ? 'server' : here ? 'edited' : 'gone:' + gone, lw: sfWords(m.sfLive), ww: sfWords(r.text) };
+  diag({ k: 'mic', engine: 'live', step: 'smart', browser: BROWSER, status, liveWords: d.lw, whisperWords: d.ww, liveLangs: [...m.langs], engineUsed: r.engine || null, fallback: r.fallback || null, lang: r.lang || null, first: r.first || null, prob: r.prob ?? null,
+    segments: r.segments ? r.segments.length : null, langs: r.langs || null, replaced: d.replace, why: d.why, rolled: !!m.sfGemini, recMs, serverMs: r.ms ?? null, roundMs: Date.now() - t0 });
+  if (!d.replace) return rollKeep(m);   // (= sfDone without a rolling correction to undo)
+  const pre = document.createRange(); pre.selectNodeContents(ED); pre.setEndBefore(m.m0); const before = edText(pre.cloneContents());
+  sfPut(m, (live.match(/^\s+/)?.[0] ?? (before && !/\s$/.test(before) ? ' ' : '')) + r.text.trim()); m.sfNew = sfText(m);   // the same space in front the live text had
+  if (m.sfNew === m.sfLive) return sfDone(m);   // the replacement did not take
+  if (!mic && !micBusy) { micShow('note', `${t(r.engine === 'gemini' ? 'voice.improvedGemini' : 'voice.improved')} <button type="button" id="sfundo">${t('voice.undo')}</button>`); $('sfundo').onclick = () => sfUndo(m); m.note = true; }
+  m.noteT = setTimeout(() => sfDone(m), 8000);
+}
+function sfPut(m, text, rng = sfRange(m)) {   // replaces exactly what lies between the two marks (or one phrase's marks: rolling correction; execCommand: Ctrl+Z works too); the owner's caret goes back where it was
+  const back = document.activeElement, sel = getSelection(), saved = back === ED && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+  ED.focus({ preventScroll: true }); sel.removeAllRanges(); sel.addRange(rng);
+  if (text) insertPlain(text); else if (!sel.isCollapsed) document.execCommand('delete');
+  sel.removeAllRanges();
+  if (saved && ED.contains(saved.startContainer)) sel.addRange(saved); else { const r = document.createRange(); if (mic === m) r.setStartBefore(m.span); else r.setStartAfter(m.span); r.collapse(true); sel.addRange(r); }   // still dictating: where the next words go
+  if (back && back !== ED && back !== document.body) back.focus({ preventScroll: true });
+}
+function sfUndo(m) {
+  clearTimeout(m.noteT);
+  const ok = m.m0.isConnected && m.span.isConnected && sfText(m) === m.sfNew; if (ok) sfPut(m, m.sfLive);   // edited since: leave it alone
+  diag({ k: 'mic', engine: 'live', step: 'smart-undo', ok }); sfDone(m);
+}
+function sfDone(m) {
+  clearTimeout(m.noteT); sfOpen.delete(m); m.waiting = false; sfDot();
+  if (m.note && REC.className === 'note') micShow(''); m.note = false;
+  rollClose(m); m.m0?.remove(); m.span.remove(); rollUnmark(m); ED.normalize();
+}
+// ---- Rolling correction (Settings > Voice, default on; server: roll.mjs over /ws/voice; decisions: rolling.js). While the browser types its
+// words, the same microphone goes to this server as 16 kHz PCM; it cuts the speech at pauses and reads each phrase with Whisper (ivrit-ai for
+// Hebrew), ~5 s behind the speaker. Each typed final has an empty mark in front of it (liveCommit); a phrase replaces exactly the finals typed
+// in its time window, never text the owner typed or edited, with a short underline flash and one "Undo last correction" for all of them.
+// The server pauses it when it is busy (load, slow phrases, another stream): live dictation + Smart finish as before. DIAG: counts only. ----
+const ROLL_PCM = URL.createObjectURL(new Blob([`registerProcessor('pcm16', class extends AudioWorkletProcessor {
+  constructor() { super(); this.step = sampleRate / 16000; this.acc = 0; this.buf = new Int16Array(1600); this.n = 0; }
+  process(inputs) {   // 16 kHz mono 16-bit, 100 ms per message (the context runs at 16 kHz where the browser allows it; else every step-th sample)
+    const c = inputs[0] && inputs[0][0]; if (!c) return true;
+    for (let i = 0; i < c.length; i++) {
+      if ((this.acc += 1) < this.step) continue; this.acc -= this.step;
+      this.buf[this.n++] = Math.max(-1, Math.min(1, c[i])) * 32767;
+      if (this.n === 1600) { this.port.postMessage(this.buf.buffer, [this.buf.buffer]); this.buf = new Int16Array(1600); this.n = 0; }
+    }
+    return true;
+  }
+});`], { type: 'text/javascript' }));
+const rollFixes = [];   // { m, f, old, now }: the corrections "Undo last correction" can take back, newest last
+const rollText = (a, b) => { const r = document.createRange(); r.setStartAfter(a); r.setEndBefore(b); return edText(r.cloneContents()); };
+const rollEnd = (m, i) => m.fin[i + 1]?.mk || m.span;   // a final's text runs to the next final's mark, the last one to the end mark
+const rollSend = (m, x) => { if (m.roll?.ws.readyState === 1 && !m.roll.closed) m.roll.ws.send(JSON.stringify(x)); };
+function rollStart(m) {
+  let ws; try { ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/voice`, ['seat', TOKEN]); } catch { return; }   // the token as subprotocol: a WebSocket cannot carry headers
+  const r = m.roll = { ws, t0: 0, pend: [], phrases: 0, replaced: 0, same: 0, skipped: 0, ms: 0, paused: null, closed: false };
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'start', lang: m.lang }));
+  ws.onclose = () => rollClose(m, r.done ? null : 'closed');
+  ws.onmessage = (e) => {
+    let x; try { x = JSON.parse(e.data); } catch { return; }
+    if (x.type === 'ready' && !r.ending) rollAudio(m, r);
+    else if (x.type === 'paused') { r.paused = x.why; $('rollstate').hidden = false; rollClose(m); }   // "Rolling correction paused: server busy"
+    else if (x.type === 'done') { r.done = true; rollClose(m); }
+    else if (x.type === 'phrase' && !m.drop) {
+      r.phrases++; r.ms += x.ms || 0;
+      if (x.text?.trim()) { r.pend.push({ startMs: r.t0 + x.startMs, endMs: r.t0 + x.endMs, text: x.text }); rollTry(m); }
+    }
+  };
+}
+async function rollAudio(m, r) {
+  if (r.closed || !m.stream) return;
+  try {
+    const ctx = r.ctx = new AudioContext({ sampleRate: 16000 });
+    await ctx.audioWorklet.addModule(ROLL_PCM); if (r.closed) return ctx.close();
+    const src = ctx.createMediaStreamSource(m.stream), node = new AudioWorkletNode(ctx, 'pcm16');
+    node.port.onmessage = (e) => { if (!r.closed && !r.ending && r.ws.readyState === 1) r.ws.send(e.data); };
+    r.t0 = Date.now(); src.connect(node); node.connect(ctx.destination);   // (its output is silence: connected only so the browser runs it)
+    ctx.resume?.();
+  } catch (x) { if (r.ending) return; diag({ k: 'mic', engine: 'live', step: 'roll', ok: false, err: x.name }); rollClose(m); }   // ending: stopped while loading, the last phrase still comes
+}
+function rollTry(m) {   // the phrases that came back, matched to the finals typed in their time (rolling.js rollMatch)
+  const r = m.roll; if (!r || !m.fin || !r.pend.length) return;
+  if (m.drop || !m.m0?.isConnected || !m.span.isConnected || cur.id !== m.conv || !ED.offsetParent) { r.pend = []; return; }
+  const ps = r.pend, p = { startMs: ps[0].startMs, endMs: ps[ps.length - 1].endMs, text: ps.map((x) => x.text.trim()).join(' ') };
+  const mt = rollMatch(m.fin, p, mic === m ? m.segT || null : null);
+  if (mt.wait) return;   // its words are still interim: tried again when they are typed (liveCommit)
+  if (mt.why === 'nomatch' && mic === m && ps.length < 2) return;   // its final may still come, or it shares one with the next phrase: tried with that one
+  r.pend = [];
+  if (mt.why) { r.skipped++; return; }
+  const a = m.fin[mt.from].mk, b = rollEnd(m, mt.to), live = rollText(a, b);
+  // the owner typed into these finals (or around them) since they were typed: never touched
+  if (live !== m.fin.slice(mt.from, mt.to + 1).map((f) => f.text).join('')) { for (let i = mt.from; i <= mt.to; i++) m.fin[i].st = 'edited'; r.skipped++; return; }
+  const d = rollDecide(live, p.text);
+  if (!d.replace) { if (d.why === 'same') { r.same++; for (let i = mt.from; i <= mt.to; i++) Object.assign(m.fin[i], { st: 'done', pEnd: p.endMs }); } else r.skipped++; return; }
+  const rng = document.createRange(); rng.setStartAfter(a); rng.setEndBefore(b);
+  const now = (live.match(/^\s+/)?.[0] ?? '') + p.text.trim();   // the same space in front the live text had
+  m.committing = true; try { sfPut(m, now, rng); } finally { m.committing = false; }
+  const f = m.fin[mt.from]; m.fin.splice(mt.from + 1, mt.to - mt.from);   // the finals in between lost their marks with the old text: one final now
+  Object.assign(f, { st: 'done', pEnd: p.endMs, text: rollText(a, rollEnd(m, mt.from)) });
+  if (f.text === live) return;
+  r.replaced++; rollFixes.push({ m, f, old: live, now: f.text }); rollUndoUi();
+  if (window.Highlight && CSS.highlights) {   // a short underline under the corrected words (no DOM change, so nothing to clean up in the text)
+    const h = CSS.highlights.get('rollfix') || new Highlight(), fl = document.createRange(); fl.setStartAfter(a); fl.setEndBefore(rollEnd(m, mt.from));
+    CSS.highlights.set('rollfix', h); h.add(fl); setTimeout(() => h.delete(fl), 1600);
+  }
+}
+function rollStop(m, why) {   // the dictation ended: no more audio; the server reads the last phrase and says 'done' (a dropped one: closed now)
+  const r = m.roll; if (!r && !m.sf && m.stream) m.stream.getTracks().forEach((tr) => tr.stop());   // no stream could be opened: the capture is still ours to stop
+  if (!r || r.ending) return; r.ending = true;
+  r.ctx?.close().catch(() => {}); r.ctx = null;   // (a second close() rejects)
+  if (!m.sf && m.stream) m.stream.getTracks().forEach((tr) => tr.stop());   // the Smart finish recording, when there is one, stops the microphone itself
+  if (why) r.paused = why; else $('rollstate').hidden = true;
+  if (m.drop || why || r.ws.readyState !== 1) return rollClose(m);
+  rollSend(m, { type: 'end' }); rollTry(m);
+}
+function rollAfter(m, fn) {   // fn once the last phrase is in (or the stream closed / paused, or 15 s passed)
+  const r = m.roll; if (!r || r.closed) return fn();
+  r.after = fn; r.afterT = setTimeout(() => rollClose(m, 'timeout'), 15000);
+}
+function rollClose(m, why) {
+  const r = m.roll; if (!r || r.closed) return; r.closed = true; if (why && !r.paused) r.paused = why;
+  clearTimeout(r.afterT); r.ctx?.close().catch(() => {}); r.ctx = null; try { r.ws.close(); } catch {}
+  rollTry(m);   // a phrase still waiting for a merge partner: matched now, alone
+  diag({ k: 'mic', engine: 'live', step: 'roll', phrases: r.phrases, replaced: r.replaced, same: r.same, skipped: r.skipped, avgMs: r.phrases ? Math.round(r.ms / r.phrases) : null, paused: r.paused, finals: m.fin?.length ?? 0, tail: m.fin ? m.fin.length - rollTail(m.fin) : null });
+  const fn = r.after; r.after = null; fn?.();
+}
+function rollTailStart(m, sf) {   // Smart finish after rolling correction: only the finals after the last settled one, and only their audio (?from=)
+  if (!m.fin || !m.m0.isConnected) return true;
+  const k = rollTail(m.fin); if (!k) return true;   // nothing settled: the whole dictation, as without rolling correction
+  // Gemini still reads the whole clip (owner, 2026-11-24): ivrit writes the English words of a Hebrew sentence in Hebrew letters, Gemini
+  // spells them in Latin. smartDecide keeps the rolled text unless Gemini has Latin words it lacks, other languages or clearly more words;
+  // Gemini failing keeps it too (?engine=gemini: no Whisper read over settled text).
+  if ((setData?.settings?.voiceSmartEngine || 'whisper') === 'gemini') { m.sfGemini = true; m.sfLive = sfText(m); return true; }
+  if (k >= m.fin.length) return false;   // everything settled: nothing left to read
+  m.fin[k].mk.before(m.m0); m.sfLive = sfText(m); m.sfFrom = Math.max(0, Math.round(m.fin[k - 1].pEnd - sf.t0));
+  return true;
+}
+function rollKeep(m) {   // its marks stay 8 s after a correction, for Undo
+  if (!m.roll?.replaced || m.drop) return sfDone(m);
+  if (!mic && !micBusy && REC.hidden) { micShow('note', ''); m.note = true; }
+  m.noteT = setTimeout(() => sfDone(m), 8000);
+}
+function rollUnmark(m) {
+  for (const f of m.fin || []) f.mk.remove();
+  for (let i = rollFixes.length - 1; i >= 0; i--) if (rollFixes[i].m === m) rollFixes.splice(i, 1);
+  rollUndoUi();
+}
+function rollUndoUi() { $('rollundo').hidden = !rollFixes.length; }
+$('rollundo').onclick = () => {   // the newest correction whose text is still as it was put in: back to the live words
+  const x = rollFixes.pop(); rollUndoUi(); if (!x) return;
+  const { m, f } = x, i = m.fin.indexOf(f), b = i >= 0 && rollEnd(m, i), ok = !!b && f.mk.isConnected && b.isConnected && rollText(f.mk, b) === x.now;
+  if (ok) { const rng = document.createRange(); rng.setStartAfter(f.mk); rng.setEndBefore(b); m.committing = true; try { sfPut(m, x.old, rng); } finally { m.committing = false; } f.text = rollText(f.mk, b); }
+  diag({ k: 'mic', engine: 'live', step: 'roll-undo', ok });
+};
+// Send while dictating: stop first and drop the interim span, so the message holds exactly what is in the box (capture: runs before the send handler).
+// A Smart finish still reading is dropped: the message went as it was.
+$('composer').addEventListener('submit', () => { if (mic?.live) { const m = mic; m.stopping = true; m.drop = true; liveEnd(m); } for (const m of sfOpen) { m.drop = true; if (!m.waiting) sfDone(m); } }, true);
+MIC.onclick = () => { if (mic && !mic.hold) micStop(); else if (!mic) micStart(); };
+$('reccancel').onclick = micCancel;
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && (mic || (!REC.hidden && !micBusy))) { e.preventDefault(); micCancel(); return; }
+  // hold-to-talk: Ctrl+Space down starts (once, not on key repeat), letting go of either key stops
+  if (e.code === 'Space' && e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !MIC.hidden && MIC.offsetParent && (document.activeElement === ED || document.activeElement === document.body || document.activeElement === MIC)) { e.preventDefault(); if (!e.repeat && !mic) micStart({ hold: true }); }   // not while typing in another field (cwd, Settings)
+});
+document.addEventListener('keyup', (e) => { if (mic?.hold && (e.code === 'Space' || e.key === 'Control')) { e.preventDefault(); micStop(); } });
+addEventListener('blur', () => { if (mic?.hold) micStop(); });   // the window lost focus mid-hold: keyup will never come, keep what was said
+const micUi = () => { MIC.hidden = setData?.settings?.voice === false; MICLANG.hidden = MIC.hidden || !liveOn(); langChip(); if (MIC.hidden) micCancel(); };
 // ---- Settings page (#settings, server: settings.mjs + /api/settings*): what is set up, what is turned on. First run (no settings.json) opens it with a checklist. ----
 let setData = null, setTab = 'start', draft = null, setNote = null;   // setNote: { tab, html } the last action's result (a login command, an error)
 const onSettings = () => document.body.classList.contains('settings');
-const STABS = ['start', 'seats', 'telegram', 'access', 'usage', 'projects', 'routines', 'remotes', 'models'];
+const STABS = ['start', 'seats', 'telegram', 'access', 'usage', 'projects', 'routines', 'remotes', 'models', 'voice', 'ideas', 'snippets'];
 const yes = (ok, a, b) => `<span class="${ok ? 'sok' : 'sno'}">${ok ? '✓ ' + a : '✗ ' + b}</span>`;
 const cmd = (c) => `<code class="scmd" dir="ltr">${esc(c)}</code>`;
 const tog = (k, title, text) => `<label class="stog"><input type="checkbox" data-set="${k}"${draft[k] ? ' checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
@@ -1109,6 +1663,7 @@ async function loadSettings() {
   const r = await api('/api/settings').catch(() => null); if (!r?.settings) return;   // a failed read keeps what the page had
   const keep = draft && setData && dirty();   // an action elsewhere on the page never wipes toggles not saved yet
   setData = r; if (!keep) { draft = JSON.parse(JSON.stringify(r.settings)); if (r.firstRun && !draft.language) draft.language = LANG; }   // first run: the language the page opened in, kept by Save (the bot uses it too)
+  micUi();
   if (onSettings()) showSettings();
 }
 function checklist() {
@@ -1191,7 +1746,33 @@ const TABS = {
     + `<label>${t('set.rem.account')} <select name="account">${seatOpts('', t('common.none'))}</select></label><div class="racts"><button type="submit" class="primary">${t('set.rem.add')}</button></div></form>`,
   models: () => `<h3>${t('set.models.title')}</h3><small class="smuted">${t('set.models.note')}</small>`
     + setData.detected.seats.filter((s) => s.active).map((s) => `<label class="snum"><span><b>${esc(s.name)}</b></span><select data-model="${esc(s.name)}"><option value="">${t('set.models.cliDefault')}</option>${(setData.models[s.name] || []).map((m) => `<option value="${esc(m.id)}"${draft.models[s.name] === m.id ? ' selected' : ''}>${esc(m.name || m.id)}</option>`).join('')}</select></label>`).join(''),
+  // the mic button (server: voice.mjs). Model ids = voice.mjs VOICE_MODELS; languages by their own names (the Language list's)
+  voice: () => `<h3>${t('set.tab.voice')}</h3>` + tog('voice', t('set.voice.on'), t('set.voice.onHint'))
+    + `<label class="snum"><span><b>${t('set.voice.engine')}</b><small>${t('set.voice.engineHint')}</small></span><select data-set="voiceEngine" data-str="1">${['live', 'local'].map((e) => `<option value="${e}"${(draft.voiceEngine || 'live') === e ? ' selected' : ''}>${t('set.voice.' + e)}</option>`).join('')}</select></label>`
+    + `<label class="snum"><span><b>${t('set.voice.model')}</b><small>${t('set.voice.modelHint')}</small></span><select data-set="voiceModel" data-str="1" dir="ltr">${['small', 'large-v3-turbo', 'ivrit-ai/whisper-large-v3-turbo-ct2'].map((m) => `<option value="${m}"${draft.voiceModel === m ? ' selected' : ''}>${m}</option>`).join('')}</select></label>`
+    + `<label class="snum"><span><b>${t('set.voice.lang')}</b><small>${t('set.voice.langHint')}</small></span><select data-set="voiceLang" data-str="1"><option value="">${t('set.voice.auto')}</option>${['he', 'en', 'de'].map((c) => `<option value="${c}" lang="${c}"${draft.voiceLang === c ? ' selected' : ''}>${esc(setData.languages?.[c] || c)}</option>`).join('')}</select></label>`
+    + tog('voiceRolling', t('set.voice.rolling'), t('set.voice.rollingHint'))   // rolling correction (roll.mjs): each phrase re-read on this server while dictating
+    + tog('voiceSmart', t('set.voice.smart'), t('set.voice.smartHint'))   // Smart finish (voice.mjs SMART_MODELS: models whose language detection works)
+    // Smart finish engine (voice.mjs SMART_ENGINES / GEMINI_MODELS): Gemini by default, Whisper = private and the fallback
+    + `<label class="snum"><span><b>${t('set.voice.smartEngine')}</b><small>${t('set.voice.smartEngineHint')}</small></span><select data-set="voiceSmartEngine" data-str="1">${['gemini', 'whisper'].map((e) => `<option value="${e}"${(draft.voiceSmartEngine || 'gemini') === e ? ' selected' : ''}>${t(e === 'gemini' ? 'set.voice.engGemini' : 'set.voice.engWhisper')}</option>`).join('')}</select></label>`
+    + `<label class="snum"><span><b>${t('set.voice.geminiModel')}</b><small>${t('set.voice.geminiModelHint')}</small></span><select data-set="voiceGeminiModel" data-str="1" dir="ltr">${['gemini-3.8-flash-low', 'gemini-3.8-flash-medium'].map((m) => `<option value="${m}"${(draft.voiceGeminiModel || 'gemini-3.8-flash-low') === m ? ' selected' : ''}>${m}</option>`).join('')}</select></label>`
+    + `<label class="snum"><span><b>${t('set.voice.smartModel')}</b><small>${t('set.voice.smartModelHint')}</small></span><select data-set="voiceSmartModel" data-str="1" dir="ltr">${['small', 'large-v3-turbo'].map((m) => `<option value="${m}"${(draft.voiceSmartModel || 'small') === m ? ' selected' : ''}>${m}</option>`).join('')}</select></label>`
+    + `<p class="smuted">${t('set.voice.browserHint')}</p>`,
+  // the Ideas inbox (server: ideas.mjs): which Claude seat prepares ideas, the daily Telegram reminder, Telegram capture
+  ideas: () => `<h3>${t('set.tab.ideas')}</h3>`
+    + `<label class="snum" data-guide="set-ideas-seat"><span><b>${t('set.ideas.seat')}</b><small>${t('set.ideas.seatHint')}</small></span><select data-set="ideasSeat" data-str="1">${setData.detected.seats.filter((s) => s.active && !s.agent).map((s) => `<option${s.name === draft.ideasSeat ? ' selected' : ''}>${esc(s.name)}</option>`).join('')}</select></label>`
+    + `<label class="snum"><span><b>${t('set.ideas.digestAt')}</b><small>${t('set.ideas.digestAtHint')}</small></span><input type="time" min="07:00" max="22:59" data-set="ideasDigestAt" data-str="1" value="${esc(draft.ideasDigestAt || '18:00')}" dir="ltr"></label>`
+    + `<label class="snum"><span><b>${t('set.ideas.stale')}</b><small>${t('set.ideas.staleHint')}</small></span><input type="number" min="1" max="720" data-set="ideasStaleH" value="${draft.ideasStaleH ?? 24}"> ${t('set.ideas.hours')}</label>`
+    + tog('ideasTelegram', t('set.ideas.tg'), t('set.ideas.tgHint')),
+  // the composer's "@" snippets (server: slash.mjs, <data>/snippets.json): the whole list is saved at once, in this order
+  snippets: () => `<h3>${t('set.tab.snippets')}</h3><small class="smuted">${t('set.snip.note')}</small><form class="sform" data-form="snippets"><div id="sniprows">${(snipDraft || snippets).map(snipRow).join('')}</div>`
+    + `<div class="racts"><button type="button" data-snipadd>${t('set.snip.add')}</button><button type="submit" class="primary">${t('common.save')}</button></div></form>`,
 };
+const snipRow = (s = {}) => `<fieldset class="ssnip"><div class="ssnip-h"><input name="sname" value="${esc(s.name || '')}" required pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="${t('set.snip.namePh')}" aria-label="${t('set.snip.name')}" dir="ltr" spellcheck="false">`
+  + `<input name="slabel" value="${esc(s.label || '')}" maxlength="80" placeholder="${t('set.snip.label')}" aria-label="${t('set.snip.label')}" dir="auto">`
+  + `<button type="button" data-snipmv="-1" aria-label="${t('set.snip.up')}">↑</button><button type="button" data-snipmv="1" aria-label="${t('set.snip.down')}">↓</button><button type="button" data-sniprm aria-label="${t('common.remove')}">✕</button></div>`
+  + `<textarea name="stext" rows="3" required maxlength="8000" aria-label="${t('set.snip.text')}" dir="auto">${esc(s.text || '')}</textarea>`
+  + `<input name="sseats" value="${esc((s.seats || []).join(', '))}" placeholder="${t('set.snip.seats')}" aria-label="${t('set.snip.seats')}" dir="ltr" spellcheck="false"></fieldset>`;
 const discRow = (k = '', v = '') => `<div class="sdisc"><input name="dname" value="${esc(k)}" placeholder="${t('set.proj.discPh')}" dir="ltr" spellcheck="false" aria-label="${t('set.proj.discipline')}"><span>${RTL.includes(LANG) ? '←' : '→'}</span><select name="dseat" aria-label="${t('set.proj.seat')}">${seatOpts(v)}</select><button type="button" data-discrm aria-label="${t('set.proj.remove')}">✕</button></div>`;
 function showSettings() {
   if (!setData) return;
@@ -1209,32 +1790,32 @@ function showSettings() {
   if (tr.left < nr.left) nav.scrollLeft += tr.left - nr.left - 24; else if (tr.right > nr.right) nav.scrollLeft += tr.right - nr.right + 24;
 }
 async function openSettings(tab) {
-  closeGuide(); document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
+  closeGuide(); closeTodos(); closeIdeas(); document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
   if (tab) { setTab = tab; setNote = null; }
   if (!setData) await loadSettings(); showSettings();
 }
 function closeSettings() {
-  if (!onSettings()) return; document.body.classList.remove('settings');
+  if (!onSettings()) return; document.body.classList.remove('settings'); snipDraft = null;   // rows of a refused snippet save are dropped with the page
   if (location.hash === '#settings') history.replaceState(null, '', location.pathname + location.search);
 }
 $('setbtn').onclick = () => { if (onSettings()) return closeSettings(); if (location.hash === '#settings') openSettings(); else location.hash = 'settings'; };
 // ---- Guide (#guide): how to use the console, one short answer per task. Button names are filled in from the page's own keys,
 // so the guide always names a button exactly as the page shows it, in every language. ----
-const GUIDE = ['seats', 'start', 'folder', 'attach', 'approve', 'keep', 'auto', 'search', 'projects', 'runs', 'project', 'ctx', 'settings'];
+const GUIDE = ['seats', 'start', 'folder', 'attach', 'voice', 'slash', 'ideas', 'approve', 'keep', 'auto', 'search', 'projects', 'runs', 'project', 'ctx', 'settings'];
 const onGuide = () => document.body.classList.contains('guide');
 function showGuide() {
   const b = (k, v) => `<b>${t(k, v)}</b>`;
   const names = { settings: b('set.title'), foldAll: b('side.all'), use: b('usage.use'), new: b('side.new'), auto: b('mode.auto'), ask: b('mode.ask'), bypass: b('mode.bypass'), effort: b('composer.effort'), chip: b('composer.projectAuto'),
-    attach: b('composer.attach'), stop: b('composer.stop'), allow: b('perm.allow'), deny: b('perm.deny'), needsApproval: b('status.waiting'), needsAnswer: b('conv.needsAnswer'), closeQuestion: b('conv.closeQuestion'),
+    attach: b('composer.attach'), stop: b('composer.stop'), mic: b('composer.mic'), send: b('composer.send'), tabVoice: b('set.tab.voice'), tabSnippets: b('set.tab.snippets'), allow: b('perm.allow'), deny: b('perm.deny'), needsApproval: b('status.waiting'), needsAnswer: b('conv.needsAnswer'), closeQuestion: b('conv.closeQuestion'),
     keep: b('conv.keep'), archive: b('conv.archive'), showArchived: b('side.showArchived', { n: '…' }), move: b('conv.moveProject'), tabUsage: b('set.tab.usage'), archiveDone: b('set.usage.archiveDone'), archiveDays: b('set.usage.archive'),
     openProjects: b('projects.open'), openProject: b('projects.openProject'), newChat: b('projects.newChat'), allFolders: b('projects.allFolders', { n: '…' }), startRun: b('projects.startRun'), plan: b('projects.plan'), approve: b('projects.approve'),
     needs: b('project.needs'), allClear: b('project.allClear'), working: b('project.working'), runs: b('project.runs'), allTasks: b('project.allTasks'), happening: b('project.happening'), backTo: b('project.backTo'), opened: b('project.opened'), related: b('project.related'), pin: b('project.pin'), notRelated: b('project.notRelated'),
-    tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
+    ideas: b('ideas.button'), dictate: b('ideas.dictate'), voiceNote: b('ideas.voiceNote'), photo: b('ideas.photo'), ideaSave: b('ideas.save'), ideaStart: b('ideas.start'), ideaTodo: b('ideas.todo'), tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
   $('guide').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-gdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('guide.title')}</h2><small>${t('guide.subtitle')}</small></div><button type="button" data-gclose>${t('common.close')}</button></header>`
     + `<div class="gd"><p class="gd-full"><button type="button" class="primary" data-gtour="full">${t('tour.full')}</button></p>${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p><button type="button" class="gd-show" data-gtour="${k}">${t('tour.show')}</button></section>`).join('')}<p class="gd-build">${t('guide.build', { id: `<code dir="ltr">${esc(BUILD)}</code>` })}</p></div>`;   // which code this page runs (the phone app too)
 }
 function openGuide() {
-  closeSettings(); closeProjects(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
+  closeSettings(); closeProjects(); closeTodos(); closeIdeas(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
   showGuide(); $('guide').scrollTop = 0;
 }
 function closeGuide() {
@@ -1243,7 +1824,7 @@ function closeGuide() {
 }
 $('guidebtn').onclick = () => { if (onGuide()) return closeGuide(); if (location.hash === '#guide') openGuide(); else location.hash = 'guide'; };
 // Rail buttons show what is open: every page switch toggles a body class, so one observer covers all the ways in and out (button, hash, Close, tour).
-const railState = () => { $('projbtn').setAttribute('aria-pressed', String(onProjects())); $('setbtn').setAttribute('aria-pressed', String(onSettings())); $('guidebtn').setAttribute('aria-pressed', String(onGuide())); };
+const railState = () => { $('projbtn').setAttribute('aria-pressed', String(onProjects())); $('setbtn').setAttribute('aria-pressed', String(onSettings())); $('guidebtn').setAttribute('aria-pressed', String(onGuide())); $('todobtn').setAttribute('aria-pressed', String(onTodos())); $('ideabtn').setAttribute('aria-pressed', String(onIdeas())); };
 new MutationObserver(railState).observe(document.body, { attributes: true, attributeFilter: ['class'] }); railState();
 $('guide').onclick = (e) => { const g = e.target.closest('[data-gtour]'); if (g) return startTour(g.dataset.gtour); if (e.target.closest('[data-gclose]')) return closeGuide(); if (e.target.closest('[data-gdrawer]')) document.body.classList.add('drawer'); };
 const note = (html, err) => { setNote = { tab: setTab, html, err }; };
@@ -1278,6 +1859,9 @@ $('settings').onclick = async (e) => {
   if (ds.sreload != null) { await loadSettings(); return; }
   if (ds.discadd != null) return $('discrows').insertAdjacentHTML('beforeend', discRow());
   if (ds.discrm != null) return b.parentElement.remove();
+  if (ds.snipadd != null) { $('sniprows').insertAdjacentHTML('beforeend', snipRow()); return $('sniprows').lastElementChild.querySelector('input').focus(); }
+  if (ds.sniprm != null) return b.closest('.ssnip').remove();
+  if (ds.snipmv) { const row = b.closest('.ssnip'), up = ds.snipmv === '-1', nb = up ? row.previousElementSibling : row.nextElementSibling; if (nb) row.parentElement.insertBefore(up ? row : nb, up ? nb : row); return b.focus(); }
   if (ds.ssave != null) {
     b.disabled = true; const r = await api('/api/settings', { settings: draft }).catch((x) => ({ error: String(x) })); b.disabled = false;
     if (r.error) { note(`<bdi>${esc(r.error)}</bdi>`, true); return showSettings(); }
@@ -1316,6 +1900,11 @@ $('settings').onsubmit = async (e) => {
     if (f.dataset.form === 'password') { if (v('next') !== v('again')) { note(t('set.access.differ'), true); return showSettings(); } await settingsAct('/api/settings/password', { current: v('current'), next: v('next') }, () => t('set.access.changed')); }
     if (f.dataset.form === 'routine') await settingsAct('/api/settings/routine', { id: v('id'), seat: v('seat'), cron: v('cron'), cwd: v('cwd'), mode: v('mode'), prompt: v('prompt') }, () => t('set.rt.saved', { id: `<b dir="ltr">${esc(v('id'))}</b>` })).then(() => loadRoutines());
     if (f.dataset.form === 'remote') await settingsAct('/api/settings/remote', { action: 'add', name: v('name'), target: v('target'), identity: v('identity'), control: f.control.checked, paths: v('paths'), account: v('account') }, () => t('set.rem.added', { name: `<b dir="ltr">${esc(v('name'))}</b>` }));
+    if (f.dataset.form === 'snippets') {
+      const list = [...f.querySelectorAll('.ssnip')].map((row) => { const v2 = (k) => row.querySelector(`[name=${k}]`).value; return { name: v2('sname').trim(), label: v2('slabel').trim(), text: v2('stext'), seats: v2('sseats').split(/[\s,]+/).filter(Boolean) }; });
+      const r = await api('/api/snippets', { snippets: list }).catch((x) => ({ error: String(x) }));
+      if (r.error) { snipDraft = list; note(`<bdi>${esc(r.error)}</bdi>`, true); } else { snipDraft = null; snippets = r.snippets; note(t('set.snip.saved')); }
+    }
     if (f.dataset.form === 'disc') {
       const disciplines = {}; for (const row of f.querySelectorAll('.sdisc')) { const k = row.querySelector('[name=dname]').value.trim(); if (k) disciplines[k] = row.querySelector('[name=dseat]').value; }
       await settingsAct('/api/settings/disciplines', { owner: v('owner'), disciplines }, () => t('set.proj.saved'));
@@ -1366,8 +1955,9 @@ $('sidescroll').addEventListener('scroll', (e) => $('sidetop').classList.toggle(
 $('results').onclick = (e) => { const b = e.target.closest('[data-id]'); if (b) pick(b.dataset.seat, b.dataset.id); };
 
 // ---- Optional diagnostics, OFF by default (DIAG_UNTIL = 0; no phone telemetry unless you opt in): what the composer really receives, sent to /api/client-log (server: clientLog).
-// Types and counts only, never message text. Active only while Date.now() < DIAG_UNTIL: set DIAG_UNTIL = Date.parse('<end date>') to debug an image-paste problem on a phone. Delete this block when done. ----
-const DIAG_UNTIL = 0, diagQ = []; let diagT = 0;
+// Types and counts only, never message text. Active only while Date.now() < DIAG_UNTIL: set DIAG_UNTIL = Date.parse('<end date>') to debug an image-paste problem on a phone, or
+// localStorage.diagUntil = <ms timestamp> in one browser (the voice tests do). Delete this block when done. ----
+const DIAG_UNTIL = +localStorage.getItem('diagUntil') || 0, diagQ = []; let diagT = 0;
 function diag(e) {
   if (Date.now() > DIAG_UNTIL) return;
   diagQ.push({ t: Date.now(), build: BUILD, ...e }); clearTimeout(diagT);
@@ -1382,3 +1972,240 @@ $('composer').addEventListener('beforeinput', (e) => e.target === ED && (!TYPING
 const TYPING = /^(insertText|insertCompositionText|deleteContentBackward|deleteContentForward|deleteCompositionText|insertLineBreak|insertParagraph)$/;   // ordinary typing is not logged, only what could carry an image
 $('composer').addEventListener('input', (e) => e.target === ED && !TYPING.test(e.inputType) && diag({ k: 'input', it: e.inputType, dlen: e.data?.length ?? null }), true);
 $('composer').addEventListener('drop', (e) => diag({ k: 'drop', dt: dtInfo(e.dataTransfer) }), true);
+
+// ---- My tasks (#todos): what the seats put on the owner's board (todos.mjs). V = done (its comment rides along), Send = a comment, task stays open.
+// Either one is posted into the conversation that asked (server /api/todo). The rail badge counts the open ones on every page.
+var todos = { open: [], done: [], dismissed: [] }, todosStale = false;   // var + function declarations: railState() and openHash() run before this block is reached
+function onTodos() { return document.body.classList.contains('todos'); }
+async function loadTodos() {
+  try { todos = await api('/api/todos'); } catch { return; }
+  const bd = $('todobtn').querySelector('.rbadge'); bd.hidden = !todos.open.length; bd.textContent = todos.open.length;
+  if (onTodos()) showTodos();
+}
+function todoRow(x) {
+  const chat = x.conv ? `<a href="#${esc(x.conv)}">${esc(x.title || t('todos.chat'))}</a>${x.seat ? ` · ${esc(x.seat)}` : ''}` : '';
+  const closed = x.doneAt || x.dismissedAt;
+  return `<div class="td-row${x.doneAt ? ' td-done' : ''}${x.dismissedAt ? ' td-dismissed' : ''}" data-todo="${esc(x.id)}"><input type="checkbox" aria-label="${t('todos.markDone')}"${closed ? ' checked disabled' : ''}><div class="td-what" dir="auto">${esc(x.what)}</div>`
+    + `<div class="td-meta">${x.dismissedAt ? `<b class="td-tag">${t('todos.dismissedTag')}</b> · ` : ''}${x.auto ? `<b class="td-tag">${t('todos.autoTag')}</b> · ` : ''}${x.checkBroken && !closed ? `<span class="td-warn">${t('todos.checkBroken')}</span> · ` : ''}${chat}${chat ? ' · ' : ''}${ago(Date.parse(x.doneAt || x.dismissedAt || x.at))}${closed ? ` · <button type="button" class="td-link" data-treopen>${t('todos.reopen')}</button>` : ''}</div>`
+    + x.comments.map((c) => `<div class="td-c" dir="auto">${esc(c.text)}</div>`).join('')
+    + (x.doneAt ? '' : `<div class="td-note"><input type="text" dir="auto" placeholder="${t('todos.commentPh')}" aria-label="${t('todos.commentPh')}"><button type="button" data-tsend>${t('todos.send')}</button><button type="button" class="td-dismiss" data-tdismiss>${t('todos.dismiss')}</button></div>`) + '</div>';
+}
+function showTodos() {
+  if (document.activeElement?.matches?.('#todos .td-note input')) { todosStale = true; return; }   // never rebuilt under a comment being typed: redrawn on blur
+  todosStale = false;
+  const oldOpen = $('todos').querySelector('.td-old:not(.td-oldx)')?.open, oldxOpen = $('todos').querySelector('.td-oldx')?.open;
+  const keep = {}; $('todos').querySelectorAll('[data-todo] .td-note input').forEach((i) => { if (i.value) keep[i.closest('[data-todo]').dataset.todo] = i.value; });   // an SSE reload never eats a comment being typed
+  $('todos').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-tdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('todos.title')}</h2><small>${t('todos.subtitle')}</small></div><button type="button" data-tclose>${t('common.close')}</button></header>`
+    + `<div class="td">${todos.open.length ? todos.open.map(todoRow).join('') : `<p class="td-empty">${t('todos.empty')}</p>`}`
+    + (todos.done.length ? `<details class="td-old"><summary>${t('todos.doneList', { n: todos.done.length })}</summary>${todos.done.map(todoRow).join('')}</details>` : '')
+    + (todos.dismissed?.length ? `<details class="td-old td-oldx"><summary>${t('todos.dismissedList', { n: todos.dismissed.length })}</summary>${todos.dismissed.map(todoRow).join('')}</details>` : '') + '</div>';
+  for (const [id, v] of Object.entries(keep)) { const i = $('todos').querySelector(`[data-todo="${id}"] .td-note input`); if (i) i.value = v; }
+  if (oldOpen) $('todos').querySelector('.td-old:not(.td-oldx)')?.setAttribute('open', '');
+  if (oldxOpen) $('todos').querySelector('.td-oldx')?.setAttribute('open', '');
+}
+function openTodos() {
+  closeSettings(); closeProjects(); closeGuide(); closeIdeas(); document.body.classList.add('todos'); document.body.classList.remove('drawer');
+  if (todos) showTodos(); loadTodos(); $('todos').scrollTop = 0;
+}
+function closeTodos() {
+  if (!onTodos()) return; document.body.classList.remove('todos');
+  if (location.hash === '#todos') history.replaceState(null, '', location.pathname + location.search);
+}
+async function todoAct(row, action) {
+  const inp = row.querySelector('.td-note input'), text = inp?.value.trim() || '';
+  if (action === 'comment' && !text) return inp?.focus();
+  row.querySelectorAll('input,button').forEach((e) => { e.disabled = true; });
+  const r = await api('/api/todo', { id: row.dataset.todo, action, text }).catch((e) => ({ error: String(e) }));
+  if (r.error) { alert(r.error); row.querySelectorAll('input,button').forEach((e) => { e.disabled = false; }); return; }
+  if (inp) inp.value = '';
+  if (r.told === false && r.error) alert(t('todos.notTold') + '\n' + r.error);   // a task with no conversation behind it has nobody to tell: no alert
+  loadTodos();
+}
+$('todobtn').onclick = () => { if (onTodos()) return closeTodos(); if (location.hash === '#todos') openTodos(); else location.hash = 'todos'; };
+$('todos').onclick = (e) => {
+  if (e.target.closest('[data-tclose]')) return closeTodos();
+  if (e.target.closest('[data-tdrawer]')) return document.body.classList.add('drawer');
+  const row = e.target.closest('[data-todo]'); if (!row) return;
+  if (e.target.matches('input[type=checkbox]')) { e.preventDefault(); return todoAct(row, 'done'); }   // checked only once the server took it
+  if (e.target.closest('[data-tsend]')) return todoAct(row, 'comment');
+  if (e.target.closest('[data-tdismiss]')) return todoAct(row, 'dismiss');   // the comment box, if filled, is the reason
+  if (e.target.closest('[data-treopen]')) return todoAct(row, 'reopen');
+};
+$('todos').addEventListener('focusout', () => setTimeout(() => { if (todosStale && onTodos() && !document.activeElement?.matches?.('#todos .td-note input')) showTodos(); }, 400));   // 400 ms: a tap on Send right after typing still finds its row
+$('todos').onkeydown = (e) => { if (e.key === 'Enter' && e.target.matches('.td-note input')) todoAct(e.target.closest('[data-todo]'), 'comment'); };
+loadTodos();
+
+// ---- Ideas inbox (#ideas, #ideas/<id>; server: ideas.mjs + /api/idea*). On the go: a capture box (type, dictate, a voice note, a photo, Save).
+// At a desk: the prepared ideas grouped by project, each with its original and its brief; "Start chat" opens a NEW chat in that project with the
+// first message in the box (never sent by itself). The rail badge counts the ready ones on every page. ----
+var ideasList = [], ideaFiles = [], ideaRec = null, ideaLive = null, ideaOpen = new Set(), ideaEdit = null, ideaDraft = null, ideasStale = false, ideaNote = '';   // var: openHash/railState can run before this block
+function onIdeas() { return document.body.classList.contains('ideas'); }
+async function loadIdeas() {
+  try { ideasList = (await api('/api/ideas')).ideas || []; } catch { return; }
+  const n = ideasList.filter((x) => x.status === 'ready').length, bd = $('ideabtn').querySelector('.rbadge'); bd.hidden = !n; bd.textContent = n;
+  if (onIdeas()) showIdeas();
+}
+const ideaMedia = (dir, f) => `/api/idea-media?id=${encodeURIComponent(dir)}&f=${encodeURIComponent(f)}`;   // dir = the capture's own folder (it stays there after a merge)
+const ideaBusy = () => !!document.activeElement?.closest?.('#ideas .ib-edit, #ideas textarea') || !!ideaRec || !!ideaLive || [...$('ideas').querySelectorAll('audio')].some((a) => !a.paused);   // never redrawn under typing, a recording or a playing voice note (redrawn when it ends)
+function ideaCard(x) {
+  const b = x.brief || {}, p = b.prep || {}, ed = ideaEdit === x.id, open = ideaOpen.has(x.id) || ed;
+  const meta = `<span class="ib-meta">${b.type ? `<span class="ib-type">${esc(t('ideas.type.' + (b.type === 'other' ? 'misc' : b.type)))}</span>` : ''}<span>${esc(ago(Date.parse(x.at)))} · ${esc(t(x.src === 'telegram' ? 'ideas.fromTelegram' : 'ideas.fromConsole'))}${x.captures.length > 1 ? ' ×' + x.captures.length : ''}</span></span>`;
+  const orig = x.captures.map((c) => `<div class="ib-cap">${c.text ? `<p dir="auto">${esc(c.text)}</p>` : ''}${c.audio.map((a) => `<audio controls preload="none" src="${ideaMedia(c.dir, a)}"></audio>${x.transcripts?.[c.dir + '/' + a] ? `<p class="ib-tr" dir="auto">${esc(x.transcripts[c.dir + '/' + a])}</p>` : ''}`).join('')}${c.photos.length ? `<div class="ib-ph">${c.photos.map((f) => `<a href="${ideaMedia(c.dir, f)}" target="_blank" rel="noopener"><img src="${ideaMedia(c.dir, f)}" alt="" loading="lazy"></a>`).join('')}</div>` : ''}</div>`).join('');
+  const q = (p.questions || []);
+  const brief = ed
+    ? `<div class="ib-edit"><label>${t('ideas.titleLabel')}<input data-f="title" dir="auto" value="${esc(b.title || '')}"></label>`
+      + `<label>${t('ideas.typeLabel')}<select data-f="type">${['build', 'bug', 'question', 'content', 'admin', 'other'].map((k) => `<option value="${k}"${b.type === k ? ' selected' : ''}>${t('ideas.type.' + (k === 'other' ? 'misc' : k))}</option>`).join('')}</select></label>`
+      + `<label>${t('ideas.goal')}<textarea data-f="goal" dir="auto" rows="2">${esc(p.goal || '')}</textarea></label><label>${t('ideas.context')}<textarea data-f="context" dir="auto" rows="4">${esc(p.context || '')}</textarea></label>`
+      + `<label>${t('ideas.questions')}<textarea data-f="questions" dir="auto" rows="3">${esc(q.join('\n'))}</textarea></label><label>${t('ideas.firstMessage')}<textarea data-f="firstMessage" dir="auto" rows="5">${esc(p.firstMessage || '')}</textarea></label>`
+      + `<div class="ib-acts"><button type="button" class="primary" data-isave>${t('common.save')}</button><button type="button" data-icancel>${t('ideas.cancel')}</button></div></div>`
+    : `<dl class="ib-brief">${p.goal ? `<dt>${t('ideas.goal')}</dt><dd dir="auto">${esc(p.goal)}</dd>` : ''}${p.context ? `<dt>${t('ideas.context')}</dt><dd dir="auto" class="pre">${esc(p.context)}</dd>` : ''}`
+      + `${q.length ? `<dt>${t('ideas.questions')}</dt><dd><ol>${q.map((k) => `<li dir="auto">${esc(k)}</li>`).join('')}</ol></dd>` : ''}${p.firstMessage ? `<dt>${t('ideas.firstMessage')}</dt><dd dir="auto" class="pre ib-msg">${esc(p.firstMessage)}</dd>` : ''}`
+      + `${b.related?.length ? `<dt>${t('ideas.related')}</dt><dd class="ib-rel">${b.related.map((r) => `<a href="#${esc(r.id)}" dir="auto">${esc(r.title || r.id)}</a>`).join('')}</dd>` : ''}</dl>`;
+  const folders = multiData.folders || [];
+  const acts = x.status === 'ready' && !ed ? `<div class="ib-acts"><button type="button" class="primary" data-istart>${t('ideas.start')}</button><button type="button" data-itodo>${t('ideas.todo')}</button><button type="button" data-iedit>${t('common.edit')}</button>`
+      + `<label class="ib-proj"><span class="sr">${t('ideas.changeProject')}</span><select data-iproj aria-label="${t('ideas.changeProject')}"><option value="">${t('ideas.noProject')}</option>${folders.map((f) => `<option value="${esc(f.dir)}"${f.dir === b.project ? ' selected' : ''}>${esc(f.name)}</option>`).join('')}${b.project && !folders.some((f) => f.dir === b.project) ? `<option value="${esc(b.project)}" selected>${esc(b.projectName || b.project)}</option>` : ''}</select></label>`
+      + `<button type="button" data-iarch>${t('ideas.archive')}</button></div>`
+    : x.status === 'done' || x.status === 'archived' ? `<div class="ib-acts">${x.chat ? `<a href="#${esc(x.chat)}">${t('ideas.chat')}</a>` : ''}${x.todo ? `<a href="#todos">${t('ideas.onTasks')}</a>` : ''}<button type="button" data-ireopen>${t('ideas.reopen')}</button><button type="button" data-idel>${t('common.delete')}</button></div>` : '';
+  return `<details class="ib ib-${x.status}" data-idea="${esc(x.id)}" id="idea-${esc(x.id)}"${open ? ' open' : ''}><summary><span class="ib-title" dir="auto">${esc(b.title || x.captures[0]?.text?.slice(0, 80) || '…')}</span>${meta}</summary>`
+    + `<div class="ib-body">${x.brief ? `<section><h4>${t('ideas.brief')}</h4>${brief}</section>` : ''}<section class="ib-orig"><h4>${t('ideas.original')}</h4>${orig}</section>${acts}</div></details>`;
+}
+function ideaPending(x) {   // captured / processing / failed: one slim line, a Retry button when it failed
+  const txt = x.captures[0]?.text || (x.captures[0]?.audio.length ? '🎙 ' + t('ideas.voiceNote') : '📷 ' + t('ideas.photo'));
+  const st = x.status === 'failed' ? `<b class="sno">${t('ideas.failed')}</b> <small dir="auto">${esc(x.error || '')}</small> <button type="button" data-iretry>${t('ideas.retry')}</button> <button type="button" data-idel>${t('common.delete')}</button>`
+    : `<span class="ip-spin" aria-hidden="true"></span><small>${x.waitUntil > Date.now() ? t('ideas.waiting') : t('ideas.processing')}</small>`;
+  return `<div class="ip ip-${x.status}" data-idea="${esc(x.id)}"><span class="ip-t" dir="auto">${esc(txt.slice(0, 120))}</span><span class="ip-st">${st}</span></div>`;
+}
+function showIdeas(force) {
+  if (!force && ideaBusy()) { ideasStale = true; return; }
+  ideasStale = false;
+  const box = $('ideas'), y = box.scrollTop, draftText = $('ideatext')?.value || '';
+  const ready = ideasList.filter((x) => x.status === 'ready'), busy = ideasList.filter((x) => ['captured', 'processing', 'failed'].includes(x.status)), old = ideasList.filter((x) => x.status === 'done' || x.status === 'archived');
+  const groups = new Map(); for (const x of ready) { const k = x.brief?.projectName || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+  const order = [...groups.keys()].sort((a, b) => (a === '') - (b === '') || Date.parse(groups.get(b)[0].at) - Date.parse(groups.get(a)[0].at));   // newest group first, "No project" last
+  const fileChips = ideaFiles.map((f, i) => `<span class="ic-f">${f.kind === 'photo' ? `<img src="${f.url}" alt="">` : `🎙 ${esc(f.label)}`}<button type="button" data-irm="${i}" aria-label="${t('common.remove')}">✕</button></span>`).join('');
+  box.innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-idrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('ideas.title')}</h2><small>${t('ideas.subtitle')}</small></div><button type="button" data-iclose>${t('common.close')}</button></header>`
+    + `<div class="idx"><form class="ic" data-guide="idea-capture"><textarea id="ideatext" dir="auto" rows="3" placeholder="${t('ideas.placeholder')}" aria-label="${t('ideas.placeholder')}"></textarea>`
+    + `${fileChips ? `<div class="ic-files">${fileChips}</div>` : ''}<div class="ic-row">`
+    + `<button type="button" data-idict aria-pressed="${!!ideaLive}">${ideaLive ? t('ideas.dictateStop') : t('ideas.dictate')}</button>`
+    + `<button type="button" data-irec aria-pressed="${!!ideaRec}">${ideaRec ? t('ideas.voiceStop') + ' <output dir="ltr">0:00</output>' : t('ideas.voiceNote')}</button>`
+    + `<button type="button" data-iphoto>${t('ideas.photo')}</button><input type="file" id="ideaphoto" accept="image/*" multiple hidden>`
+    + `<button type="submit" class="primary">${t('ideas.save')}</button></div>${ideaNote ? `<p class="ic-note" role="status">${ideaNote}</p>` : ''}</form>`
+    + (busy.length ? `<section class="ig ig-busy"><h3>${t('ideas.processing')}</h3>${busy.map(ideaPending).join('')}</section>` : '')
+    + (ready.length ? order.map((k) => `<section class="ig"><h3>${esc(k || t('ideas.noProject'))}</h3>${groups.get(k).map(ideaCard).join('')}</section>`).join('') : `<p class="td-empty">${t('ideas.empty')}</p>`)
+    + (old.length ? `<details class="td-old ig-old"><summary>${t('ideas.doneList', { n: old.length })}</summary>${old.slice(0, 50).map(ideaCard).join('')}</details>` : '') + '</div>';
+  $('ideatext').value = draftText; box.scrollTop = y;
+}
+function openIdeas(id) {
+  closeSettings(); closeProjects(); closeGuide(); closeTodos(); document.body.classList.add('ideas'); document.body.classList.remove('drawer');
+  if (id) { ideaOpen.add(id); }
+  showIdeas(); loadIdeas().then(() => { if (id) document.getElementById('idea-' + id)?.scrollIntoView({ block: 'start' }); });
+}
+function closeIdeas() {
+  if (!onIdeas()) return; document.body.classList.remove('ideas');
+  if (location.hash.startsWith('#ideas')) history.replaceState(null, '', location.pathname + location.search);
+}
+// capture: staged files are uploaded at once (voice note, photo); Save sends the text with their ids
+async function ideaUpload(blob, kind, name) {
+  const r = await fetch(`/api/idea-file?kind=${kind}&name=${encodeURIComponent(name)}`, { method: 'POST', headers: { 'X-Seat-Token': TOKEN, 'Content-Type': blob.type || 'application/octet-stream' }, body: blob }).then((x) => x.json(), () => ({ error: t('composer.uploadFailed') }));
+  if (r.error) { ideaNote = esc(r.error); showIdeas(); return null; }
+  return r.id;
+}
+let ideaSaving = false;   // a double tap on Save must not capture twice
+async function ideaSave() {
+  if (ideaSaving) return;
+  const text = $('ideatext').value.trim();
+  if (!text && !ideaFiles.length) { ideaNote = t('ideas.nothing'); return showIdeas(); }
+  ideaSaving = true; const r = await api('/api/idea', { action: 'capture', text, files: ideaFiles.map((f) => f.id) }).catch((e) => ({ error: String(e) })); ideaSaving = false;
+  if (r.error) { ideaNote = esc(r.error); return showIdeas(); }
+  ideaFiles = []; $('ideatext').value = ''; ideaNote = t('ideas.saved'); document.activeElement?.blur(); loadIdeas(); showIdeas();
+}
+// dictation into the capture box: the browser's live speech service, the same engine and language as the composer's mic (Settings > Voice).
+// Without it (Firefox, engine "local"), Dictate records a voice note instead: the server transcribes it with the idea.
+function ideaDictate() {
+  if (ideaLive) { ideaLive.stopping = true; try { ideaLive.rec.stop(); } catch {} return; }
+  if (!isSecureContext) { ideaNote = t('voice.https', { url: HTTPS_URL ? `<a href="${esc(HTTPS_URL)}/#ideas" dir="ltr">${esc(HTTPS_URL)}</a>` : 'https://' }); return showIdeas(); }
+  if (!liveOn()) return ideaRecord();
+  const ta = $('ideatext'), m = ideaLive = { base: ta.value, stopping: false };
+  const run = () => {
+    const rec = m.rec = new SR(); rec.lang = LIVE_LANG[liveLang()]; rec.continuous = true; rec.interimResults = true;
+    rec.onresult = (e) => {   // rebuilt from the session's results each time; Android may repeat a final with new words added: keep only the longer one
+      const fin = [], tail = []; for (let i = 0; i < e.results.length; i++) (e.results[i].isFinal ? fin : tail).push(e.results[i][0].transcript.trim());
+      for (let i = fin.length - 1; i > 0; i--) if (ANDROID && fin[i - 1] && fin[i].startsWith(fin[i - 1])) fin.splice(i - 1, 1);
+      const said = [...fin, ...tail].filter(Boolean).join(' '); $('ideatext').value = m.base + (m.base && said && !/\s$/.test(m.base) ? ' ' : '') + said; m.last = fin.join(' ');
+    };
+    rec.onerror = (e) => { m.err = e.error; };
+    rec.onend = () => {
+      if (ideaLive !== m) return;
+      if (m.stopping || LIVE_FATAL[m.err]) { ideaLive = null; if (LIVE_FATAL[m.err] && !m.stopping) ideaNote = t(LIVE_FATAL[m.err]); return showIdeas(); }
+      m.base = $('ideatext').value; try { run(); } catch { ideaLive = null; showIdeas(); }   // Chrome ends a session after a pause: keep listening until stopped
+    };
+    rec.start();
+  };
+  ideaNote = ''; showIdeas(true); run();
+}
+async function ideaRecord() {
+  if (ideaRec) { ideaRec.rec.stop(); return; }
+  if (!isSecureContext || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { ideaNote = isSecureContext ? t('voice.unsupported') : t('voice.https', { url: HTTPS_URL ? `<a href="${esc(HTTPS_URL)}/#ideas" dir="ltr">${esc(HTTPS_URL)}</a>` : 'https://' }); return showIdeas(); }
+  let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }); }
+  catch (x) { ideaNote = t(x.name === 'NotAllowedError' ? (TOUCH ? 'voice.deniedPhone' : 'voice.denied') : x.name === 'NotFoundError' ? 'voice.noMic' : 'voice.unsupported'); return showIdeas(); }
+  const type = MIC_TYPES.find((k) => MediaRecorder.isTypeSupported?.(k)) || '', rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined), chunks = [], t0 = Date.now();
+  const m = ideaRec = { rec };
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = async () => {
+    clearInterval(m.timer); stream.getTracks().forEach((tr) => tr.stop()); ideaRec = null;
+    const ms = Date.now() - t0, blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+    if (ms < 700 || blob.size < 1000) { ideaNote = t('voice.empty'); return showIdeas(); }
+    const ext = /ogg/.test(blob.type) ? 'ogg' : /mp4/.test(blob.type) ? 'm4a' : 'webm', id = await ideaUpload(blob, 'audio', 'voice.' + ext);
+    if (id) ideaFiles.push({ id, kind: 'audio', label: micTime(ms) });
+    showIdeas();
+  };
+  rec.start(1000); ideaNote = ''; showIdeas(true);
+  m.timer = setInterval(() => { const o = $('ideas').querySelector('[data-irec] output'); if (o) o.value = micTime(Date.now() - t0); if (Date.now() - t0 >= MIC_MAX_MS) rec.stop(); }, 250);
+}
+async function ideaStartChat(x) {   // a NEW chat in the idea's project, on its suggested seat, the first message in the box (not sent), its photos attached
+  const b = x.brief, seat = seats.find((s) => s.name === b.seat && !s.remote) ? b.seat : cur.seat;
+  closeIdeas(); await pick(seat, null, b.project || null);
+  if (b.project) { draftDir = b.project; $('cwd').value = b.project; } showChip();
+  $('text').value = b.prep?.firstMessage || b.text || ''; caretEnd();
+  const photos = x.captures.flatMap((c) => c.photos.map((f) => [c.dir, f]));
+  if (photos.length) { const fs = []; for (const [d, f] of photos) { try { const r = await fetch(ideaMedia(d, f)); if (r.ok) fs.push(new File([await r.blob()], f, { type: r.headers.get('Content-Type') || 'image/jpeg' })); } catch {} } if (fs.length) await attach(fs); }
+  ideaDraft = { id: x.id, seat };   // sending this draft marks the idea done and links the chat (composer onsubmit); leaving it keeps the idea ready
+}
+async function ideaFromShare(text, files) {   // shared from Android: images and audio become the idea's photos / voice notes (other file types stay out)
+  const ids = [];
+  for (const f of files) { const kind = f.type.startsWith('audio/') ? 'audio' : f.type.startsWith('image/') ? 'photo' : null; if (!kind) continue; const id = await ideaUpload(kind === 'photo' ? await shrink(f) : f, kind, f.name || kind); if (id) ids.push(id); }
+  const r = await api('/api/idea', { action: 'capture', text, files: ids }).catch((e) => ({ error: String(e) }));
+  ideaNote = r.error ? esc(r.error) : t('ideas.saved'); location.hash = 'ideas';
+}
+async function ideaAct(id, body) { const r = await api('/api/idea', { id, ...body }).catch((e) => ({ error: String(e) })); if (r.error) alert(r.error); ideaEdit = null; document.activeElement?.blur(); await loadIdeas(); showIdeas(); }
+$('ideabtn').onclick = () => { if (onIdeas()) return closeIdeas(); if (location.hash === '#ideas') openIdeas(); else location.hash = 'ideas'; };
+$('ideas').onclick = async (e) => {
+  const g = (s) => e.target.closest(s);
+  if (g('[data-iclose]')) return closeIdeas();
+  if (g('[data-idrawer]')) return document.body.classList.add('drawer');
+  if (g('[data-idict]')) return ideaDictate();
+  if (g('[data-irec]')) return ideaRecord();
+  if (g('[data-iphoto]')) return $('ideaphoto').click();
+  if (g('[data-irm]')) { ideaFiles.splice(+g('[data-irm]').dataset.irm, 1); return showIdeas(); }
+  const row = g('[data-idea]'); if (!row) return;
+  const id = row.dataset.idea, x = ideasList.find((k) => k.id === id); if (!x) return;
+  if (g('summary')) { setTimeout(() => (row.open ? ideaOpen.add(id) : ideaOpen.delete(id)), 0); return; }   // remember which cards are open across redraws
+  if (g('[data-istart]')) return ideaStartChat(x);
+  if (g('[data-itodo]')) return ideaAct(id, { action: 'todo' });
+  if (g('[data-iedit]')) { ideaEdit = id; ideaOpen.add(id); showIdeas(true); return row.ownerDocument.querySelector(`#idea-${id} [data-f=title]`)?.focus(); }
+  if (g('[data-icancel]')) { ideaEdit = null; document.activeElement?.blur(); return showIdeas(); }
+  if (g('[data-isave]')) { const v = {}; row.querySelectorAll('[data-f]').forEach((i) => { v[i.dataset.f] = i.value; }); return ideaAct(id, { action: 'update', brief: v }); }
+  if (g('[data-iarch]')) return ideaAct(id, { action: 'update', status: 'archived' });
+  if (g('[data-ireopen]')) return ideaAct(id, { action: 'update', status: 'ready' });
+  if (g('[data-iretry]')) return ideaAct(id, { action: 'retry' });
+  if (g('[data-idel]')) { if (confirm(t('ideas.confirmDelete'))) return ideaAct(id, { action: 'delete' }); }
+};
+$('ideas').onchange = async (e) => {
+  if (e.target.id === 'ideaphoto') { for (const f of [...e.target.files]) { const s = await shrink(f), id = await ideaUpload(s, 'photo', f.name || 'photo.jpg'); if (id) ideaFiles.push({ id, kind: 'photo', url: URL.createObjectURL(s) }); } e.target.value = ''; return showIdeas(true); }
+  if (e.target.matches('[data-iproj]')) { const id = e.target.closest('[data-idea]').dataset.idea; return ideaAct(id, { action: 'update', brief: { project: e.target.value || null } }); }
+};
+$('ideas').onsubmit = (e) => { e.preventDefault(); ideaSave(); };
+$('ideas').onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.id === 'ideatext') { e.preventDefault(); ideaSave(); } };
+$('ideas').addEventListener('focusout', () => setTimeout(() => { if (ideasStale && onIdeas() && !ideaBusy()) showIdeas(); }, 400));
+for (const ev of ['pause', 'ended']) $('ideas').addEventListener(ev, () => { if (ideasStale && onIdeas() && !ideaBusy()) showIdeas(); }, true);   // media events do not bubble: capture
+loadIdeas();

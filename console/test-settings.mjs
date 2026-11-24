@@ -15,6 +15,7 @@ t('defaults: optional features off, codex resets only with a codex seat, project
   assert.equal(d.claudeResets, false); assert.equal(d.codexResets, false); assert.equal(d.multiProjects, false); assert.equal(d.usageMeters, true); assert.equal(d.autoArchiveDays, 3); assert.equal(d.projectsFreshAtPct, 40);
   assert.equal(defaults({ seats: { ...seats, gpt: { agent: 'codex' } }, disciplines: true }).codexResets, true);
   assert.equal(defaults({ seats, disciplines: true }).multiProjects, true);
+  assert.equal(d.voice, true); assert.equal(d.voiceEngine, 'live'); assert.equal(d.voiceSmartEngine, 'whisper'); assert.equal(d.voiceRolling, true); assert.equal(d.ideasSeat, '');
 });
 t('validation: types, ranges, unknown keys, models of known seats only', () => {
   assert.deepEqual(validateSettings({ claudeResets: true, autoArchiveDays: 0, models: { dev: 'claude-sonnet-5-5', ops: '' } }, seats), { claudeResets: true, autoArchiveDays: 0, models: { dev: 'claude-sonnet-5-5' } });

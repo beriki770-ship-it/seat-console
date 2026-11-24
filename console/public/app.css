@@ -268,6 +268,47 @@ button, select { padding:6px 12px; border:1px solid var(--line); border-radius:8
 button:hover { border-color:var(--accent); }
 button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
 button:disabled, select:disabled { opacity:.55; cursor:default; }
+/* ---- voice input: the mic next to Send (idle = mic, rec = red stop square, busy = spinner) and the #rec strip above the row ---- */
+.sendgrp { display:flex; gap:8px; }   /* mic + Send wrap to the next line together */
+#mic { display:inline-flex; align-items:center; justify-content:center; padding:0; min-width:36px; min-height:32px; }
+#mic .mic-stop, #mic .mic-spin { display:none; }
+#mic[data-state=rec] { background:var(--warn); border-color:var(--warn); color:#fff; }
+#mic[data-state=rec] .mic-i { display:none; } #mic[data-state=rec] .mic-stop { display:inline; }
+#mic[data-state=busy] .mic-i { display:none; } #mic[data-state=busy] .mic-spin { display:inline; transform-origin:12px 12px; animation:micspin .9s linear infinite; }
+@keyframes micspin { to { transform:rotate(360deg); } }
+#rec { display:flex; align-items:center; gap:10px; margin-top:8px; padding:6px 6px 6px 12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); font-size:13px; }
+#rec[hidden] { display:none; }
+#rec .rec-dot { width:10px; height:10px; border-radius:50%; background:var(--warn); flex:none; animation:recpulse 1.2s ease-in-out infinite; }
+@keyframes recpulse { 50% { opacity:.3; } }
+#rectime { font-variant-numeric:tabular-nums; color:var(--warn); font-weight:600; min-width:3.2em; }
+#reclvl { flex:1; max-width:220px; height:6px; border-radius:3px; background:var(--line); overflow:hidden; }
+#reclvl i { display:block; height:100%; width:0; background:var(--warn); border-radius:3px; transition:width .08s linear; }
+#recmsg { flex:1; color:var(--mute); overflow-wrap:anywhere; } #recmsg:empty { display:none; }
+#recmsg a { color:var(--accent); }
+#rec.busy .rec-dot, #rec.busy #reclvl, #rec.busy #rectime, #rec.err .rec-dot, #rec.err #reclvl, #rec.err #rectime { display:none; }
+#rec.live #reclvl { display:none; }
+/* the dictation language chip left of the mic (tap = next language, hold / right-click = the list) and its menu */
+#miclang { padding:0 6px; min-width:32px; min-height:32px; font-size:11px; font-weight:600; letter-spacing:.04em; color:var(--mute); }
+#miclang[hidden] { display:none; }
+#miclangmenu { position:fixed; z-index:60; display:flex; flex-direction:column; padding:4px; border:1px solid var(--line); border-radius:10px; background:var(--panel); box-shadow:0 6px 20px rgba(0,0,0,.15); }
+#miclangmenu[hidden] { display:none; }
+#miclangmenu button { border:0; background:none; text-align:start; padding:8px 12px; border-radius:6px; min-height:36px; }
+#miclangmenu button[aria-checked=true] { font-weight:600; background:var(--line); }
+/* Smart finish: a small dot on the mic while Whisper re-reads the dictation; #rec.note = the "Improved by Whisper · Undo" line */
+#mic { position:relative; }
+#mic[data-check]::after { content:''; position:absolute; top:3px; inset-inline-end:3px; width:7px; height:7px; border-radius:50%; background:var(--accent); animation:recpulse 1.2s ease-in-out infinite; }
+#rec.note .rec-dot, #rec.note #reclvl, #rec.note #rectime { display:none; }
+#sfundo { margin-inline-start:6px; padding:2px 10px; }
+/* Rolling correction: a phrase the server re-read is underlined for a moment (CSS Highlight API, no DOM change); one Undo for the last one */
+::highlight(rollfix) { text-decoration:underline 2px var(--accent); text-underline-offset:3px; }
+#rollundo { padding:2px 10px; min-height:32px; }
+#rec:has(#rollundo:not([hidden])) { flex-wrap:wrap; } #rec:has(#rollundo:not([hidden])) #recmsg { overflow-wrap:normal; }   /* a phone: the button goes to its own line, "Listening..." is not cut mid-word */
+#rollstate { font-size:12px; color:var(--mute); }
+#text .vi { color:var(--mute); text-decoration:underline dotted; text-underline-offset:3px; }   /* live dictation: words not final yet */
+#rec.err { border-color:var(--warn); } #rec.err #recmsg { color:var(--warn); }
+#reccancel { margin-inline-start:auto; min-width:32px; padding:4px 8px; }
+@media (prefers-reduced-motion: reduce) { #rec .rec-dot, #mic[data-state=busy] .mic-spin, #mic[data-check]::after { animation:none; } }
+@media (pointer: coarse) { #mic { min-width:48px; min-height:44px; } #miclang { min-width:40px; min-height:44px; } #miclangmenu button { min-height:44px; } #reccancel { min-width:44px; min-height:40px; } }
 
 /* ---- phone: seat list becomes a drawer ---- */
 @media (max-width: 700px) {
@@ -453,6 +494,25 @@ main { position:relative; }
 .flash { outline:2px solid var(--accent); outline-offset:4px; border-radius:8px; transition:outline-color .4s; }
 #suggest { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
 .chip { border-radius:16px; padding:5px 12px; font-size:13px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* ==== "/" skills and "@" snippets: the list over the caret (app.js "skills and snippets") ==== */
+#slashpop { position:fixed; z-index:40; overflow-y:auto; overscroll-behavior:contain; padding:4px; background:var(--bg); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 28px #0003; }
+#slashpop[hidden] { display:none; }
+@media (prefers-reduced-motion: no-preference) { #slashpop:not([hidden]) { animation:sp-in .12s ease-out; } @keyframes sp-in { from { opacity:0; transform:translateY(4px); } } }
+.sp-row { display:grid; grid-template-columns:auto minmax(0,1fr); column-gap:8px; align-items:baseline; padding:6px 10px; border-radius:7px; cursor:pointer; }
+.sp-row[aria-selected=true] { background:color-mix(in srgb, var(--accent) 14%, transparent); }
+.sp-row b { font:600 13px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; color:var(--accent); unicode-bidi:isolate; }
+.sp-src, .sp-lab { justify-self:end; font-size:10.5px; color:var(--mute); border:1px solid var(--line); border-radius:8px; padding:0 6px; white-space:nowrap; }
+.sp-lab { justify-self:start; border:0; padding:0; font-size:12px; color:var(--ink); }
+.sp-row small { grid-column:1 / -1; font-size:12px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sp-none { margin:6px 10px; font-size:13px; color:var(--mute); }
+@media (pointer: coarse) { .sp-row { min-height:44px; align-content:center; } }
+/* the picked skill inside the message box: a token on screen, plain "/name" in what is sent */
+.stok { display:inline-block; padding:0 5px; border-radius:5px; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); font:600 .92em ui-monospace, "Cascadia Mono", Consolas, monospace; unicode-bidi:isolate; }
+/* Settings > Snippets: one fieldset per snippet, name + label + move/remove on top, the text under it */
+.ssnip { display:flex; flex-direction:column; gap:6px; margin:0 0 10px; padding:10px; border:1px solid var(--line); border-radius:10px; }
+.ssnip-h { display:flex; gap:6px; align-items:center; } .ssnip-h input[name=sname] { flex:0 1 11em; } .ssnip-h input[name=slabel] { flex:1 1 auto; min-width:0; }
+.ssnip-h button { flex:none; min-width:34px; padding:5px 8px; }
+@media (pointer: coarse) { .ssnip-h button { min-width:44px; min-height:40px; } }
 /* manual 📌 on a message: faint until hovered (always visible on touch, where there is no hover) */
 .msg { position:relative; }
 .pinbtn { position:absolute; top:2px; inset-inline-end:-30px; padding:2px 4px; border:0; background:none; font-size:13px; opacity:0; }
@@ -754,6 +814,7 @@ body.guide #guide { display:block; flex:1; min-height:0; overflow:auto; padding:
 .po-id { min-width:0; color:var(--ink); text-decoration:none; overflow-wrap:anywhere; }
 .po-id b { font-size:16px; font-weight:600; } .po-id:hover b { color:var(--accent); }
 .po-crumb { margin-inline-end:4px; font-size:12px; color:var(--mute); }
+.po-acts { display:flex; align-items:center; gap:8px; }   /* New chat here (a fresh chat in this folder) + Open project, one grid cell */
 .po-counts { font-size:12px; line-height:18px; color:var(--mute); white-space:nowrap; }
 .po-counts b { color:var(--ink); font-weight:600; } .po .pj-hot { color:color-mix(in srgb, var(--accent) 80%, var(--ink)); }
 .po .pj-sep { display:inline-block; width:3px; height:3px; border-radius:50%; background:currentColor; opacity:.5; margin:0 8px; vertical-align:middle; }
@@ -777,7 +838,7 @@ body.guide #guide { display:block; flex:1; min-height:0; overflow:auto; padding:
 @media (max-width: 700px) {
   .po-head { grid-template-columns:minmax(0, 1fr) auto; row-gap:4px; }
   .po-counts { grid-row:2; white-space:normal; }
-  .po-head .mopen { grid-row:1 / 3; grid-column:2; }
+  .po-head .po-acts { grid-row:1 / 3; grid-column:2; flex-direction:column; align-items:stretch; gap:6px; }
   .po-run { grid-template-columns:minmax(0, 1fr) auto; row-gap:4px; } .po-rail { grid-column:1 / -1; grid-row:2; } .po-st { grid-column:2; grid-row:1; } .po-run .pj-of { grid-row:3; }
   .po-start > summary { min-height:44px; }
 }
@@ -825,3 +886,94 @@ body.guide #guide { display:block; flex:1; min-height:0; overflow:auto; padding:
 .tourask p { margin:0; font-size:15px; line-height:22px; }
 .tourask-never { display:flex; align-items:center; gap:8px; margin-top:14px; font-size:14px; color:var(--mute); }
 .tourask-never input { width:18px; height:18px; margin:0; }
+
+/* ---- My tasks (#todos, app.js showTodos): takes over main like the Guide; one row per task, V + comment, the asking chat linked ---- */
+#todos { display:none; }
+body.todos main > :not(#todos) { display:none !important; }
+body.todos #todos { display:block; flex:1; min-height:0; overflow:auto; padding:20px 24px 64px; }
+.td { max-width:760px; margin-top:16px; }
+.td-row { display:grid; grid-template-columns:28px 1fr; gap:4px 12px; padding:14px 0; border-top:1px solid var(--line); }
+.td-row input[type=checkbox] { width:20px; height:20px; margin:2px 0 0; accent-color:var(--ok); cursor:pointer; }
+.td-what { font-size:15px; line-height:22px; color:var(--ink); white-space:pre-wrap; overflow-wrap:anywhere; }
+.td-meta { grid-column:2; font-size:12.5px; color:var(--mute); }
+.td-meta a { color:inherit; }
+.td-c { grid-column:2; font-size:13px; color:color-mix(in srgb, var(--ink) 80%, var(--mute)); }
+.td-c::before { content:"💬 "; }
+.td-note { grid-column:2; display:flex; flex-wrap:wrap; gap:8px; }
+.td-note input { flex:1 1 140px; min-width:0; font:inherit; font-size:14px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
+.td-done .td-what { text-decoration:line-through; color:var(--mute); }
+.td-empty { color:var(--mute); margin-top:24px; }
+.td-old > summary { cursor:pointer; color:var(--mute); padding:14px 0; border-top:1px solid var(--line); }
+@media (max-width: 700px) { body.todos #todos { padding:12px 16px 48px; } }
+/* ---- Ideas (#ideas, app.js showIdeas): takes over main like My tasks. The capture box is the page's one big thing (thumb-sized buttons on a phone);
+   below it the prepared ideas, one folding card each, grouped under their project; done / archived folded at the end ---- */
+#ideas { display:none; }
+.td-dismiss { color:var(--mute); background:none; }
+.td-dismissed .td-what { color:var(--mute); }
+.td-tag { font-weight:600; }
+.td-warn { color:var(--warn, #b26a00); }
+.td-link { font:inherit; font-size:12.5px; color:var(--mute); background:none; border:0; padding:0; text-decoration:underline; cursor:pointer; }
+body.ideas main > :not(#ideas) { display:none !important; }
+body.ideas #ideas { display:block; flex:1; min-height:0; overflow:auto; padding:20px 24px 64px; }
+.idx { max-width:760px; }
+.ic { margin:18px 0 8px; padding:14px; border:1px solid var(--line); border-radius:14px; background:var(--panel); }
+.ic textarea { display:block; width:100%; box-sizing:border-box; min-height:96px; max-height:45vh; resize:vertical; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); font:inherit; font-size:16px; line-height:1.5; unicode-bidi:plaintext; }   /* 16px: phones do not zoom into it */
+.ic textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; }
+.ic-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.ic-row button { min-height:40px; padding:8px 14px; font-size:14px; }
+.ic-row button[type=submit] { margin-inline-start:auto; padding-inline:20px; font-weight:600; }
+.ic-row button[aria-pressed=true] { border-color:var(--warn); color:var(--warn); background:color-mix(in srgb, var(--warn) 8%, var(--bg)); }
+.ic-row button[aria-pressed=true]::before { content:""; display:inline-block; width:8px; height:8px; margin-inline-end:7px; border-radius:50%; background:var(--warn); animation:pulse 1s infinite; vertical-align:1px; }
+.ic-row output { margin-inline-start:6px; font-variant-numeric:tabular-nums; }
+.ic-files { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.ic-f { display:inline-flex; align-items:center; gap:6px; padding:4px 4px 4px 10px; border:1px solid var(--line); border-radius:18px; background:var(--bg); font-size:13px; }
+.ic-f img { width:32px; height:32px; object-fit:cover; border-radius:6px; margin-inline-start:-6px; }
+.ic-f button { border:0; background:none; padding:4px 8px; }
+.ic-note { margin:10px 0 0; font-size:13px; color:var(--mute); }
+.ig { margin-top:26px; }
+.ig > h3 { margin:0 0 6px; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); font-weight:600; }
+.ip { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding:10px 0; border-top:1px solid var(--line); font-size:14px; }
+.ip-t { flex:1 1 220px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ip-st { display:inline-flex; flex-wrap:wrap; align-items:center; gap:8px; color:var(--mute); }
+.ip-spin { width:12px; height:12px; border:2px solid var(--line); border-top-color:var(--run); border-radius:50%; animation:ispin .9s linear infinite; }
+@keyframes ispin { to { transform:rotate(360deg); } }
+.ib { border:1px solid var(--line); border-radius:12px; background:var(--bg); margin:8px 0; }
+.ib[open] { border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow:0 4px 18px #0000000f; }
+.ib > summary { list-style:none; cursor:pointer; padding:12px 14px; display:grid; gap:4px; }
+.ib > summary::-webkit-details-marker { display:none; }
+.ib > summary:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; border-radius:12px; }
+.ib-title { font-size:16px; font-weight:600; line-height:1.35; overflow-wrap:anywhere; }
+.ib-meta { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; font-size:12.5px; color:var(--mute); }
+.ib-type { padding:1px 8px; border-radius:10px; background:color-mix(in srgb, var(--accent) 12%, transparent); color:var(--accent); font-weight:600; }
+.ib-body { padding:0 14px 14px; }
+.ib-body h4 { margin:14px 0 6px; font-size:12px; letter-spacing:.05em; text-transform:uppercase; color:var(--mute); }
+.ib-brief { margin:0; display:grid; grid-template-columns:minmax(110px, max-content) 1fr; gap:8px 14px; font-size:14px; line-height:1.5; }
+.ib-brief dt { color:var(--mute); }
+.ib-brief dd { margin:0; overflow-wrap:anywhere; }
+.ib-brief dd ol { margin:0; padding-inline-start:18px; }
+.ib-brief .pre { white-space:pre-wrap; }
+.ib-msg { padding:10px 12px; border-radius:10px; background:var(--panel); border-inline-start:3px solid var(--accent); }
+.ib-rel { display:flex; flex-direction:column; gap:2px; } .ib-rel a { color:inherit; }
+.ib-cap { padding:8px 0; border-top:1px dashed var(--line); font-size:14px; } .ib-cap:first-of-type { border-top:0; }
+.ib-cap p { margin:0 0 6px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.ib-cap audio { width:100%; max-width:420px; height:36px; }
+.ib-tr { color:color-mix(in srgb, var(--ink) 75%, var(--mute)); font-style:italic; }
+.ib-ph { display:flex; flex-wrap:wrap; gap:8px; } .ib-ph img { width:96px; height:96px; object-fit:cover; border-radius:8px; border:1px solid var(--line); }
+.ib-acts { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:14px; }
+.ib-acts button, .ib-acts select { min-height:38px; }
+.ib-acts a { color:var(--accent); padding:6px 4px; }
+.ib-proj .sr { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+.ib-proj select { max-width:220px; }
+.ib-edit { display:grid; gap:10px; }
+.ib-edit label { display:grid; gap:4px; font-size:12.5px; color:var(--mute); }
+.ib-edit input, .ib-edit textarea { font:inherit; font-size:15px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); unicode-bidi:plaintext; }
+.ib-done, .ib-archived { opacity:.75; }
+@media (max-width: 700px) {
+  body.ideas #ideas { padding:12px 14px 48px; }
+  .ic { margin-top:12px; padding:12px; }
+  .ic-row button { flex:1 1 auto; min-height:44px; }
+  .ic-row button[type=submit] { flex-basis:100%; margin:0; }
+  .ib-brief { grid-template-columns:1fr; gap:2px; } .ib-brief dd { margin-bottom:8px; }
+  .ib-acts button, .ib-acts select { min-height:44px; } .ib-acts .primary { flex:1 1 100%; }
+}
+@media (prefers-reduced-motion: reduce) { .ip-spin, .ic-row button[aria-pressed=true]::before { animation:none; } }

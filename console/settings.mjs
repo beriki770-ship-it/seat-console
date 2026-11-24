@@ -6,15 +6,18 @@ import { parseCron } from './cron.mjs';
 import { parseRemotes } from './remote.mjs';
 import { retry } from './hardening.mjs';
 import { LANGS } from './i18n.mjs';
+import { VOICE_MODELS, VOICE_LANGS, VOICE_ENGINES, SMART_MODELS, SMART_ENGINES, GEMINI_MODELS } from './voice.mjs';
 
 export const SEAT_NAME = /^[a-z][a-z0-9-]{1,20}$/;
-const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests'];
+const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests', 'voice', 'voiceSmart', 'voiceRolling', 'ideasTelegram'];
 const MODEL_ID = /^[A-Za-z0-9._:/-]{1,80}$/;
 
 // The defaults, in one place. Optional features are off unless the install already uses them (a codex seat, a disciplines.json).
 export function defaults({ seats = {}, disciplines = false, autoArchiveDays = 3, idleReapMinutes = 5 } = {}) {
   return { usageMeters: true, claudeResets: false, codexResets: Object.values(seats).some((s) => s.agent === 'codex'), multiProjects: !!disciplines,
-    quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, projectsFreshAtPct: 40, autoArchiveDoneMin: 30, models: {}, language: '' };   // language '' = the browser's (the page) / English (the bot)
+    quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, projectsFreshAtPct: 40, autoArchiveDoneMin: 30, models: {}, language: '',
+    voice: true, voiceEngine: 'live', voiceModel: VOICE_MODELS[0], voiceLang: '', voiceSmart: true, voiceRolling: true, voiceSmartEngine: 'whisper', voiceGeminiModel: GEMINI_MODELS[0], voiceSmartModel: SMART_MODELS[0],   // Gemini Smart finish sends audio to Google: opt-in (Settings > Voice)
+    ideasSeat: '', ideasDigestAt: '18:00', ideasStaleH: 24, ideasTelegram: true };   // language '' = the browser's (the page) / English (the bot); ideasSeat '' = the first Claude seat
 }
 
 // Known keys with the right type only; the first bad one throws (the page shows the message).
@@ -28,6 +31,15 @@ export function validateSettings(input, seats) {
     else if (k === 'autoArchiveDoneMin') { if (!Number.isInteger(v) || v < 0 || v > 10080) throw new Error('autoArchiveDoneMin must be a whole number 0-10080 (0 = off)'); out[k] = v; }
     else if (k === 'idleReapMinutes') { if (!Number.isInteger(v) || v < 1 || v > 1440) throw new Error('idleReapMinutes must be a whole number 1-1440'); out[k] = v; }
     else if (k === 'guideOffered') { if (v !== 'later' && v !== 'done') throw new Error('guideOffered must be later or done'); out[k] = v; }   // the first-run tour question (public/tour.js)
+    else if (k === 'voiceEngine') { if (!VOICE_ENGINES.includes(v)) throw new Error('voiceEngine must be live or local'); out[k] = v; }
+    else if (k === 'voiceModel') { if (!VOICE_MODELS.includes(v)) throw new Error('unknown voice model ' + v); out[k] = v; }   // the mic button (voice.mjs)
+    else if (k === 'voiceSmartEngine') { if (!SMART_ENGINES.includes(v)) throw new Error('voiceSmartEngine must be ' + SMART_ENGINES.join(' or ')); out[k] = v; }   // gemini (audio to Google) or whisper (this server)
+    else if (k === 'voiceGeminiModel') { if (!GEMINI_MODELS.includes(v)) throw new Error('voiceGeminiModel must be one of ' + GEMINI_MODELS.join(', ')); out[k] = v; }
+    else if (k === 'voiceSmartModel') { if (!SMART_MODELS.includes(v)) throw new Error('voiceSmartModel must be ' + SMART_MODELS.join(' or ')); out[k] = v; }   // Smart finish (live dictation checked by Whisper)
+    else if (k === 'voiceLang') { if (!VOICE_LANGS.includes(v)) throw new Error('voiceLang must be "", he, en or de'); out[k] = v; }
+    else if (k === 'ideasSeat') { if (v !== '' && (!Object.hasOwn(seats, v) || seats[v].agent)) throw new Error('ideasSeat must be a Claude seat'); out[k] = v; }   // the Ideas processor (ideas.mjs) runs claude -p on this seat's login
+    else if (k === 'ideasDigestAt') { const m = /^(\d\d):([0-5]\d)$/.exec(v); if (!m || +m[1] < 7 || +m[1] > 22) throw new Error('ideasDigestAt must be HH:MM between 07:00 and 22:59'); out[k] = v; }   // never at night (23:00-07:00)
+    else if (k === 'ideasStaleH') { if (!Number.isInteger(v) || v < 1 || v > 720) throw new Error('ideasStaleH must be a whole number 1-720'); out[k] = v; }
     else if (k === 'language') { if (v !== '' && !Object.hasOwn(LANGS, v)) throw new Error('unknown language ' + v); out[k] = v; }
     else if (k === 'models') {
       if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('models must be an object seat -> model id');

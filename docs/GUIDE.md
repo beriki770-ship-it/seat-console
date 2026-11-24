@@ -22,6 +22,18 @@ The **Project: auto** button next to the folder field shows it. Press it to pick
 
 **Attach** adds images or files. You can also paste an image straight into the message box. **Stop** ends the turn that is running. The chat stays, and your next message picks it up again.
 
+## How do I speak instead of typing?
+
+Press the microphone next to **Send** and talk: the words appear in the box while you speak. Press it again to stop. Nothing is sent until you send it, and Esc or sending also stops it. On a computer you can hold Ctrl+Space while you talk and let go to stop. The **Live** engine (the default) uses the browser's speech service, Google in Chrome and Microsoft in Edge. **Private** keeps the audio on this server and writes the text a few seconds after you stop; Firefox always uses it. Voice works only on the https address, and the browser asks once for the microphone. Engine, model and language: **Voice** in Settings.
+
+## How do I run a skill, or reuse text I type often?
+
+Type `/` in the message box and the seat's skills and commands show up. Keep typing to narrow the list, then press Enter or tap one: it goes in as `/name`, and you can write more after it. Type `@` and a name for one of your saved snippets: its full text drops into the box, ready to edit. Esc closes the list. Your snippets: **Snippets** in Settings.
+
+## How do I save an idea for later?
+
+Press **Ideas** on the rail (the light bulb). Type, press **Dictate**, record a **Voice note** or add a **Photo**, then **Save idea**. On Telegram, send the bot a voice note or a photo on its own, a message that starts with 💡 or the word רעיון, or `/idea` and the text; a plain message still opens the seat picker, which now also has **Save as idea**. A reply to a notification still goes to its chat. Each idea is transcribed (on this server) and prepared: a title, the project, the kind of work, a goal, what the AI needs to know, open questions and a first message. When you have time, open it and press **Start chat**: a new chat opens in that project with the message in the box, not sent. **Make task** puts it on My tasks instead. Ready ideas you leave alone come back once a day on Telegram (18:00 by default, never at night). Processor seat, reminder time and Telegram capture: **Ideas** in Settings.
+
 ## Something is waiting for me. What now?
 
 A row marked **needs approval** has a tool waiting: open the chat and press **Allow once** or **Deny** on its card. A row marked **waiting for your answer** ended with a question. Write your reply, or tap one of the suggested replies above the box (they only fill it in, nothing is sent). If no answer is needed, press ✕ on the row or **Close question** in its ⋯ menu.

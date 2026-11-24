@@ -14,3 +14,9 @@ search/
 agent-state/
 journal/
 data/client-log.jsonl
+todos.jsonl
+ideas.jsonl
+ideas-media/
+snippets.json
+voice/.venv/
+__pycache__/
