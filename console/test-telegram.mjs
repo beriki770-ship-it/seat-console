@@ -130,6 +130,7 @@ assert.deepEqual(buildRecover([], NOW, true), { text: '✅ No interrupted conver
 // ---- fake Bot API ----
 const calls = []; let updates = []; let nextMsg = 100; let rejectHtml = false;
 const api = http.createServer((req, res) => {
+  if (req.url.includes('/file/bot')) { req.resume(); return void res.end('FILEBYTES:' + req.url.split('/').pop()); }   // getFile download (Telegram's file CDN)
   let b = ''; req.on('data', (x) => b += x); req.on('end', () => {
     const method = req.url.split('/').pop(); const body = b ? JSON.parse(b) : {};
     calls.push({ method, body });
@@ -137,6 +138,7 @@ const api = http.createServer((req, res) => {
     if (method === 'getUpdates') { result = updates; updates = []; if (!result.length) { setTimeout(() => res.end(JSON.stringify({ ok: true, result: [] })), 200); return; } }
     if (rejectHtml && body.parse_mode) { res.end(JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: can't parse entities: Unsupported start tag at byte offset 5" })); return; }
     if (method === 'sendMessage') result = { message_id: ++nextMsg };
+    if (method === 'getFile') result = { file_path: 'f/' + body.file_id + '.bin' };
     res.end(JSON.stringify({ ok: true, result }));
   });
 }).listen(0);
@@ -151,9 +153,11 @@ const tasks = []; let usageMap = {};
 const rec = { sent: [], list: [{ id: 'aaaa1111-0', seat: 'ops', title: 'one', updatedAt: Date.now() - 5 * MIN }, { id: 'bbbb2222-0', seat: 'dev', title: 'two', updatedAt: Date.now() - 9 * MIN }, { id: 'cccc3333-0', seat: 'ops', title: 'three', updatedAt: Date.now() - 20 * MIN }] };
 const linkCodeFile = path.join(path.dirname(cfgFile), 'link-code.txt');
 let routines;   // built below, once tg exists; the bot only calls it when a button is tapped
+const dismissed = [], approved = [], rejected = [], taskMsgs = [], taskMap = {};
 const tg = createTelegram({ cfgFile, apiBase, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), linkCodeFile, seats: ['studio', 'dev', 'render', 'info', 'ops'], phoneBase: BASE,
   onRecoverList: async () => rec.list.filter((c) => !c.done), onRecover: async (w) => { const out = { resumed: [], failed: [] }; for (const c of rec.list.filter((x) => !x.done && (w === 'all' || x.id.startsWith(w)))) { if (c.fail) out.failed.push({ ...c, error: 'Seat is full' }); else { c.done = true; rec.sent.push(c.id); out.resumed.push(c); } } return out; },
-  onNewTask: async (t) => { tasks.push(t); }, onCompact: async (c, i) => { compacts.push([c, i]); }, onList: async () => [{ id, seat: 'ops', title: 'T', status: 'idle' }], onUsage: async () => usageMap, onDigest: async (kind) => ({ text: kind === 'evening' ? '🌆 <b>evening</b>' : '☀️ <b>digest</b>', rows: [[{ text: '↗ x', url: BASE }]] }), onStatus: async () => ({ seats: [{ name: 'ops', usage: 0.07, convs: [{ id, title: 'T', status: 'idle', updatedAt: Date.now() - 3 * MIN, result: 'סיכום: הכל טוב.' }] }] }), findConv: (sh) => (id.startsWith(sh) ? { id, seat: 'ops', title: 'T' } : null), log: (l) => logs.push(l), idleMs: 50, msgMap,
+  onNewTask: async (t) => { tasks.push(t); }, onCompact: async (c, i) => { compacts.push([c, i]); }, onTodoApprove: async (tid) => { approved.push(tid); return 'Approved ' + tid; }, onTodoReject: async (tid) => { rejected.push(tid); return 'Rejected ' + tid; }, onTodoDismiss: async (tid) => { dismissed.push(tid); return 'Dismissed ' + tid; }, taskMap, todoWhat: (tid) => (tid === '0a1b2c' ? 'Upload the <screenshot> of Pages' : null),
+  onTodoMessage: async (tid, p) => { taskMsgs.push([tid, p]); if (tid === 'dead00') throw new Error('This task is already closed'); return '✅ Sent to <b>ops</b> · <i>T</i>'; }, onList: async () => [{ id, seat: 'ops', title: 'T', status: 'idle' }], onUsage: async () => usageMap, onDigest: async (kind) => ({ text: kind === 'evening' ? '🌆 <b>evening</b>' : '☀️ <b>digest</b>', rows: [[{ text: '↗ x', url: BASE }]] }), onStatus: async () => ({ seats: [{ name: 'ops', usage: 0.07, convs: [{ id, title: 'T', status: 'idle', updatedAt: Date.now() - 3 * MIN, result: 'סיכום: הכל טוב.' }] }] }), findConv: (sh) => (id.startsWith(sh) ? { id, seat: 'ops', title: 'T' } : null), log: (l) => logs.push(l), idleMs: 50, msgMap,
   onDecision: async (c, r, a) => { decisions.push([c, r, a]); return a ? 'Allowed' : 'Denied'; },
   onReply: Object.assign(async (conv, p) => { replies.push([conv, p.text]); return '↪️ Sent to <b>ops</b> · <i>T</i>'; }, { acceptsImages: false }) });
 const wait = async (f, ms = 4000) => { const t = Date.now(); while (!f()) { if (Date.now() - t > ms) throw new Error('timeout'); await new Promise((r) => setTimeout(r, 30)); } };
@@ -227,6 +231,57 @@ await wait(() => calls.filter((c) => c.method === 'sendMessage' && c.body.text =
 updates = [{ update_id: 42, callback_query: { id: 'ck', data: 'k:0123abcd', message: { message_id: 32, chat: { id: 555 }, text: 'orig' } } }];
 await wait(() => compacts.length === 3); assert.deepEqual(compacts[2], ['0123abcd', undefined]);
 await wait(() => calls.some((c) => c.method === 'answerCallbackQuery' && c.body.text === 'compacting…'));
+
+// 🚫 Not relevant under a task-board message: 'vx:<id>' must reach onTodoDismiss (the callback regex once skipped the two-letter kind)
+updates = [{ update_id: 44, callback_query: { id: 'cv', data: 'vx:0a1b2c', message: { message_id: 34, chat: { id: 555 }, text: 'task' } } }];
+await wait(() => dismissed.length === 1); assert.deepEqual(dismissed, ['0a1b2c']);
+await wait(() => calls.some((c) => c.method === 'answerCallbackQuery' && c.body.text === 'Dismissed 0a1b2c'));
+
+// ✅ / ❌ under an approval task: 'va:<id>' / 'vr:<id>' must reach their handlers (two-letter kinds, same regex trap as vx) and the card is edited
+updates = [{ update_id: 45, callback_query: { id: 'cva', data: 'va:0a1b2c', message: { message_id: 35, chat: { id: 555 }, text: 'approve this' } } }];
+await wait(() => approved.length === 1); assert.deepEqual(approved, ['0a1b2c']);
+await wait(() => calls.some((c) => c.method === 'editMessageText' && c.body.message_id === 35 && c.body.text.endsWith('Approved 0a1b2c')));
+updates = [{ update_id: 46, callback_query: { id: 'cvr', data: 'vr:3d4e5f', message: { message_id: 36, chat: { id: 555 }, text: 'approve that' } } }];
+await wait(() => rejected.length === 1); assert.deepEqual(rejected, ['3d4e5f']);
+await wait(() => calls.some((c) => c.method === 'answerCallbackQuery' && c.body.text === 'Rejected 3d4e5f'));
+
+// Messages to a task from Telegram: a reply to its card = onTodoMessage(task id) (not the generic conversation reply), 💬 vm:<id> = a ForceReply prompt mapped to the task,
+// photo / voice note downloaded and handed over, a closed task answers with one error line, a reply to a plain notification still reaches onReply.
+{
+  const card = await tg.send('📝 task card'); tg.rememberTask(card, '0a1b2c'); msgMap[card.message_id] = id;   // server.mjs todoTick maps the card both ways
+  assert.equal(taskMap[card.message_id], '0a1b2c');
+  const nR = replies.length;
+  updates = [{ update_id: 60, message: { message_id: 61, chat: { id: 555, type: 'private' }, text: 'which account?', reply_to_message: { message_id: card.message_id } } }];
+  await wait(() => taskMsgs.length === 1);
+  assert.equal(taskMsgs[0][0], '0a1b2c'); assert.equal(taskMsgs[0][1].text, 'which account?'); assert.deepEqual([taskMsgs[0][1].images, taskMsgs[0][1].files, taskMsgs[0][1].audio], [[], [], []]);
+  await wait(() => calls.some((c) => c.method === 'sendMessage' && c.body.text === '✅ Sent to <b>ops</b> · <i>T</i>' && c.body.reply_to_message_id === 61));
+  assert.equal(replies.length, nR, 'a task reply is not also delivered as a plain conversation reply');
+  // 💬 button: ForceReply prompt naming the task (escaped), its id mapped to the task; a reply to the prompt routes the same way
+  updates = [{ update_id: 61, callback_query: { id: 'cvm', data: 'vm:0a1b2c', message: { message_id: card.message_id, chat: { id: 555 }, text: '📝 task card' } } }];
+  await wait(() => calls.some((c) => c.method === 'sendMessage' && c.body.reply_markup?.force_reply));
+  const pr = calls.filter((c) => c.method === 'sendMessage' && c.body.reply_markup?.force_reply).at(-1).body, prId = nextMsg;
+  ok(pr.text); assert.ok(pr.text.includes('<b>Upload the &lt;screenshot&gt; of Pages</b>') && pr.text.startsWith('✍️ ' + 'Write a message for: '), pr.text);
+  assert.equal(taskMap[prId], '0a1b2c'); assert.ok('vm:0a1b2c'.length <= 64);
+  // photo reply to the prompt: downloaded, handed over as an image; voice note to the card: handed over as audio (the server transcribes)
+  updates = [{ update_id: 62, message: { message_id: 62, chat: { id: 555, type: 'private' }, photo: [{ file_id: 'small' }, { file_id: 'big' }], caption: 'this one', reply_to_message: { message_id: prId } } },
+    { update_id: 63, message: { message_id: 63, chat: { id: 555, type: 'private' }, voice: { file_id: 'vn', file_size: 900 }, reply_to_message: { message_id: card.message_id } } }];
+  await wait(() => taskMsgs.length === 3);
+  assert.equal(taskMsgs[1][0], '0a1b2c'); assert.equal(taskMsgs[1][1].text, 'this one'); assert.equal(String(taskMsgs[1][1].images[0].data), 'FILEBYTES:big.bin'); assert.equal(taskMsgs[1][1].audio.length, 0);
+  assert.equal(String(taskMsgs[2][1].audio[0].data), 'FILEBYTES:vn.bin'); assert.equal(taskMsgs[2][1].text, ''); assert.equal(taskMsgs[2][1].images.length, 0);
+  // 💬 on a closed task: a toast, no prompt; a reply to a closed task's card: one error line
+  const nForce = calls.filter((c) => c.body?.reply_markup?.force_reply).length;
+  updates = [{ update_id: 64, callback_query: { id: 'cvm2', data: 'vm:dead00', message: { message_id: 70, chat: { id: 555 }, text: 'old' } } }];
+  await wait(() => calls.some((c) => c.method === 'answerCallbackQuery' && c.body.callback_query_id === 'cvm2'));
+  assert.equal(calls.find((c) => c.body?.callback_query_id === 'cvm2').body.text, 'This task is already closed'); assert.equal(calls.filter((c) => c.body?.reply_markup?.force_reply).length, nForce);
+  tg.rememberTask({ message_id: 71 }, 'dead00');
+  updates = [{ update_id: 65, message: { message_id: 72, chat: { id: 555, type: 'private' }, text: 'still?', reply_to_message: { message_id: 71 } } }];
+  await wait(() => calls.some((c) => c.method === 'sendMessage' && c.body.reply_to_message_id === 72));
+  const er = calls.filter((c) => c.method === 'sendMessage' && c.body.reply_to_message_id === 72).at(-1).body.text; ok(er); assert.ok(er.startsWith('❌') && er.includes('This task is already closed'), er);
+  // a reply to an ordinary notification still goes to its conversation (onReply), not to a task
+  updates = [{ update_id: 66, message: { message_id: 73, chat: { id: 555, type: 'private' }, text: 'plain reply', reply_to_message: { message_id: notifId } } }];
+  await wait(() => replies.length === nR + 1); assert.deepEqual(replies.at(-1), [id, 'plain reply']); assert.equal(taskMsgs.length, 4);
+  replies.splice(nR);   // the checks further down count replies from here
+}
 
 // a reply to a desktop-app notification (🖥️, not in msgMap): one explanation, no picker, no task, no chat delivery
 const nTasks = tasks.length, nReplies = replies.length, nPick = calls.filter((c) => c.method === 'sendMessage' && /Which seat\?$/.test(c.body.text)).length;

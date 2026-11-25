@@ -16,6 +16,7 @@ t('defaults: optional features off, codex resets only with a codex seat, project
   assert.equal(defaults({ seats: { ...seats, gpt: { agent: 'codex' } }, disciplines: true }).codexResets, true);
   assert.equal(defaults({ seats, disciplines: true }).multiProjects, true);
   assert.equal(d.voice, true); assert.equal(d.voiceEngine, 'live'); assert.equal(d.voiceSmartEngine, 'whisper'); assert.equal(d.voiceRolling, true); assert.equal(d.ideasSeat, '');
+  assert.equal(d.autoHandoff, false); assert.equal(d.autoHandoffPct, 30); assert.equal(d.autoHandoffAction, 'rollover'); assert.equal(d.autoHandoffMinK, 120);   // auto handoff is opt-in in public
 });
 t('validation: types, ranges, unknown keys, models of known seats only', () => {
   assert.deepEqual(validateSettings({ claudeResets: true, autoArchiveDays: 0, models: { dev: 'claude-sonnet-5-5', ops: '' } }, seats), { claudeResets: true, autoArchiveDays: 0, models: { dev: 'claude-sonnet-5-5' } });

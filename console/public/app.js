@@ -38,6 +38,16 @@ function applyStatic(root = document) {
   for (const a of ['title', 'placeholder', 'aria-label', 'label']) for (const el of root.querySelectorAll(`[data-i18n-${a}]`)) el.setAttribute(a, t(el.getAttribute('data-i18n-' + a)));
 }
 const label = (s) => tk('status.', s);
+const headBadge = (c) => `<span class="badge ${c.mode}">${esc(tk('mode.', c.mode))}</span>`;
+// Stop shows only while a turn runs (working / waiting on an approval): idle it only took room on the phone.
+const stopUi = (c) => { $('stop').hidden = !['working', 'waiting'].includes(c?.status); };
+// Second header line on a phone (hidden on a wide screen, where the seat · e-mail line already says it): seat chip, project, status.
+const headMeta = (c, s) => {
+  const dir = c?.project || c?.cwd, proj = dir ? dir.split(/[\\/]/).filter(Boolean).pop() : '', need = c && (c.pending || c.needsAnswer);
+  return `<span class="hseat" title="${esc(s.name)}"><span class="nini ${PROV[s.agent] ? 'prov' : ''}" aria-hidden="true">${esc(initials(s.name))}</span><bdi>${esc(s.name)}</bdi></span>`
+    + (proj ? `<a class="hproj" href="#project/${encodeURIComponent(dir)}"><bdi>${esc(proj)}</bdi></a>` : '')
+    + (c ? `<span class="hst${need ? ' need' : ''}"><span class="dot ${need ? 'waiting' : DOT[c.status] ?? c.status}"></span>${need ? t('project.needs') : esc(label(c.status))}</span>` : '');
+};
 
 // Minimal markdown: fenced code, lists, paragraphs, inline code, bold, links. Everything is escaped first.
 // A code block gets a Copy button (raw text, see copyText) and ONE direction for the whole block (blockDir): per-line bidi broke the indentation of code with Hebrew comments.
@@ -100,6 +110,7 @@ function render(ev, st, target = $('log')) {
     out.push(u);
   }
   else if (ev.type === 'console_error') out.push(div('msg note err', esc(ev.text)));
+  else if (ev.type === 'console_note') out.push(div('msg note ahnote', `🧭 ${t(ev.key, { pct: ev.pct ?? '', file: `<bdi dir="ltr">${esc(ev.file || '')}</bdi>` })}${ev.link ? ` <a href="#" data-ahgo="${esc(ev.link.id)}" data-seat="${esc(ev.link.seat)}"><bdi>${esc(ev.link.title || ev.link.id.slice(0, 8))}</bdi></a>` : ''}`));   // auto handoff (server ahContinue): link to the successor / predecessor
   else if (ev.type === 'console_spawn') out.push(div('msg note', t('log.started', { mode: esc(tk('mode.', ev.mode)), pid: ev.pid })));
   else if (ev.type === 'console_perm') {
     const live = st.pending.has(ev.requestId);
@@ -211,16 +222,17 @@ async function showConversation() {
   log.scrollTop = log.scrollHeight;
   $('head').innerHTML = `<button id="menu" aria-label="${t('side.seats')}">☰</button><span id="htitle" dir="auto" ${c ? `title="${t('conv.renameHint')}"` : ''}>${c ? esc(c.title) : t('conv.newTitle', { seat: `<bdi>${esc(s.name)}</bdi>` })}</span>`
     + (c ? `<button type="button" id="renamebtn" aria-label="${t('conv.rename')}">✎</button>` : '')
-    + `<small dir="ltr">${esc(s.name)} · ${esc(s.email)}</small>` + (c ? `<span class="badge ${c.mode}">${esc(tk('mode.', c.mode))}</span>` : '') + ctxBtnHtml(c)
-    + `<button type="button" id="toolsbtn" aria-pressed="${showTools}">${t('conv.showActions')}</button>`;
+    + `<small dir="ltr">${esc(s.name)} · ${esc(s.email)}</small>` + `<span id="hrow2"><span id="hmeta">${headMeta(c, s)}</span>` + (c ? `<span id="hbadge">${headBadge(c)}</span>` : '') + ctxBtnHtml(c) + '</span>'
+    + `<button type="button" id="toolsbtn" aria-pressed="${showTools}" aria-label="${t('conv.showActions')}" title="${t('conv.showActions')}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>`;
   closeCtx();
   $('cwd').value = c ? c.cwd : projCtx || draftDir || '';   // a new chat: the project it was started in or picked on the chip; empty = the server decides (send())
   if (!c) detectSoon(); showChip();
   // An existing conversation's model and effort come from the conversation: left on whatever the last one used, the next message would silently restart it with those.
-  setModels(s, c);   // an agent seat (Codex, Antigravity) shows ITS models; a Claude seat the Claude list
+  setModels(s, c).then(optSum);   // an agent seat (Codex, Antigravity) shows ITS models; a Claude seat the Claude list
   if (c) { $('effort').value = Math.max(0, EFFORTS.indexOf(c.effort || '')); $('effortOut').textContent = c.effort || t('composer.effortDefault'); }
   if (c) $('mode').value = c.mode || 'auto';   // a remote run has no mode; changeable on an existing conversation too: the next message restarts it in the new mode (server send())
   $('banner').hidden = !(c && (c.status === 'interrupted' || c.status === 'stopped'));
+  stopUi(c);
   $('banner').firstElementChild.textContent = t(c && c.status === 'interrupted' ? 'conv.interrupted' : 'conv.stopped');
   $('menu').onclick = () => document.body.classList.toggle('drawer');
   // A remote run (server: remote.mjs) of a read-only remote: no composer, no pins; the server refuses every POST for it anyway.
@@ -234,7 +246,7 @@ const kfmt = (n) => num(Number(n) || 0, { notation: 'compact', maximumFractionDi
 const ctxText = (x) => x.window ? `${kfmt(x.used)} / ${kfmt(x.window)} (${pct(x.pct / 100)})` : kfmt(x.used);
 const ctxBtnHtml = (c) => {
   const x = c?.ctx; if (!x) return '';
-  return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="${t('ctx.title')}"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span dir="${x.compacting ? 'auto' : 'ltr'}">${x.compacting ? t('ctx.compacting') : ctxText(x)}</span></button>`;
+  return `<button type="button" id="ctxbtn" class="cx-${x.level || 'none'}" aria-haspopup="dialog" aria-expanded="${!$('ctxpanel').hidden}" title="${esc(t('ctx.title') + ': ' + ctxText(x))}"><span class="cxbar"><i style="width:${Math.min(100, x.pct || 0)}%"></i></span><span class="cxfull">${x.compacting ? t('ctx.compacting') : ctxText(x)}</span>${x.window && !x.compacting ? `<span class="cxshort">${pct(x.pct / 100)}</span>` : ''}</button>`;
 };
 const ctxBusy = (c) => c.remote || c.status === 'working' || c.status === 'waiting' || c.status === 'interrupted' || c.ctx?.compacting;
 function ctxPanelHtml(c) {
@@ -250,7 +262,7 @@ function ctxPanelHtml(c) {
 function refreshCtx() {
   const c = curConv(), old = $('ctxbtn');
   if (!c?.ctx) { old?.remove(); $('ctxpanel').hidden = $('ctxscrim').hidden = true; return; }
-  if (old) old.outerHTML = ctxBtnHtml(c); else $('head').insertAdjacentHTML('beforeend', ctxBtnHtml(c));
+  if (old) old.outerHTML = ctxBtnHtml(c); else ($('hrow2') || $('head')).insertAdjacentHTML('beforeend', ctxBtnHtml(c));
   if (!$('ctxpanel').hidden) { const msg = $('cxmsg')?.textContent || ''; $('ctxpanel').innerHTML = ctxPanelHtml(c); $('cxmsg').textContent = msg; }   // keep the last Refresh/Compact answer across live updates
 }
 const closeCtx = () => { $('ctxpanel').hidden = $('ctxscrim').hidden = true; $('ctxbtn')?.setAttribute('aria-expanded', 'false'); };
@@ -324,7 +336,7 @@ const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''
       <span class="dot ${DOT[c.status] ?? c.status}"></span><span class="t" dir="auto">${c.keep ? `<span class="kept" title="${t('conv.keptTitle')}">★</span> ` : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="${t('ctx.title')} ${esc(ctxText(c.ctx))}">${pct(c.ctx.pct / 100)}</span>` : ''}
       <small><span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span> ${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
       ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-expanded="${menuFor === c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
-  + (menuFor === c.id ? `<div class="cmenu" data-guide="convmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-guide="keep" data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-guide="archive" data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
+  + (menuFor === c.id ? `<div class="cmenu" data-guide="convmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-guide="keep" data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-noah="${c.id}" data-to="${!c.noAutoHandoff}" title="${t('conv.noAutoHandoffTitle')}">${t(c.noAutoHandoff ? 'conv.autoHandoffOn' : 'conv.noAutoHandoff')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-guide="archive" data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
 
 // A non-Claude seat gets a neutral letter mark and its provider's name on the row (no logos); a remote group a dashed avatar.
 const PROV = { codex: { mark: 'G', name: 'GPT · Codex' }, agy: { mark: 'A', name: 'Antigravity' } };
@@ -498,7 +510,7 @@ function onEvent(m) {
     if (i >= 0) s.conversations[i] = d.conv; else s.conversations.unshift(d.conv);
     s.conversations.sort((a, b) => b.updatedAt - a.updatedAt);
     scheduleSeats(); if (onProjects()) { clearTimeout(convRefresh); convRefresh = setTimeout(loadMulti, 2000); }
-    if (d.conv.id === cur.id) { refreshCtx(); $('banner').hidden = !(d.conv.status === 'interrupted' || d.conv.status === 'stopped'); showMarks(); const h = $('htitle'); if (h && !h.isContentEditable) h.textContent = d.conv.title; }
+    if (d.conv.id === cur.id) { refreshCtx(); $('banner').hidden = !(d.conv.status === 'interrupted' || d.conv.status === 'stopped'); stopUi(d.conv); const hb = $('hbadge'); if (hb) hb.innerHTML = headBadge(d.conv); const hm = $('hmeta'); if (hm) hm.innerHTML = headMeta(d.conv, s); showMarks(); const h = $('htitle'); if (h && !h.isContentEditable) h.textContent = d.conv.title; }
     return;
   }
   if (loading && loading.id === d.convId && !convo[d.convId]) { loading.buf.push(d); return; }
@@ -832,10 +844,10 @@ async function loadProject() {
   if (dir === projDir) { projData = r; renderProject(); }
 }
 function openProject(dir) {
-  dropCtx(); closeSettings(); closeGuide(); closeTodos(); closeIdeas(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; projFirst = true; projArchOpen = false; projMoreOpen = false; projOpenRuns = new Set(); renderProject(); showMultiSide(); loadProject();
+  dropCtx(); closeSettings(); closeGuide(); closeTodos(); closeIdeas(); closeDesktop(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); projDir = dir; projData = null; projFirst = true; projArchOpen = false; projMoreOpen = false; projOpenRuns = new Set(); renderProject(); showMultiSide(); loadProject();
 }
 function openProjects(id) {
-  dropCtx(); projDir = null; closeSettings(); closeGuide(); closeTodos(); closeIdeas(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
+  dropCtx(); projDir = null; closeSettings(); closeGuide(); closeTodos(); closeIdeas(); closeDesktop(); document.body.classList.add('projects'); document.body.classList.remove('drawer'); showProjects(); showMultiSide();
   focusId = id || null; if (multiLoaded) flashCard();   // a direct link before the first load: the card is flashed once the data is in (loadMulti)
 }
 function flashCard() {
@@ -887,6 +899,7 @@ $('seats').onclick = async (e) => {
   const mo = e.target.closest('[data-more]'); if (mo) { menuFor = menuFor === mo.dataset.more ? null : mo.dataset.more; return showSeats(); }
   const dm = e.target.closest('[data-dismiss]'); if (dm) { menuFor = null; const r = await api('/api/dismiss', { conversationId: dm.dataset.dismiss }); if (r.error) alert(r.error); return; }
   const uw = e.target.closest('[data-unwait]'); if (uw) { const r = await api('/api/quotawait', { conversationId: uw.dataset.unwait }); if (r.error) alert(r.error); return; }
+  const nh = e.target.closest('[data-noah]'); if (nh) { menuFor = null; const r = await api('/api/noautohandoff', { conversationId: nh.dataset.noah, off: nh.dataset.to === 'true' }); if (r.error) alert(r.error); return; }
   const kp = e.target.closest('[data-keep]'); if (kp) { menuFor = null; const r = await api('/api/keep', { conversationId: kp.dataset.keep, keep: kp.dataset.to === 'true' }); if (r.error) alert(r.error); return; }
   const mv = e.target.closest('[data-mvproj]'); if (mv) { menuFor = null; showSeats(); return openMove(mv.dataset.mvproj); }
   const ar = e.target.closest('[data-archive]'); if (ar) { menuFor = null; await api('/api/archive', { conversationId: ar.dataset.archive, archived: ar.dataset.to === 'true' }); return; }
@@ -906,6 +919,7 @@ $('seats').onclick = async (e) => {
   const b = e.target.closest('[data-id]'); if (b) pick(b.dataset.seat, b.dataset.id);
 };
 $('log').onclick = async (e) => {
+  const ag = e.target.closest('a[data-ahgo]'); if (ag) { e.preventDefault(); return pick(ag.dataset.seat, ag.dataset.ahgo); }
   const cp = e.target.closest('button[data-copy]'); if (cp) return copyText(cp.nextElementSibling.textContent, cp);
   const pn = e.target.closest('button[data-pin]');
   if (pn) {   // manual 📌: the message text without its buttons
@@ -1089,7 +1103,8 @@ function openHash() {
   if (location.hash === '#guide') return openGuide();
   if (location.hash === '#todos') return openTodos();
   if (/^#ideas(\/|$)/.test(location.hash)) return openIdeas(location.hash.slice(7) || null);   // #ideas/<id>: the Telegram digest's Open button
-  closeGuide(); closeTodos(); closeIdeas();
+  if (location.hash === '#desktop') return openDesktop();   // public/desktop.js
+  closeGuide(); closeTodos(); closeIdeas(); closeDesktop();
   if (location.hash === '#settings') return openSettings();
   closeSettings();
   const x = ctxHash();
@@ -1148,6 +1163,20 @@ async function attach(files) {
   showThumbs();
 }
 $('attach').onclick = () => $('file').click();
+// ---- composer options (phone): folder, mode, model and effort behind one toggle; folded by default, the choice is remembered; folded it shows a summary ----
+function optSum() {
+  const o = (id) => $(id).selectedOptions[0]?.text || '';
+  $('optsum').textContent = [o('mode'), o('model'), `${t('composer.effort')} ${$('effortOut').textContent}`].filter(Boolean).join(' · ');
+}
+function setOpts(open) { $('composer').classList.toggle('opts', open); $('optsbtn').setAttribute('aria-expanded', String(open)); try { localStorage.setItem('composerOpts', open ? '1' : '0'); } catch {} }
+setOpts(localStorage.getItem('composerOpts') === '1');
+$('optsbtn').onclick = () => setOpts(!$('composer').classList.contains('opts'));
+$('composer').addEventListener('change', optSum); $('composer').addEventListener('input', (e) => { if (e.target.id === 'effort') optSum(); });
+// "+" opens Attach / Photo; an item or a tap outside closes it.
+const closeAdd = () => { $('addmenu').hidden = true; $('addbtn').setAttribute('aria-expanded', 'false'); };
+$('addbtn').onclick = () => { const open = $('addmenu').hidden; $('addmenu').hidden = !open; $('addbtn').setAttribute('aria-expanded', String(open)); if (open) $('addmenu').querySelector('button:not([hidden])')?.focus(); };
+document.addEventListener('click', (e) => { if (!$('addmenu').hidden && !e.target.closest('#addbtn') && (!e.target.closest('#addmenu') || e.target.closest('button'))) closeAdd(); }, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('addmenu').hidden) { closeAdd(); $('addbtn').focus(); } });
 // Phones: "Photo" opens the photo picker (recent screenshots first) through accept="image/*"; Attach keeps every file type.
 $('photobtn').hidden = !TOUCH; $('photobtn').onclick = () => $('photo').click();
 $('photo').onchange = () => { attach([...$('photo').files]); $('photo').value = ''; };
@@ -1176,21 +1205,6 @@ function pastedImages(dt) {
   return fs.map((f, i) => new File([f], `paste-${stamp}${fs.length > 1 ? '-' + (i + 1) : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg').replace(/\+.*/, '')}`, { type: f.type }));
 }
 $('text').addEventListener('paste', (e) => { e.preventDefault(); const fs = pastedImages(e.clipboardData); if (fs.length) attach(fs); insertPlain(e.clipboardData?.getData('text/plain')); });   // images to the attachments, text as plain text (never the copied formatting)
-// "Paste image": reads the clipboard directly, for keyboards that cannot paste an image into a web page. navigator.clipboard.read exists only in a
-// secure context (https via tailscale serve, or 127.0.0.1); on the plain http Tailscale address a tap names the https address instead.
-$('pasteimg').hidden = false;   // never hidden silently: on the plain http address a tap says where it works
-$('pasteimg').onclick = async () => {
-  if (!(isSecureContext && navigator.clipboard?.read)) { diag({ k: 'pasteimg', ok: false, why: 'insecure' }); return alert(t('composer.pasteImageHttps', { url: HTTPS_URL || 'https://' })); }
-  let perm = 'n/a'; try { perm = (await navigator.permissions.query({ name: 'clipboard-read' })).state; } catch {}
-  diag({ k: 'pasteimg', step: 'start', perm });   // logged before read(): a read that never settles still leaves a trace
-  let items;
-  try { items = await Promise.race([navigator.clipboard.read(), new Promise((_, no) => setTimeout(() => no(Object.assign(new Error('no answer in 20 s'), { name: 'Timeout' })), 20000))]); }
-  catch (x) { diag({ k: 'pasteimg', ok: false, perm, err: x.name, msg: String(x.message).slice(0, 200) }); return alert(t(x.name === 'NotAllowedError' ? 'composer.pasteImageDenied' : x.name === 'Timeout' ? 'composer.pasteImageTimeout' : 'composer.pasteImageFailed')); }
-  diag({ k: 'pasteimg', ok: true, perm, types: items.map((it) => it.types.join(',')) });
-  const files = []; for (const it of items) { const ty = it.types.find((x) => x.startsWith('image/')); if (ty) files.push(new File([await it.getType(ty)], 'image', { type: ty })); }
-  if (!files.length) return alert(t('composer.pasteImageNone'));
-  attach(pastedImages({ files }));
-};
 // Drag and drop onto the composer: any file, same path as the Attach button. dragover must be cancelled or the browser opens the file instead.
 const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
 $('composer').addEventListener('dragover', (e) => { if (isFileDrag(e)) { e.preventDefault(); $('composer').classList.add('dropping'); } });
@@ -1335,7 +1349,9 @@ function liveStart(hold) {
   const span = document.createElement('span'); span.className = 'vi'; span.contentEditable = 'false';
   const r = sel.getRangeAt(0); r.collapse(false); r.insertNode(span);
   // Smart finish / rolling correction mark where this dictation starts (an empty, non-editable span; the interim span marks the end): only the text between the two is ever replaced
-  const smart = smartOn(), roll = rollOn();
+  // Android Chrome: while the page holds the microphone (the parallel capture below) its recognizer hears silence, with no error to catch:
+  // 0 live words in every Android session since Smart finish (DIAG 2026-11-25). There dictation stays plain live, as before Smart finish.
+  const smart = smartOn() && !ANDROID, roll = rollOn() && !ANDROID;
   const m0 = smart || roll ? Object.assign(document.createElement('span'), { className: 'vm', contentEditable: 'false' }) : null; if (m0) span.before(m0);
   r.setStartBefore(span); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);   // caret before the span (after the start mark), nothing selected
   const m = mic = { live: true, hold, span, m0, conv: cur.id, t0: Date.now(), stopping: false, quick: 0, langs: new Set(), smart, fin: roll ? [] : null };   // fin: the typed finals (rolling correction)
@@ -1723,7 +1739,12 @@ const TABS = {
     + tog('codexResets', t('set.usage.codexResets'), t('set.usage.codexResetsHint', { cmd: '<code dir="ltr">codex app-server</code>' }))
     + `<h3>${t('set.usage.housekeeping')}</h3><label class="snum" data-guide="archive-days"><span><b>${t('set.usage.archive')}</b><small>${t('set.usage.archiveHint')}</small></span><input type="number" min="0" max="365" data-set="autoArchiveDays" value="${draft.autoArchiveDays}"> ${t('set.usage.days')}</label>`
     + `<label class="snum"><span><b>${t('set.usage.reap')}</b><small>${t('set.usage.reapHint')}</small></span><input type="number" min="1" max="1440" data-set="idleReapMinutes" value="${draft.idleReapMinutes}"> ${t('set.usage.min')}</label>`
-    + `<label class="snum" data-guide="archive-done"><span><b>${t('set.usage.archiveDone')}</b><small>${t('set.usage.archiveDoneHint')}</small></span><input type="number" min="0" max="10080" data-set="autoArchiveDoneMin" value="${draft.autoArchiveDoneMin}"> ${t('set.usage.min')}</label>`,
+    + `<label class="snum" data-guide="archive-done"><span><b>${t('set.usage.archiveDone')}</b><small>${t('set.usage.archiveDoneHint')}</small></span><input type="number" min="0" max="10080" data-set="autoArchiveDoneMin" value="${draft.autoArchiveDoneMin}"> ${t('set.usage.min')}</label>`
+    // auto handoff (server: rollover.mjs autoHandoffStep): HANDOFF.md first, then a fresh conversation or /compact
+    + `<h3>${t('set.ah.title')}</h3>` + tog('autoHandoff', t('set.ah.on'), t('set.ah.onHint'))
+    + `<label class="snum" data-guide="set-ah"><span><b>${t('set.ah.pct')}</b><small>${t('set.ah.pctHint')}</small></span><input type="number" min="5" max="90" data-set="autoHandoffPct" value="${draft.autoHandoffPct ?? 30}"> %</label>`
+    + `<label class="snum"><span><b>${t('set.ah.action')}</b><small>${t('set.ah.actionHint')}</small></span><select data-set="autoHandoffAction" data-str="1">${['rollover', 'compact'].map((a) => `<option value="${a}"${(draft.autoHandoffAction || 'rollover') === a ? ' selected' : ''}>${t('set.ah.' + a)}</option>`).join('')}</select></label>`
+    + `<label class="snum"><span><b>${t('set.ah.floor')}</b><small>${t('set.ah.floorHint')}</small></span><input type="number" min="0" max="900" data-set="autoHandoffMinK" value="${draft.autoHandoffMinK ?? 120}"> k</label>`,
   projects: () => {
     const d = setData.disciplines || { owner: setData.detected.seats[0]?.name, disciplines: {} };
     return `<h3>${t('set.proj.title')}</h3>` + tog('multiProjects', t('set.proj.page'), t('set.proj.pageHint'))
@@ -1790,7 +1811,7 @@ function showSettings() {
   if (tr.left < nr.left) nav.scrollLeft += tr.left - nr.left - 24; else if (tr.right > nr.right) nav.scrollLeft += tr.right - nr.right + 24;
 }
 async function openSettings(tab) {
-  closeGuide(); closeTodos(); closeIdeas(); document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
+  closeGuide(); closeTodos(); closeIdeas(); closeDesktop(); document.body.classList.add('settings'); document.body.classList.remove('drawer', 'projects');
   if (tab) { setTab = tab; setNote = null; }
   if (!setData) await loadSettings(); showSettings();
 }
@@ -1801,7 +1822,7 @@ function closeSettings() {
 $('setbtn').onclick = () => { if (onSettings()) return closeSettings(); if (location.hash === '#settings') openSettings(); else location.hash = 'settings'; };
 // ---- Guide (#guide): how to use the console, one short answer per task. Button names are filled in from the page's own keys,
 // so the guide always names a button exactly as the page shows it, in every language. ----
-const GUIDE = ['seats', 'start', 'folder', 'attach', 'voice', 'slash', 'ideas', 'approve', 'keep', 'auto', 'search', 'projects', 'runs', 'project', 'ctx', 'settings'];
+const GUIDE = ['seats', 'start', 'folder', 'attach', 'voice', 'slash', 'ideas', 'desktop', 'approve', 'keep', 'auto', 'search', 'projects', 'runs', 'project', 'ctx', 'settings'];
 const onGuide = () => document.body.classList.contains('guide');
 function showGuide() {
   const b = (k, v) => `<b>${t(k, v)}</b>`;
@@ -1810,12 +1831,12 @@ function showGuide() {
     keep: b('conv.keep'), archive: b('conv.archive'), showArchived: b('side.showArchived', { n: '…' }), move: b('conv.moveProject'), tabUsage: b('set.tab.usage'), archiveDone: b('set.usage.archiveDone'), archiveDays: b('set.usage.archive'),
     openProjects: b('projects.open'), openProject: b('projects.openProject'), newChat: b('projects.newChat'), allFolders: b('projects.allFolders', { n: '…' }), startRun: b('projects.startRun'), plan: b('projects.plan'), approve: b('projects.approve'),
     needs: b('project.needs'), allClear: b('project.allClear'), working: b('project.working'), runs: b('project.runs'), allTasks: b('project.allTasks'), happening: b('project.happening'), backTo: b('project.backTo'), opened: b('project.opened'), related: b('project.related'), pin: b('project.pin'), notRelated: b('project.notRelated'),
-    ideas: b('ideas.button'), dictate: b('ideas.dictate'), voiceNote: b('ideas.voiceNote'), photo: b('ideas.photo'), ideaSave: b('ideas.save'), ideaStart: b('ideas.start'), ideaTodo: b('ideas.todo'), tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
+    ideas: b('ideas.button'), desktop: b('desktop.button'), viewOnly: b('desktop.viewOnly'), keyboard: b('desktop.keyboard'), dictate: b('ideas.dictate'), voiceNote: b('ideas.voiceNote'), photo: b('ideas.photo'), ideaSave: b('ideas.save'), ideaStart: b('ideas.start'), ideaTodo: b('ideas.todo'), tabStart: b('set.tab.start'), lang: b('set.lang.title'), tabProjects: b('set.tab.projects'), freshAt: b('set.proj.fresh'), save: b('common.save') };
   $('guide').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-gdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('guide.title')}</h2><small>${t('guide.subtitle')}</small></div><button type="button" data-gclose>${t('common.close')}</button></header>`
     + `<div class="gd"><p class="gd-full"><button type="button" class="primary" data-gtour="full">${t('tour.full')}</button></p>${GUIDE.map((k) => `<section class="gd-s"><h3>${t(`guide.${k}.h`)}</h3><p>${t(`guide.${k}.p`, names)}</p><button type="button" class="gd-show" data-gtour="${k}">${t('tour.show')}</button></section>`).join('')}<p class="gd-build">${t('guide.build', { id: `<code dir="ltr">${esc(BUILD)}</code>` })}</p></div>`;   // which code this page runs (the phone app too)
 }
 function openGuide() {
-  closeSettings(); closeProjects(); closeTodos(); closeIdeas(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
+  closeSettings(); closeProjects(); closeTodos(); closeIdeas(); closeDesktop(); document.body.classList.add('guide'); document.body.classList.remove('drawer');
   showGuide(); $('guide').scrollTop = 0;
 }
 function closeGuide() {
@@ -1824,7 +1845,7 @@ function closeGuide() {
 }
 $('guidebtn').onclick = () => { if (onGuide()) return closeGuide(); if (location.hash === '#guide') openGuide(); else location.hash = 'guide'; };
 // Rail buttons show what is open: every page switch toggles a body class, so one observer covers all the ways in and out (button, hash, Close, tour).
-const railState = () => { $('projbtn').setAttribute('aria-pressed', String(onProjects())); $('setbtn').setAttribute('aria-pressed', String(onSettings())); $('guidebtn').setAttribute('aria-pressed', String(onGuide())); $('todobtn').setAttribute('aria-pressed', String(onTodos())); $('ideabtn').setAttribute('aria-pressed', String(onIdeas())); };
+const railState = () => { $('projbtn').setAttribute('aria-pressed', String(onProjects())); $('setbtn').setAttribute('aria-pressed', String(onSettings())); $('guidebtn').setAttribute('aria-pressed', String(onGuide())); $('todobtn').setAttribute('aria-pressed', String(onTodos())); $('ideabtn').setAttribute('aria-pressed', String(onIdeas())); $('deskbtn').setAttribute('aria-pressed', String(onDesktop())); };
 new MutationObserver(railState).observe(document.body, { attributes: true, attributeFilter: ['class'] }); railState();
 $('guide').onclick = (e) => { const g = e.target.closest('[data-gtour]'); if (g) return startTour(g.dataset.gtour); if (e.target.closest('[data-gclose]')) return closeGuide(); if (e.target.closest('[data-gdrawer]')) document.body.classList.add('drawer'); };
 const note = (html, err) => { setNote = { tab: setTab, html, err }; };
@@ -1985,12 +2006,14 @@ async function loadTodos() {
 function todoRow(x) {
   const chat = x.conv ? `<a href="#${esc(x.conv)}">${esc(x.title || t('todos.chat'))}</a>${x.seat ? ` · ${esc(x.seat)}` : ''}` : '';
   const closed = x.doneAt || x.dismissedAt;
-  return `<div class="td-row${x.doneAt ? ' td-done' : ''}${x.dismissedAt ? ' td-dismissed' : ''}" data-todo="${esc(x.id)}"><input type="checkbox" aria-label="${t('todos.markDone')}"${closed ? ' checked disabled' : ''}><div class="td-what" dir="auto">${esc(x.what)}</div>`
-    + `<div class="td-meta">${x.dismissedAt ? `<b class="td-tag">${t('todos.dismissedTag')}</b> · ` : ''}${x.auto ? `<b class="td-tag">${t('todos.autoTag')}</b> · ` : ''}${x.checkBroken && !closed ? `<span class="td-warn">${t('todos.checkBroken')}</span> · ` : ''}${chat}${chat ? ' · ' : ''}${ago(Date.parse(x.doneAt || x.dismissedAt || x.at))}${closed ? ` · <button type="button" class="td-link" data-treopen>${t('todos.reopen')}</button>` : ''}</div>`
-    + x.comments.map((c) => `<div class="td-c" dir="auto">${esc(c.text)}</div>`).join('')
-    + (x.doneAt ? '' : `<div class="td-note"><input type="text" dir="auto" placeholder="${t('todos.commentPh')}" aria-label="${t('todos.commentPh')}"><button type="button" data-tsend>${t('todos.send')}</button><button type="button" class="td-dismiss" data-tdismiss>${t('todos.dismiss')}</button></div>`) + '</div>';
+  const ask = x.kind === 'approval' && !closed;   // an open approval has no Done tick: only Approve / Reject (or Not relevant) close it
+  return `<div class="td-row${x.doneAt ? ' td-done' : ''}${x.outcome === 'rejected' ? ' td-rejected' : ''}${x.dismissedAt ? ' td-dismissed' : ''}" data-todo="${esc(x.id)}">${ask ? '<span class="td-ap" aria-hidden="true"></span>' : `<input type="checkbox" aria-label="${t('todos.markDone')}"${closed ? ' checked disabled' : ''}>`}<div class="td-what" dir="auto">${esc(x.what)}</div>`
+    + `<div class="td-meta">${x.dismissedAt ? `<b class="td-tag">${t('todos.dismissedTag')}</b> · ` : ''}${x.outcome ? `<b class="td-tag">${t(x.outcome === 'approved' ? 'todos.approvedTag' : 'todos.rejectedTag')}</b> · ` : ''}${x.auto ? `<b class="td-tag">${t('todos.autoTag')}</b> · ` : ''}${x.checkBroken && !closed ? `<span class="td-warn">${t('todos.checkBroken')}</span> · ` : ''}${chat}${chat ? ' · ' : ''}${ago(Date.parse(x.doneAt || x.dismissedAt || x.at))}${closed ? ` · <button type="button" class="td-link" data-treopen>${t('todos.reopen')}</button>` : ''}</div>`
+    + x.comments.map((c) => `<div class="td-c" dir="auto">${c.src === 'telegram' ? `<span class="td-src">${t('todos.viaTelegram')}</span> ` : ''}${esc(c.text)}</div>`).join('')
+    + (x.doneAt ? '' : `<div class="td-note"><input type="text" dir="auto" placeholder="${t('todos.commentPh')}" aria-label="${t('todos.commentPh')}">${SR ? todoMicHtml(x.id) : ''}<button type="button" data-tsend>${t('todos.send')}</button><button type="button" class="td-yes" data-tapprove>✅ ${t('todos.approve')}</button><button type="button" class="td-no" data-treject>❌ ${t('todos.reject')}</button><button type="button" class="td-dismiss" data-tdismiss>${t('todos.dismiss')}</button></div>`) + '</div>';
 }
 function showTodos() {
+  if (todoLive) { todosStale = true; return; }   // never rebuilt under a dictation: redrawn when it ends
   if (document.activeElement?.matches?.('#todos .td-note input')) { todosStale = true; return; }   // never rebuilt under a comment being typed: redrawn on blur
   todosStale = false;
   const oldOpen = $('todos').querySelector('.td-old:not(.td-oldx)')?.open, oldxOpen = $('todos').querySelector('.td-oldx')?.open;
@@ -2004,7 +2027,7 @@ function showTodos() {
   if (oldxOpen) $('todos').querySelector('.td-oldx')?.setAttribute('open', '');
 }
 function openTodos() {
-  closeSettings(); closeProjects(); closeGuide(); closeIdeas(); document.body.classList.add('todos'); document.body.classList.remove('drawer');
+  closeSettings(); closeProjects(); closeGuide(); closeIdeas(); closeDesktop(); document.body.classList.add('todos'); document.body.classList.remove('drawer');
   if (todos) showTodos(); loadTodos(); $('todos').scrollTop = 0;
 }
 function closeTodos() {
@@ -2027,10 +2050,52 @@ $('todos').onclick = (e) => {
   if (e.target.closest('[data-tdrawer]')) return document.body.classList.add('drawer');
   const row = e.target.closest('[data-todo]'); if (!row) return;
   if (e.target.matches('input[type=checkbox]')) { e.preventDefault(); return todoAct(row, 'done'); }   // checked only once the server took it
+  if (e.target.closest('[data-tmic]')) return todoDictate(row);
+  if (e.target.closest('[data-tlang]')) { setLiveLang(LIVE_LANGS[(LIVE_LANGS.indexOf(liveLang()) + 1) % LIVE_LANGS.length]); todoMicState(); if (todoLive) try { todoLive.rec.abort(); } catch {} return; }   // a dictation listens on in the new language (onend restarts it)
+  if (todoLive && e.target.closest('[data-tsend],[data-tapprove],[data-treject],[data-tdismiss],[data-treopen]')) { todoLive.stopping = true; try { todoLive.rec.abort(); } catch {} }   // acting on a task ends its dictation: the box holds what was heard
   if (e.target.closest('[data-tsend]')) return todoAct(row, 'comment');
+  if (e.target.closest('[data-tapprove]')) return todoAct(row, 'approve');   // the comment box, if filled, is their note / reason
+  if (e.target.closest('[data-treject]')) return todoAct(row, 'reject');
   if (e.target.closest('[data-tdismiss]')) return todoAct(row, 'dismiss');   // the comment box, if filled, is the reason
   if (e.target.closest('[data-treopen]')) return todoAct(row, 'reopen');
 };
+// ---- Dictating a task comment: the same plain live dictation as the Ideas box (ideaDictate), into THIS row's comment box;
+// language = the composer's chip (liveLang / setLiveLang). Never a parallel microphone capture (Smart finish / rolling stay composer-only), so
+// Android's recognizer is not starved (bd56b7f). Send / Approve / Reject / Not relevant then take the box as typed text. ----
+var todoLive = null;
+function todoMicHtml(id) {
+  const on = todoLive?.id === id, c = liveLang();
+  return `<button type="button" class="td-lang" data-tlang dir="ltr" title="${t('voice.langChip', { lang: esc(setData?.languages?.[c] || c) })}">${c.toUpperCase()}</button>`
+    + `<button type="button" class="td-mic" data-tmic aria-pressed="${on}" aria-label="${t(on ? 'ideas.dictateStop' : 'composer.micTitle')}" title="${t(on ? 'ideas.dictateStop' : 'composer.micTitle')}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></g></svg></button>`;
+}
+function todoMicState() {   // the pressed mic + every chip's language, without rebuilding the rows (the box being dictated into stays)
+  $('todos').querySelectorAll('[data-todo]').forEach((r) => { const b = r.querySelector('[data-tmic]'); if (!b) return; const on = todoLive?.id === r.dataset.todo, l = t(on ? 'ideas.dictateStop' : 'composer.micTitle'); b.setAttribute('aria-pressed', on); b.title = l; b.setAttribute('aria-label', l); });
+  $('todos').querySelectorAll('[data-tlang]').forEach((b) => { b.textContent = liveLang().toUpperCase(); });
+}
+function todoDictate(row) {
+  const id = row.dataset.todo, was = todoLive;
+  if (was) { was.stopping = true; try { was.rec.stop(); } catch {} if (was.id === id) return; }   // the same mic again = stop; another row's mic = move there
+  if (!isSecureContext) return alert(t('voice.https', { url: HTTPS_URL || 'https://' }).replace(/<[^>]+>/g, ''));
+  if (mic?.live) liveStop(mic);   // the composer is dictating: one recognizer at a time, its words stay in its box
+  const box = () => $('todos').querySelector(`[data-todo="${CSS.escape(id)}"] .td-note input`);
+  const m = todoLive = { id, base: box()?.value || '', stopping: false };
+  const run = () => {
+    const rec = m.rec = new SR(); rec.lang = LIVE_LANG[liveLang()]; rec.continuous = true; rec.interimResults = true;
+    rec.onresult = (e) => {   // as ideaDictate: rebuilt from the session's results; Android may repeat a final with new words added, keep the longer one
+      const fin = [], tail = []; for (let i = 0; i < e.results.length; i++) (e.results[i].isFinal ? fin : tail).push(e.results[i][0].transcript.trim());
+      for (let i = fin.length - 1; i > 0; i--) if (ANDROID && fin[i - 1] && fin[i].startsWith(fin[i - 1])) fin.splice(i - 1, 1);
+      const said = [...fin, ...tail].filter(Boolean).join(' '), b = box(); if (b) b.value = m.base + (m.base && said && !/\s$/.test(m.base) ? ' ' : '') + said;
+    };
+    rec.onerror = (e) => { m.err = e.error; };
+    rec.onend = () => {
+      if (todoLive !== m) return;
+      if (m.stopping || LIVE_FATAL[m.err] || !box()) { todoLive = null; todoMicState(); if (LIVE_FATAL[m.err] && !m.stopping) alert(t(LIVE_FATAL[m.err])); if (todosStale) { todosStale = false; showTodos(); } return; }
+      m.base = box().value; m.err = null; try { run(); } catch { todoLive = null; todoMicState(); }   // Chrome ends a session after a pause (or the chip changed the language): listen on
+    };
+    rec.start();
+  };
+  run(); todoMicState();
+}
 $('todos').addEventListener('focusout', () => setTimeout(() => { if (todosStale && onTodos() && !document.activeElement?.matches?.('#todos .td-note input')) showTodos(); }, 400));   // 400 ms: a tap on Send right after typing still finds its row
 $('todos').onkeydown = (e) => { if (e.key === 'Enter' && e.target.matches('.td-note input')) todoAct(e.target.closest('[data-todo]'), 'comment'); };
 loadTodos();
@@ -2096,7 +2161,7 @@ function showIdeas(force) {
   $('ideatext').value = draftText; box.scrollTop = y;
 }
 function openIdeas(id) {
-  closeSettings(); closeProjects(); closeGuide(); closeTodos(); document.body.classList.add('ideas'); document.body.classList.remove('drawer');
+  closeSettings(); closeProjects(); closeGuide(); closeTodos(); closeDesktop(); document.body.classList.add('ideas'); document.body.classList.remove('drawer');
   if (id) { ideaOpen.add(id); }
   showIdeas(); loadIdeas().then(() => { if (id) document.getElementById('idea-' + id)?.scrollIntoView({ block: 'start' }); });
 }

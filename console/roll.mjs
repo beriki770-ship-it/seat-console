@@ -75,14 +75,15 @@ const wav = (pcm) => {   // 16 kHz mono 16-bit WAV for voice.transcribe (it deco
 
 // ---- A minimal WebSocket (RFC 6455) on the console's own http servers: no dependency for one route. Text and binary messages from the page,
 // text messages back; ping answered; fragmented frames joined; a message over maxMsg closes the socket.
-function wsServe(socket, onMessage, onClose, maxMsg = 1 << 20) {
+export function wsServe(socket, onMessage, onClose, maxMsg = 1 << 20) {   // also desktop.mjs (/ws/desktop)
   let buf = Buffer.alloc(0), parts = [], open = true;
   const frame = (op, data) => {
     const n = data.length, h = n < 126 ? Buffer.from([0x80 | op, n]) : n < 65536 ? Buffer.from([0x80 | op, 126, n >> 8, n & 255]) : Buffer.concat([Buffer.from([0x80 | op, 127]), (() => { const b = Buffer.alloc(8); b.writeBigUInt64BE(BigInt(n)); return b; })()]);
-    if (open) socket.write(Buffer.concat([h, data]));
+    return open && socket.write(Buffer.concat([h, data]));   // false = the socket's buffer is full (desktop.mjs pauses the VNC side)
   };
   const close = (code = 1000) => { if (!open) return; const b = Buffer.alloc(2); b.writeUInt16BE(code); frame(8, b); open = false; socket.end(); };
   socket.on('data', (d) => {
+    if (!open) return;   // after our close frame: nothing more is read (a client that keeps sending must not grow buf)
     buf = Buffer.concat([buf, d]);
     while (buf.length >= 2) {
       const fin = buf[0] & 0x80, op = buf[0] & 15, masked = buf[1] & 0x80; let n = buf[1] & 127, off = 2;
@@ -102,7 +103,7 @@ function wsServe(socket, onMessage, onClose, maxMsg = 1 << 20) {
     }
   });
   socket.on('close', () => { open = false; onClose(); }); socket.on('error', () => {});
-  return { send: (obj) => frame(1, Buffer.from(JSON.stringify(obj))), close, get open() { return open; } };
+  return { send: (obj) => frame(1, Buffer.from(JSON.stringify(obj))), bin: (buf) => frame(2, buf), close, get open() { return open; } };
 }
 
 // ---- The /ws/voice endpoint. auth(req) = the page's token (offered as the WebSocket subprotocol: a browser cannot set headers on a

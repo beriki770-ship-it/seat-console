@@ -9,13 +9,14 @@ import { LANGS } from './i18n.mjs';
 import { VOICE_MODELS, VOICE_LANGS, VOICE_ENGINES, SMART_MODELS, SMART_ENGINES, GEMINI_MODELS } from './voice.mjs';
 
 export const SEAT_NAME = /^[a-z][a-z0-9-]{1,20}$/;
-const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests', 'voice', 'voiceSmart', 'voiceRolling', 'ideasTelegram'];
+const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests', 'voice', 'voiceSmart', 'voiceRolling', 'ideasTelegram', 'autoHandoff'];
 const MODEL_ID = /^[A-Za-z0-9._:/-]{1,80}$/;
 
 // The defaults, in one place. Optional features are off unless the install already uses them (a codex seat, a disciplines.json).
+// autoHandoff is off: it writes messages into the owner's conversations (one extra turn each), so it is opt-in (Settings > Usage).
 export function defaults({ seats = {}, disciplines = false, autoArchiveDays = 3, idleReapMinutes = 5 } = {}) {
   return { usageMeters: true, claudeResets: false, codexResets: Object.values(seats).some((s) => s.agent === 'codex'), multiProjects: !!disciplines,
-    quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, projectsFreshAtPct: 40, autoArchiveDoneMin: 30, models: {}, language: '',
+    quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, projectsFreshAtPct: 40, autoHandoff: false, autoHandoffPct: 30, autoHandoffAction: 'rollover', autoHandoffMinK: 120, autoArchiveDoneMin: 30, models: {}, language: '',
     voice: true, voiceEngine: 'live', voiceModel: VOICE_MODELS[0], voiceLang: '', voiceSmart: true, voiceRolling: true, voiceSmartEngine: 'whisper', voiceGeminiModel: GEMINI_MODELS[0], voiceSmartModel: SMART_MODELS[0],   // Gemini Smart finish sends audio to Google: opt-in (Settings > Voice)
     ideasSeat: '', ideasDigestAt: '18:00', ideasStaleH: 24, ideasTelegram: true };   // language '' = the browser's (the page) / English (the bot); ideasSeat '' = the first Claude seat
 }
@@ -27,6 +28,9 @@ export function validateSettings(input, seats) {
   for (const [k, v] of Object.entries(input)) {
     if (BOOLS.includes(k)) { if (typeof v !== 'boolean') throw new Error(`${k} must be true or false`); out[k] = v; }
     else if (k === 'projectsFreshAtPct') { if (!Number.isInteger(v) || v < 0 || v > 95) throw new Error('projectsFreshAtPct must be a whole number 0-95 (0 = never)'); out[k] = v; }
+    else if (k === 'autoHandoffPct') { if (!Number.isInteger(v) || v < 5 || v > 90) throw new Error('autoHandoffPct must be a whole number 5-90'); out[k] = v; }   // auto handoff (rollover.mjs autoHandoffStep)
+    else if (k === 'autoHandoffAction') { if (v !== 'rollover' && v !== 'compact') throw new Error('autoHandoffAction must be rollover or compact'); out[k] = v; }
+    else if (k === 'autoHandoffMinK') { if (!Number.isInteger(v) || v < 0 || v > 900) throw new Error('autoHandoffMinK must be a whole number 0-900 (thousand tokens)'); out[k] = v; }   // floor: a 200k window would hand off at 60k otherwise
     else if (k === 'autoArchiveDays') { if (!Number.isInteger(v) || v < 0 || v > 365) throw new Error('autoArchiveDays must be a whole number 0-365 (0 = never)'); out[k] = v; }
     else if (k === 'autoArchiveDoneMin') { if (!Number.isInteger(v) || v < 0 || v > 10080) throw new Error('autoArchiveDoneMin must be a whole number 0-10080 (0 = off)'); out[k] = v; }
     else if (k === 'idleReapMinutes') { if (!Number.isInteger(v) || v < 1 || v > 1440) throw new Error('idleReapMinutes must be a whole number 1-1440'); out[k] = v; }

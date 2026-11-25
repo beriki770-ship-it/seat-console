@@ -39,7 +39,9 @@ const AGY = `#!${process.execPath}
 const fs = require('fs'), ok = fs.readFileSync(__dirname + '/mode', 'utf8').trim() === 'ok';
 console.log(JSON.stringify({ event: 'init', conversation_id: 'stub-1' }));
 console.log(JSON.stringify({ event: 'result', result: ok ? { status: 'SUCCESS', response: JSON.stringify({ text: ${JSON.stringify(GEM)}, langs: ['he', 'en'] }) } : { status: 'ERROR', error: '503 no capacity' } }));`;
-const PORT = 4857; let srv = null, WORK = null, DATA = null;
+// free port per run: a fixed one let a leftover server from an earlier killed run answer instead of this run's (data dir mismatch)
+const PORT = await new Promise((r) => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+let srv = null, WORK = null, DATA = null;
 async function startServer() {
   WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-rollcdp-')); DATA = path.join(WORK, 'data');
   fs.mkdirSync(DATA, { recursive: true }); fs.mkdirSync(path.join(WORK, 'home'), { recursive: true });

@@ -24,7 +24,7 @@ function slimInput(input) {
 export function slimEvent(ev, i) {
   if (ev.parent_tool_use_id) return null;
   const t = ev.type, base = { type: t, ts: ev.ts, i };
-  if (t === 'console_user' || t === 'console_error' || t === 'console_spawn' || t === 'console_perm_done') return { ...ev, i, hoff: undefined, hgen: undefined };
+  if (t === 'console_user' || t === 'console_error' || t === 'console_spawn' || t === 'console_perm_done' || t === 'console_note') return { ...ev, i, hoff: undefined, hgen: undefined };
   if (t === 'console_perm') return { ...ev, i, hoff: undefined, hgen: undefined };   // the approval card shows the whole command: never clipped
   if (t === 'assistant') {
     const content = [];

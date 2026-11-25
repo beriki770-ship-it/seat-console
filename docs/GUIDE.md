@@ -34,6 +34,10 @@ Type `/` in the message box and the seat's skills and commands show up. Keep typ
 
 Press **Ideas** on the rail (the light bulb). Type, press **Dictate**, record a **Voice note** or add a **Photo**, then **Save idea**. On Telegram, send the bot a voice note or a photo on its own, a message that starts with 💡 or the word רעיון, or `/idea` and the text; a plain message still opens the seat picker, which now also has **Save as idea**. A reply to a notification still goes to its chat. Each idea is transcribed (on this server) and prepared: a title, the project, the kind of work, a goal, what the AI needs to know, open questions and a first message. When you have time, open it and press **Start chat**: a new chat opens in that project with the message in the box, not sent. **Make task** puts it on My tasks instead. Ready ideas you leave alone come back once a day on Telegram (18:00 by default, never at night). Processor seat, reminder time and Telegram capture: **Ideas** in Settings.
 
+## How do I click something on the server's screen?
+
+Press **Desktop** on the rail (the monitor). The server's desktop (the Remote Desktop session) opens, scaled to fit. Tap = click, long press = right click, two fingers = scroll, pinch = zoom. **Keyboard** opens the phone's keyboard; **Ctrl** and **Alt** stay pressed for the next key, **Esc** and **Tab** are one tap. **Paste text to the server** puts text on its clipboard (paste there with Ctrl+V). **View only** watches without touching. No password: the console's own login is the gate. Linux servers only: it needs xrdp, x11vnc and the novnc package, and someone logged in over Remote Desktop (without them the button is hidden); after 30 minutes without input it disconnects.
+
 ## Something is waiting for me. What now?
 
 A row marked **needs approval** has a tool waiting: open the chat and press **Allow once** or **Deny** on its card. A row marked **waiting for your answer** ended with a question. Write your reply, or tap one of the suggested replies above the box (they only fill it in, nothing is sent). If no answer is needed, press ✕ on the row or **Close question** in its ⋯ menu.

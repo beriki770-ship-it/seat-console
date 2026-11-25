@@ -12,7 +12,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { execFile, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { createTelegram, Throttle, sentLine, quotaWarnDue, buildQuotaWarning, esc, findPermConv } from './telegram.mjs';
+import { createTelegram, Throttle, sentLine, quotaWarnDue, buildQuotaWarning, esc, escClip, findPermConv } from './telegram.mjs';
 import { markInterrupted, isCleanExit, crashLoop, crashWarnDue } from './recovery.mjs';
 import { createRoutines } from './routines.mjs';
 import { slimEvent, slimEvents, toolDetail, memTrim, memSlim } from './slim.mjs';
@@ -29,6 +29,7 @@ import { autoArchivable, markTurn, answered, addManualPin, donePin, activePins, 
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
 import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
 import * as rhost from './rhost.mjs';
+import { nextTitle, autoHandoffStep, handoffReadyPath, autoHandoffPrompt, continuePrompt, compactInstructions, handoffFileFor, AH_STUCK_MS } from './rollover.mjs';
 import { isQuotaStop, resumeAt, RESUME_TEXT, MAX_TRIES as QUOTA_MAX_TRIES } from './quotawait.mjs';
 import { allowedDir, convProject, detectProject, gitInfo, handoffHead, newChatCwd } from './project.mjs';
 import { byProject, relatedFor } from './touched.mjs';
@@ -39,6 +40,7 @@ import { createIdeas, digestDue } from './ideas.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
 import { createVoice, geminiTranscribe, VOICE_PY, VOICE_MODELS, VOICE_LANGS, SMART_MODELS, VOICE_MAX, VOICE_MAX_SEC } from './voice.mjs';
 import { createRolling } from './roll.mjs';
+import { createDesktop } from './desktop.mjs';
 import { listSkills, readSnippets, validateSnippets } from './slash.mjs';
 import { readSettings, writeJsonAtomic, validateSettings, onlyGuide, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
 
@@ -135,7 +137,20 @@ const rolling = createRolling({
   voice: createVoice({ python: VOICE_PY, script: path.join(HERE, 'voice', 'worker.py'), idleMs: 10 * 60000, env: { VOICE_THREADS: '10' }, log: console.log }),
   auth: (tok) => same(tok, TOKEN) && SET().voice !== false && SET().voiceRolling !== false, loadavg: () => os.loadavg()[0], log: console.log,
 });
-const wsUpgrade = (req, socket) => { socket.on('error', () => {}); let p = ''; try { p = new URL(req.url, 'http://x').pathname; } catch {} if (ready && p === '/ws/voice') rolling.upgrade(req, socket); else socket.destroy(); };   // ('GET //' makes URL throw: never a crash)
+// Remote desktop (desktop.mjs, /ws/desktop, rail "Desktop"): x11vnc on the xrdp display behind a 0700 unix socket, one folder per console port.
+const desktop = createDesktop({ auth: (tok) => same(tok, TOKEN), dir: path.join(process.env.XDG_RUNTIME_DIR || (fs.existsSync(`/run/user/${process.getuid?.()}`) ? `/run/user/${process.getuid()}` : os.tmpdir()), `seat-console-desktop-${PORT}`), log: console.log });
+process.on('exit', () => desktop.stop());
+// /ws/desktop controls the machine: the same gate as every page request (Host, Basic auth off this PC) AND an Origin that must be present and
+// ours (a browser always sends one on a WebSocket; a page on another site cannot open it), then the page token as the subprotocol (desktop.mjs).
+function desktopUpgrade(req, socket) {
+  const h = req.headers;
+  if (!h.origin || !ALLOWED_ORIGINS.includes(h.origin) || gate(req.socket.remoteAddress, h, { hosts: ALLOWED_HOSTS, origins: ALLOWED_ORIGINS, tsName, auth: AUTH_HEADER }) !== 0) {
+    return socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+  }
+  const from = [req.socket.remoteAddress, viaServe(h, tsName) && 'via tailscale serve', h['tailscale-user-login'], h['x-forwarded-for'] && 'xff ' + h['x-forwarded-for']].filter(Boolean).join(' ');
+  desktop.upgrade(req, socket, from).catch(() => socket.destroy());
+}
+const wsUpgrade = (req, socket) => { socket.on('error', () => {}); let p = ''; try { p = new URL(req.url, 'http://x').pathname; } catch {} if (ready && p === '/ws/voice') rolling.upgrade(req, socket); else if (ready && p === '/ws/desktop') desktopUpgrade(req, socket); else socket.destroy(); };   // ('GET //' makes URL throw: never a crash)
 // Smart finish with Gemini runs the Antigravity CLI on its Google login (voice.mjs geminiTranscribe). A test instance only uses it when SMART_AGY_BIN names one.
 const SMART_AGY = ISOLATED ? (process.env.SMART_AGY_BIN || '') : (process.env.AGY_BIN || path.join(HOME, '.local', 'bin', 'agy'));
 useLanguage(() => SET().language || 'en');   // the bot speaks the language chosen in Settings, from its next message on (no choice yet: English)
@@ -243,20 +258,41 @@ function todosView() {
 }
 // Done / comment from the page or the Telegram ✅ button: recorded, then told to the conversation that asked. told:false = no conversation
 // (added by hand, or deleted) or the send failed; the board stays the record either way.
-async function todoAct(id, action, text) {
-  const kind = ['done', 'comment', 'dismiss', 'reopen'].includes(action) ? action : '';
-  const x = markTodo(TODOS_FILE, id, kind, text);
+async function todoAct(id, action, text, extra = {}) {   // extra (Telegram only, never the page): { src: 'telegram', imageBuffers, fileBuffers } ride with the message
+  const kind = ['done', 'comment', 'dismiss', 'reopen', 'approve', 'reject'].includes(action) ? action : '';
+  const x = markTodo(TODOS_FILE, id, kind, text, { src: extra.src });
   sendAll({ todos: true });
-  const note = String(text || '').trim(), conv = x.conv && convOf(x.conv);
+  const note = String(text || '').trim(), conv = x.conv && liveOf(convOf(x.conv));
   if (!conv) return { told: false };
-  const msg = (kind === 'done' ? `✅ The user marked this task as DONE on their task board: "${x.what}"` : kind === 'dismiss' ? `🚫 The user marked the task "${x.what}" as not relevant anymore` : kind === 'reopen' ? `↩️ The user reopened the task "${x.what}" (open again)` : `💬 The user commented on the task "${x.what}" (still open)`) + (note ? `\n${kind === 'dismiss' ? 'Their reason' : 'Their comment'}: ${note}` : '') + (kind === 'done' ? '\nContinue from there.' : kind === 'dismiss' ? '\nDrop it, no need to continue with it.' : '');
-  try { await send({ conversationId: conv.id, text: msg }); } catch (e) { return { told: false, error: String(e.message || e) }; }
+  const msg = (kind === 'approve' ? `✅ The user APPROVED: "${x.what}"` : kind === 'reject' ? `❌ The user REJECTED: "${x.what}"` : kind === 'done' ? `✅ The user marked this task as DONE on their task board: "${x.what}"` : kind === 'dismiss' ? `🚫 The user marked the task "${x.what}" as not relevant anymore` : kind === 'reopen' ? `↩️ The user reopened the task "${x.what}" (open again)` : `💬 The user commented on the task "${x.what}" (still open)`) + (note ? `\n${kind === 'dismiss' || kind === 'reject' ? 'Their reason' : kind === 'approve' ? 'Their note' : 'Their comment'}: ${note}` : '') + (kind === 'approve' ? '\nGo ahead with it.' : kind === 'reject' ? '\nDo NOT do it; adjust or stop as their reason says.' : kind === 'done' ? '\nContinue from there.' : kind === 'dismiss' ? '\nDrop it, no need to continue with it.' : '');
+  try { await send({ conversationId: conv.id, text: msg, ...(extra.imageBuffers?.length ? { imageBuffers: extra.imageBuffers } : {}), ...(extra.fileBuffers?.length ? { fileBuffers: extra.fileBuffers } : {}) }); } catch (e) { return { told: false, error: String(e.message || e) }; }
   return { told: true };
+}
+// A Telegram reply to a task card / nag / its 💬 prompt (telegram.mjs deliverTask): a comment on the task, told to the asking chat with the
+// photos / files / voice note attached. A voice note is transcribed here (local Whisper, each piece in its own language: he / en / de).
+async function tgTodoMessage(id, { text, images = [], files = [], audio = [] }) {
+  const x = readTodos(TODOS_FILE).find((k) => k.id === id);
+  if (!x) throw new Error(t('bot.todo.gone'));
+  if (x.doneAt || x.dismissedAt) throw new Error(t('bot.todo.closed'));
+  const conv = x.conv && liveOf(convOf(x.conv));
+  if (x.conv && !conv) throw new Error(t('bot.todo.convGone'));   // checked before anything is written: nothing lands half-way
+  let heard = '';
+  // At most 60 s: the bot handles updates one at a time, a long wait here would hold every other tap. Too slow = sent without a transcript.
+  if (audio.length) { try { heard = (await Promise.race([voice.transcribe(audio[0].data, { model: 'small', mode: 'segments' }), new Promise((_, no) => setTimeout(() => no(new Error('took over 60 s')), 60000).unref())])).text.trim(); } catch (e) { console.log('[todos] voice note not transcribed: ' + e.message); } }
+  const all = [...images, ...files, ...audio];   // a photo sent "as a file" is still an image
+  const note = [text, heard && '🎙 ' + heard, audio.length && !heard && '🎙 (voice note attached, no transcript)', all.length - audio.length > 0 && `📎 ${all.length - audio.length} attachment(s), see this message`].filter(Boolean).join('\n');
+  const r = await todoAct(id, 'comment', note, { src: 'telegram', imageBuffers: all.filter((f) => asImage(f.data)).map((f) => f.data), fileBuffers: all.filter((f) => !asImage(f.data)).map((f) => ({ data: f.data, name: f.name })) });
+  const said = heard ? `\n🎙 <i>${escClip(heard, 300)}</i>` : '';
+  if (!conv) return '📝 ' + t('bot.todo.msgNoConv') + said;
+  if (!r.told) return `❌ <b>${t('bot.notSent')}</b> · <code>${escClip(r.error || '', 200)}</code>` + said;   // noted on the task, the chat did not get it
+  return '✅ ' + t('bot.todo.msgSent', { seat: `<b>${esc(conv.seat)}</b>`, title: `<i>${esc(String(conv.title || '').slice(0, 60))}</i>` }) + said;
 }
 // Telegram: every new task once, then once an hour while it is past its due time, never 23:00-07:00 (this machine's
 // local time) so it does not wake the owner. state.todoTg[id] = when it was last sent. The ✅ under the message = done (callback v:<id>).
 // The message is mapped to the asking conversation, so replying to it in Telegram writes into that chat.
 state.todoTg ??= {}; state.todoTgMsg ??= {};   // todoTgMsg[id] = { m: message id, text } so a task closed elsewhere gets its card edited
+state.todoTgTask ??= {};   // Telegram message id -> task id (telegram.mjs taskMap): a reply there comments on the task
+for (const [id, card] of Object.entries(state.todoTgMsg)) state.todoTgTask[card.m] ??= id;   // cards sent before the map existed
 // Machine checks (todos.mjs checkTodos): every 10 min, and with minAge 0 right before a Telegram nag; local seats only (the command runs here).
 const todoCheckState = { last: {}, errs: {} };
 async function todoChecks(minAgeMs) {
@@ -276,7 +312,7 @@ async function todoTick(now = Date.now()) {
   const view = todosView(), open = view.open; let dirty = false;
   for (const id of Object.keys(state.todoTg)) if (!open.some((x) => x.id === id)) {   // done or gone: forget it, and say so on its card
     const card = state.todoTgMsg[id], y = [...view.done, ...view.dismissed].find((k) => k.id === id);
-    if (card && y) await tg.edit(card.m, `${card.text}\n\n${y.dismissedAt ? '🚫 ' + t('bot.todo.closedDismissed') : y.auto ? '✅ ' + t('bot.todo.closedAuto') : '✅ ' + t('bot.todo.closedDone')}`, []).catch(() => {});
+    if (card && y) await tg.edit(card.m, `${card.text}\n\n${y.dismissedAt ? '🚫 ' + t('bot.todo.closedDismissed') : y.outcome === 'approved' ? '✅ ' + t('bot.todo.closedApproved') : y.outcome === 'rejected' ? '❌ ' + t('bot.todo.closedRejected') : y.auto ? '✅ ' + t('bot.todo.closedAuto') : '✅ ' + t('bot.todo.closedDone')}`, []).catch(() => {});
     delete state.todoTg[id]; delete state.todoTgMsg[id]; dirty = true;
   }
   if (quietHour(new Date(now))) { if (dirty) saveState(); return; }   // night: nothing is sent, a task added now is announced at 07:00
@@ -287,8 +323,9 @@ async function todoTick(now = Date.now()) {
     const head = last ? '⏰ ' + t('bot.todo.nag', { since: hm(Date.parse(x.due)) }) : '📝 ' + t('bot.todo.new');
     const text = `${head}\n<b>${esc(x.what)}</b>${x.title ? `\n<i>${esc(x.seat || '')} · ${esc(String(x.title).slice(0, 60))}</i>` : ''}${last ? '' : `\n🕒 ${t('bot.todo.due', { time: hm(Date.parse(x.due)) })}`}`;
     state.todoTg[x.id] = now;   // set first: a failed send is not retried every 5 minutes
-    const m = await tg.send(text, [[{ text: '✅ ' + t('bot.todo.doneBtn'), callback_data: 'v:' + x.id }, { text: '🚫 ' + t('bot.todo.dismissBtn'), callback_data: 'vx:' + x.id }]]).catch((e) => { notifyFailed(e); return null; });
+    const m = await tg.send(text, [[{ text: '✅ ' + t('bot.todo.approveBtn'), callback_data: 'va:' + x.id }, { text: '❌ ' + t('bot.todo.rejectBtn'), callback_data: 'vr:' + x.id }], x.kind === 'approval' ? [{ text: '🚫 ' + t('bot.todo.dismissBtn'), callback_data: 'vx:' + x.id }] : [{ text: '✅ ' + t('bot.todo.doneBtn'), callback_data: 'v:' + x.id }, { text: '🚫 ' + t('bot.todo.dismissBtn'), callback_data: 'vx:' + x.id }], [{ text: '💬 ' + t('bot.todo.msgBtn'), callback_data: 'vm:' + x.id }]]).catch((e) => { notifyFailed(e); return null; });
     if (m && x.conv) state.telegramMsgs[m.message_id] = x.conv;
+    tg.rememberTask(m, x.id);
     if (m) state.todoTgMsg[x.id] = { m: m.message_id, text };
   }
   if (dirty) saveState();
@@ -316,7 +353,7 @@ const QUIET_MS = 20000;
 const effStatus = (c) => { const r = R(c); if (r.status === 'stopped' && r.proc) return 'idle'; /* a live process is never `stopped` */ return r.status === 'idle' && ((c.bg?.length || 0) > 0 || Date.now() - r.activityAt < QUIET_MS) ? 'working' : r.status; };
 // A conversation on a remote that ssh cannot reach (and that has no live link) reads `error · unreachable since HH:MM` until the remote answers again.
 const unknownOf = (c) => { const u = openOf(c.id); return u.length ? { unknownActions: u.length, unknown: u.slice(0, 20).map(({ id, what, check }) => ({ id, what, check })) } : { unknownActions: 0 }; };
-const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, project: c.project || null, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c), ...unknownOf(c) }; };
+const summary = (c) => { const r = R(c), status = r.shown = effStatus(c), cut = !!c.remote && remoteDown.has(c.remote) && !r.proc; return { id: c.id, seat: c.remote ? groupOf(c.remote) : c.seat /* the page files a conversation under its group */, title: c.title, mode: c.mode, cwd: c.cwd, model: c.model, effort: c.effort, cost: c.cost, status: cut ? 'error' : status, background: cut ? downText(c.remote) : backgroundText(c.bg || []), pending: r.perms.size, needsAnswer: !!c.needsAnswer, pins: activePins(c), suggest: c.suggest || [], archived: !!c.archived, keep: !!c.keep, noAutoHandoff: !!c.noAutoHandoff, project: c.project || null, quotaWait: c.quotaWait?.until || 0, updatedAt: c.updatedAt, sessionId: c.sessionId, ctx: ctxView(c), ...unknownOf(c) }; };
 function setStatus(c, status) { R(c).status = status; if (status !== 'interrupted') c.interrupted = false; c.updatedAt = Date.now(); saveState(); broadcast({ conv: summary(c) }); }
 
 const logFile = (c) => path.join(DATA, 'logs', c.seat, c.id + '.jsonl');
@@ -606,6 +643,7 @@ function handleLine(c, line, end) {
       if (tries <= QUOTA_MAX_TRIES) { c.quotaWait = { until: resumeAt(ev, state.usage[c.seat]?.windows, Date.now()), tries }; saveState(); broadcast({ conv: summary(c) }); info.text = `${ev.result}\n\n⏸ resumes by itself at ${new Date(c.quotaWait.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`; console.log(`[quota] conv=${c.id.slice(0, 8)} stopped on the limit, resume at ${new Date(c.quotaWait.until).toISOString()} (try ${tries})`); }
       else { c.quotaTries = 0; info.text = `${ev.result}\n\n⏸ ${QUOTA_MAX_TRIES} resumes in a row hit the limit again; it needs a look`; console.log(`[quota] conv=${c.id.slice(0, 8)} gave up after ${QUOTA_MAX_TRIES} tries`); }
     } else if (!ev.is_error && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; saveState(); broadcast({ conv: summary(c) }); }   // a turn ended normally (a routine, a background agent after the reset): the work went on, no resume; the next limit counts from 1
+    if (!ev.is_error) autoHandoffAtResult(c, ev.result);   // local auto handoff: arm at the crossing / remember HANDOFF-READY (rollover.mjs autoHandoffStep)
     if (ev.is_error) { r.done = null; if (c.multi && !c.quotaWait) multi.settled(c, { error: String(ev.result || 'run ended with an error').slice(0, 300) }); tg.notify('error', info, PHONE).catch(notifyFailed); }
     else { r.done = { info, at: Date.now() }; settleDone(c); }   // the latest result wins; it is announced once ALL work of the conversation is over
     }
@@ -649,6 +687,8 @@ function settleDone(c) {
   const r = R(c); if (!r.done || r.status !== 'idle') return;
   if (Date.now() - r.activityAt < SETTLE_MS) return;
   if (c.bg?.length && Date.now() - r.done.at < BG_GIVE_UP_MS) return;
+  // The auto handoff's own reply (HANDOFF-READY) is not news: no ✅, and not held back by the throttle (the switch waits for r.done to clear); the switch itself is announced.
+  if (c.autoHandoff?.stage === 'asked' && handoffReadyPath(r.done.info.text)) { r.done = null; console.log(`[done] conv=${c.id.slice(0, 8)} notify=quiet (auto handoff reply)`); return; }
   // Two turns finishing within the throttle window: the later one stays pending (re-checked every second) and goes out when the window has passed, it is never dropped.
   if (!doneThrottle.allow(c.id)) return;
   const { info } = r.done; r.done = null;
@@ -658,8 +698,83 @@ function settleDone(c) {
   // The turn's files follow as replies to the done-message, under the same rules as /api/file (outFiles in hardening.mjs).
   tg.notify('done', info, PHONE, info.ctxCompact ? tg.compactButton(c.id) : null).then((m) => { const f = m && !c.remote && outFiles(info.out, c, FILE_RULES);   /* a remote conversation's files are on the remote: never matched against this PC's */ return f?.length ? tg.sendFiles(m.message_id, f) : null; }).catch(notifyFailed);
 }
+// ---- Auto handoff (rollover.mjs autoHandoffStep, Settings autoHandoff*): a LOCAL conversation past autoHandoffPct writes its HANDOFF.md once
+// it is settled, then a fresh conversation continues from that file (or it is compacted). Max AH_MAX_RUNNING handoffs at a time.
+const ahCfg = () => { const s = SET(); return { on: s.autoHandoff === true, pct: s.autoHandoffPct ?? 30, minTokens: (s.autoHandoffMinK ?? 120) * 1000, action: s.autoHandoffAction || 'rollover' }; };
+const ahFile = (c) => handoffFileFor(c.cwd || HOME, HOME, (f) => fs.existsSync(f), path.join, path.dirname);
+const ahRunning = () => Object.values(state.conversations).filter((x) => (x.autoHandoff?.stage === 'asked' && !x.archived) || R(x).ahRolling).length;
+function ahView(c, extra = {}) { const v = ctxView(c); return { pct: v?.pct ?? null, used: v?.used ?? 0, agent: !!SEATS[c.seat]?.agent || !!c.multi, ...extra }; }   // project tasks (multi: own projectsFreshAtPct) keep their conversation
+function autoHandoffAtResult(c, text) {
+  const st = c.autoHandoff?.stage;
+  if (st === 'asked') { c.autoHandoff.resAt = Date.now(); const p = handoffReadyPath(text); if (p) c.autoHandoff.ready = path.resolve(c.cwd || HOME, p); saveState(); return; }
+  if (st === 'armed') { c.autoHandoff.resAt = Date.now(); return; }
+  if (autoHandoffStep(c, ahView(c, { atResult: true }), ahCfg()) !== 'arm') return;
+  const v = ctxView(c); c.autoHandoff = { stage: 'armed', pct: v.pct, at: Date.now(), resAt: Date.now() }; saveState();
+  console.log(`[autohandoff] conv=${c.id.slice(0, 8)} armed at ${Math.round(v.pct)}% (${Math.round(v.used / 1000)}k)`);
+}
+function autoHandoffTick(c) {
+  const r = R(c), a = c.autoHandoff, now = Date.now();
+  if (r.ahRolling) return;
+  const settled = r.status === 'idle' && !c.turns && !c.bg?.length && !r.done && !r.slash && !r.starting && now - (a.resAt || 0) >= SETTLE_MS && now - (r.activityAt || 0) >= SETTLE_MS;
+  const blocked = !!(r.perms.size || c.needsAnswer || c.quotaWait);
+  let fresh = false;
+  if (a.ready) { try { fresh = fs.statSync(a.ready).mtimeMs >= (a.askedAt || 0) - 2000; } catch {} }
+  const stuck = a.stage === 'asked' && r.status !== 'working' && now - (a.askedAt || now) > AH_STUCK_MS;
+  const step = autoHandoffStep(c, ahView(c, { settled, blocked, running: ahRunning(), fresh, stuck }), ahCfg());
+  if (!step) return;
+  const id = c.id.slice(0, 8);
+  if (step === 'rearm' || step === 'disarm' || step === 'cancel') { console.log(`[autohandoff] conv=${id} ${step}`); c.autoHandoff = undefined; saveState(); return; }
+  if (step === 'giveup') {
+    c.autoHandoff = { ...a, stage: 'gave-up' }; saveState();
+    console.log(`[autohandoff] conv=${id}: HANDOFF not updated after ${a.tries} asks, giving up`);
+    tg.send('⚠️ ' + t('bot.autoHandoff.noHandoff', { title: `<i>${esc(clipChars(c.title, 40))}</i>`, file: esc(a.file || '') })).catch(notifyFailed);
+    return;
+  }
+  if (step === 'ask' || step === 'retry') {
+    const v = ctxView(c), file = a.file || ahFile(c);
+    c.autoHandoff = { stage: 'asked', pct: a.pct ?? v?.pct, at: a.at, askedAt: now, resAt: now, tries: (a.tries || 0) + 1, file }; saveState();
+    console.log(`[autohandoff] conv=${id} at ${Math.round(v?.pct ?? 0)}%: handoff asked (try ${c.autoHandoff.tries})`);
+    send({ conversationId: c.id, text: autoHandoffPrompt(v?.pct ?? a.pct, file), auto: true }).catch((e) => { c.autoHandoff = { ...c.autoHandoff, stage: 'gave-up', error: e.message }; saveState(); console.log(`[autohandoff] conv=${id} handoff send failed, giving up: ${e.message}`); });   // never re-asked every second
+    return;
+  }
+  if (step === 'continue') {
+    r.ahRolling = true;
+    ahContinue(c, a.ready).catch((e) => {
+      if (c.autoHandoff?.stage === 'done') return console.log(`[autohandoff] conv=${id} after the switch: ${e.message}`);   // successor exists and is linked
+      c.autoHandoff = { ...c.autoHandoff, stage: 'gave-up', error: e.message }; saveState();
+      console.log(`[autohandoff] conv=${id} continue failed: ${e.message}`);
+      tg.send('⚠️ ' + t('bot.autoHandoff.failed', { title: `<i>${esc(clipChars(c.title, 40))}</i>`, error: esc(e.message) })).catch(notifyFailed);
+    }).finally(() => { r.ahRolling = false; });
+  }
+}
+async function ahContinue(c, file) {
+  const a = c.autoHandoff, prev = { id: c.id, title: c.title, pct: a.pct ?? ctxView(c)?.pct ?? 0 }, id = c.id.slice(0, 8);
+  if (ahCfg().action === 'compact') {
+    await runSlash(c, 'compact', compactInstructions(file), false);
+    c.autoHandoff = { stage: 'done', action: 'compact', pct: prev.pct, file, at: Date.now() };
+    pushEvent(c, { type: 'console_note', key: 'log.ahCompacted', pct: Math.round(prev.pct), file }); saveState(); broadcast({ conv: summary(c) });
+    console.log(`[autohandoff] conv=${id} compacting after the handoff`);
+    tg.send(`🧭 <b>${esc(c.seat)}</b> · ` + t('bot.autoHandoff.compacted', { title: `<i>${esc(clipChars(prev.title, 40))}</i>`, pct: Math.round(prev.pct) })).catch(notifyFailed);
+    return;
+  }
+  // Successor first: if it cannot start, the old conversation stays as it was (gave-up, the owner is told).
+  const n = await send({ seat: c.seat, cwd: c.cwd, model: c.model, effort: c.effort, mode: c.mode, title: nextTitle(c.title), text: withUnknown(continuePrompt(prev, file), openElsewhere([c.id])), auto: true });   // open intents of this conversation travel with the handoff
+  c.autoHandoff = { stage: 'done', action: 'rollover', to: n.id, pct: prev.pct, file, at: Date.now() }; c.archived = true;   // first: nothing below may leave a successor unlinked (a second one later)
+  if (c.project) n.project = c.project;
+  pushEvent(c, { type: 'console_note', key: 'log.ahHandedOff', pct: Math.round(prev.pct), file, link: { id: n.id, seat: n.seat, title: n.title } });
+  pushEvent(n, { type: 'console_note', key: 'log.ahContinues', file, link: { id: c.id, seat: c.seat, title: c.title } });
+  saveState(); broadcast({ conv: summary(n) });
+  await stopConv(c).catch((e) => console.log(`[autohandoff] conv=${id} stop failed: ${e.message}`));
+  broadcast({ conv: summary(c) });
+  console.log(`[autohandoff] conv=${id} -> ${n.id.slice(0, 8)}`);
+  tg.send(`🧭 <b>${esc(c.seat)}</b> · ` + t('bot.autoHandoff.handedOver', { title: `<i>${esc(clipChars(prev.title, 40))}</i>`, pct: Math.round(prev.pct), next: `<i>${esc(clipChars(n.title, 40))}</i>` })).catch(notifyFailed);
+}
+// The live end of an auto handoff chain: a task-board answer or a Telegram reply to an archived predecessor goes to its successor.
+function liveOf(c) { for (let i = 0; c && i < 20; i++) { const to = c.autoHandoff?.stage === 'done' && c.autoHandoff.to; const n = to && convOf(to); if (!n) return c; c = n; } return c; }
+{ const cfg = ahCfg(), over = Object.values(state.conversations).filter((c) => autoHandoffStep(c, ahView(c, { atResult: true }), cfg) === 'arm');
+  console.log(`[autohandoff] ${cfg.on ? 'on' : 'off'} at ${cfg.pct}% (floor ${cfg.minTokens / 1000}k, ${cfg.action}): ${over.length} local conversation(s) already past it, each armed only when it finishes a new turn: ${over.map((c) => c.id.slice(0, 8)).join(' ') || '-'}`); }
 // Once a second: announce settled conversations, and refresh the page when the 20 s "recent events" window of a conversation runs out.
-setInterval(guard('tick', () => { for (const c of Object.values(state.conversations)) { if (staleTurns(c, R(c), Date.now(), CLAMP_MS)) { clearTurns(c); R(c).clampAt = 0; setStatus(c, 'idle'); console.log(`[turns] conv=${c.id.slice(0, 8)}: result seen, nothing since: pending-turn counter cleared`); } settleDone(c); if (effStatus(c) !== R(c).shown) broadcast({ conv: summary(c) }); } }), 1000).unref();
+setInterval(guard('tick', () => { for (const c of Object.values(state.conversations)) { if (staleTurns(c, R(c), Date.now(), CLAMP_MS)) { clearTurns(c); R(c).clampAt = 0; setStatus(c, 'idle'); console.log(`[turns] conv=${c.id.slice(0, 8)}: result seen, nothing since: pending-turn counter cleared`); } settleDone(c); if (c.autoHandoff) try { autoHandoffTick(c); } catch (e) { console.log(`[autohandoff] conv=${c.id.slice(0, 8)} tick: ${e.message}`); } if (effStatus(c) !== R(c).shown) broadcast({ conv: summary(c) }); } }), 1000).unref();
 // Usage-limit resume (quotawait.mjs): a conversation that stopped on the limit gets RESUME_TEXT once its time has come.
 // Not while it runs (a turn the CLI started by itself), never for an archived, remote or phone one; a send that fails is retried next minute.
 const quotaBusy = new Set();
@@ -768,7 +883,7 @@ async function startProc(c) {
   const JOURNAL_RULE = `Make external actions SAFE TO REPEAT whenever you can: deploy/upload with a sync or deploy script that can simply be re-run (rsync, an idempotent deploy script), and give one-shot publish scripts a guard (a state file that refuses a second post/send). Only for an external action that is NOT safe to repeat (sending an email or chat message, posting or commenting on a site, a payment, creating an issue/ticket, a non-idempotent API write) record it: \`${JOURNAL_CMD} intent "<what>" --check "<how to verify it happened>"\` before (it prints an id), \`${JOURNAL_CMD} done <id> "<result>"\` (or \`fail <id> "<error>"\`) after. Local file edits are not external actions.`;
   const journalEnv = { SEAT_JOURNAL: journalOf(c.id), SEAT_JOURNAL_CLI: JOURNAL_CLI, SEAT_TODOS: TODOS_FILE, SEAT_TODO_CLI: TODOS_CLI, SEAT_CONV: c.id };
   // A step only the user can do gets lost in a long reply: it goes on their task board as well.
-  const TODO_RULE = 'When a step needs the user themselves (open or sign up for an account, log in, verify an email or phone, pay, sign, a call, a decision that blocks you), say it in the reply AND put it on their task board: `node "$SEAT_TODO_CLI" add "<what to do, where (URL), why>" --due <+30m | +2h | 2026-11-24T10:00> --check "<shell command>"` (one line, their language; --due = by when it has to be done, default one hour; past it they are reminded on Telegram every hour). Give --check when the result is machine-checkable (exit 0 = done, e.g. a `claude auth status` that shows the email, a curl that returns HTTP 200, `test -f <file>`): the console runs it every ~10 minutes and closes the task by itself. When they tick it or comment, you get a message in this conversation; continue from there. When you later see the step was done (they tell you, or you verify it), close it yourself: `node "$SEAT_TODO_CLI" done <id> "<evidence>"` (`dismiss <id> "<why>"` if it no longer matters).'.replaceAll('node "$SEAT_TODO_CLI"', `node "${TODOS_CLI}"`);   // the absolute path: the same command in bash, cmd and PowerShell (as JOURNAL_RULE)
+  const TODO_RULE = 'When a step needs the user themselves (open or sign up for an account, log in, verify an email or phone, pay, sign, a call, a decision that blocks you), say it in the reply AND put it on their task board: `node "$SEAT_TODO_CLI" add "<what to do, where (URL), why>" --due <+30m | +2h | 2026-11-24T10:00> --check "<shell command>"` (one line, their language; --due = by when it has to be done, default one hour; past it they are reminded on Telegram every hour). Give --check when the result is machine-checkable (exit 0 = done, e.g. a `claude auth status` that shows the email, a curl that returns HTTP 200, `test -f <file>`): the console runs it every ~10 minutes and closes the task by itself. When you need a yes/no from the user BEFORE an irreversible or outward step (sending, publishing, paying, deleting), add the task with `--approve` (`node "$SEAT_TODO_CLI" add "<what to approve, with the exact item or link>" --approve`) and wait for the APPROVED / REJECTED message instead of asking in chat; do not do the step before APPROVED arrives. When they tick it or comment, you get a message in this conversation; continue from there. When you later see the step was done (they tell you, or you verify it), close it yourself: `node "$SEAT_TODO_CLI" done <id> "<evidence>"` (`dismiss <id> "<why>"` if it no longer matters).'.replaceAll('node "$SEAT_TODO_CLI"', `node "${TODOS_CLI}"`);   // the absolute path: the same command in bash, cmd and PowerShell (as JOURNAL_RULE)
   const ending = 'End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.';
   const role = rem ? `You are a Claude session on the remote machine '${rem.name}', driven from the user's Seat Console. ${ending}`
     : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${JOURNAL_RULE} ${TODO_RULE} ${ending}`;
@@ -1065,7 +1180,7 @@ async function send(b) {
   const files = await claimFiles(c, b.files, b.fileBuffers, b.draftId, rem);
   autoTitle(c, b.title || clipChars(b.text.trim().replace(/\s+/g, ' '), 60));   // never over a title the user set (rename)
   if (!b.auto && (c.quotaWait || c.quotaTries)) { c.quotaWait = undefined; c.quotaTries = 0; }   // the user took over: no automatic resume
-  if (!b.auto) { answered(c); c.noAutoArchive = false; }   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
+  if (!b.auto) { answered(c); c.noAutoArchive = false; if (c.autoHandoff?.stage === 'asked') { c.autoHandoff.owner = true; console.log(`[autohandoff] conv=${c.id.slice(0, 8)}: the user wrote during the handoff, no switch now`); } }   // the user wrote: the needs-answer mark goes, the automatic pins made before this message are released. b.auto = an automated sender (recover, routine, send.ps1): not an answer
   const bt = due ? withUnknown(b.text, openOf(c.id)) : b.text;
   pushEvent(c, { type: 'console_user', text: bt, ...(images.length ? { images } : {}), ...(files.length ? { files: files.map((f) => ({ name: f.stored, label: f.label, size: f.size })) } : {}) });
   const r = R(c); if (!c.turns) { r.turnFiles.clear(); r.turnWrites.clear(); r.turnAsks = []; r.turnAt = Date.now() - 2000; } // a second message mid-turn keeps the files the running turn already wrote; turnAt (2 s mtime slack): reply-named files count from here
@@ -1111,7 +1226,7 @@ async function tgDecision(convShort, requestId, allow) {
   return allow ? 'Allowed' : 'Denied';
 }
 async function tgReply(convId, { text, images, files = [] }) {
-  const c = convOf(convId); if (!c) throw new Error('that conversation was deleted');
+  const c = liveOf(convOf(convId)); if (!c) throw new Error('that conversation was deleted');   // a reply to a handed-off conversation goes to its successor
   const all = [...images, ...files];   // a photo sent "as a file" is still an image
   await send({ conversationId: c.id, text, imageBuffers: all.filter((x) => asImage(x.data)).map((x) => x.data), fileBuffers: all.filter((x) => !asImage(x.data)).map((x) => ({ data: x.data, name: x.name })) });
   return sentLine(c.seat, c.title);
@@ -1152,7 +1267,7 @@ async function tgRecover(which) { // 'all' or a conversation id prefix; a conver
 }
 const tgFind = (short) => { const c = Object.values(state.conversations).find((x) => x.id.startsWith(short)); return c && { id: c.id, seat: c.seat, title: c.title }; };
 const notifyFailed = (e) => console.log('telegram notify failed: ' + (e?.message || e));
-const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onTodoDone: async (id) => { const r = await todoAct(id, 'done', ''); return '✅ ' + t('bot.todo.doneToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onTodoDismiss: async (id) => { const r = await todoAct(id, 'dismiss', ''); return '🚫 ' + t('bot.todo.dismissToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onIdea: (x) => ideaFromTelegram(x), ideaCapture: () => SET().ideasTelegram !== false, onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${tn('bot.multi.starting', p.tasks.length)}`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
+const tg = createTelegram({ cfgFile: TELEGRAM_FILE, linkCodeFile: path.join(DATA, 'telegram-link-code.txt'), onNewTask: tgNewTask, onList: tgList, onStatus: tgStatus, onDigest: async (kind) => digestMessage(Date.now(), kind), onUsage: tgUsage, onRecoverList: tgRecoverList, onRecover: tgRecover, onRoutineTap: (d) => routines.tap(d), onRoutineList: () => routines.listMessage(), onMulti: async ({ name, dir, brief }) => multiOn().create({ name, dir, brief }), onTodoDone: async (id) => { const r = await todoAct(id, 'done', ''); return '✅ ' + t('bot.todo.doneToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onTodoApprove: async (id) => { const r = await todoAct(id, 'approve', ''); return '✅ ' + t('bot.todo.approveToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onTodoReject: async (id) => { const r = await todoAct(id, 'reject', ''); return '❌ ' + t('bot.todo.rejectToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onTodoMessage: tgTodoMessage, todoWhat: (id) => { const x = readTodos(TODOS_FILE).find((k) => k.id === id); return x && !x.doneAt && !x.dismissedAt ? x.what : null; }, taskMap: state.todoTgTask, apiBase: (ISOLATED && process.env.SEAT_TG_API) || undefined, onTodoDismiss: async (id) => { const r = await todoAct(id, 'dismiss', ''); return '🚫 ' + t('bot.todo.dismissToast') + (r.told ? '' : ' (' + t('bot.todo.notTold') + ')'); }, onIdea: (x) => ideaFromTelegram(x), ideaCapture: () => SET().ideasTelegram !== false, onMultiApprove: async (short) => { const p = multiOn().find(short); if (!p) throw new Error('unknown project'); multi.approve(p.id); return `▶️ ${p.name}: ${tn('bot.multi.starting', p.tasks.length)}`; }, findConv: tgFind, seats: Object.keys(SEATS), phoneBase: () => PHONE, onDecision: tgDecision, onReply: tgReply, onCompact: tgCompact, msgMap: state.telegramMsgs, onMapChange: saveState, getOffset: () => offsetFor(state, tg.readCfg()?.botToken), setOffset: (o) => { offsetFor(state, tg.readCfg()?.botToken); state.tgOffset = o; saveState(); } }); // offsetFor first: it records which bot this offset belongs to
 
 // The Projects page lists project folders to start from: a folder under projectsDir (2 levels deep) that has one of these markers. Read at most once a minute.
 const PROJECT_MARKERS = ['.git', 'package.json', 'CLAUDE.md', 'BRIEF.md', 'PLAN.md', 'HANDOFF.md', path.join('docs', 'HANDOFF.md')];
@@ -1331,7 +1446,7 @@ const body = (req) => new Promise((ok, no) => {
 // Build id shown on the page (Guide footer) and sent on every event stream: the page compares it with its own and offers a reload after a restart
 // with new code. Commit short hash + a hash of the page files, so uncommitted page edits count as a new build too.
 const BUILD = (() => { let g = 'nogit'; try { g = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: HERE, encoding: 'utf8', timeout: 5000 }).trim(); } catch {}
-  const h = crypto.createHash('sha1'); for (const f of ['index.html', 'app.js', 'app.css', 'tour.js', 'smartfinish.js', 'rolling.js']) try { h.update(fs.readFileSync(path.join(HERE, 'public', f))); } catch {}
+  const h = crypto.createHash('sha1'); for (const f of ['index.html', 'app.js', 'app.css', 'tour.js', 'smartfinish.js', 'rolling.js', 'desktop.js']) try { h.update(fs.readFileSync(path.join(HERE, 'public', f))); } catch {}
   return `${g}.${h.digest('hex').slice(0, 4)}`; })();
 // Optional diagnostics (the page side is OFF by default, DIAG_UNTIL = 0 in app.js): what a phone's composer receives, one JSON line per event,
 // no message text. data/client-log.jsonl keeps the newest 500 lines. Remove with the page's DIAG block once the question is answered.
@@ -1350,7 +1465,7 @@ function sendZ(req, res, code, type, body) {
   if (buf.length < 1024 || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) { head['Content-Length'] = buf.length; res.writeHead(code, head); return res.end(buf); }
   zlib.gzip(buf, { level: 5 }, (e, z) => { if (e) { res.writeHead(500); return res.end(); } head['Content-Encoding'] = 'gzip'; head['Content-Length'] = z.length; res.writeHead(code, head); res.end(z); });
 }
-const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['app.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/paths.js': ['paths.js', 'text/javascript; charset=utf-8'], '/smartfinish.js': ['smartfinish.js', 'text/javascript; charset=utf-8'], '/rolling.js': ['rolling.js', 'text/javascript; charset=utf-8'], '/imgedit.js': ['imgedit.js', 'text/javascript; charset=utf-8'], '/tour.js': ['tour.js', 'text/javascript; charset=utf-8'],
+const STATIC = { '/': ['index.html', 'text/html; charset=utf-8'], '/app.css': ['app.css', 'text/css; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/paths.js': ['paths.js', 'text/javascript; charset=utf-8'], '/smartfinish.js': ['smartfinish.js', 'text/javascript; charset=utf-8'], '/rolling.js': ['rolling.js', 'text/javascript; charset=utf-8'], '/imgedit.js': ['imgedit.js', 'text/javascript; charset=utf-8'], '/tour.js': ['tour.js', 'text/javascript; charset=utf-8'], '/desktop.js': ['desktop.js', 'text/javascript; charset=utf-8'],
   // installable app (PWA): the manifest, its icons and the service worker must be same-origin for Chrome/Edge "Install app"
   '/sw.js': ['sw.js', 'text/javascript; charset=utf-8'], '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json; charset=utf-8'],
   '/icon-192.png': ['icon-192.png', 'image/png'], '/icon-512.png': ['icon-512.png', 'image/png'], '/icon-maskable-512.png': ['icon-maskable-512.png', 'image/png'], '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png'] };
@@ -1577,6 +1692,12 @@ async function handler(req, res) {
       return sendZ(req, res, 200, type, body);
     }
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ready: true });
+    if (req.method === 'GET' && url.pathname === '/api/desktop') return json(res, 200, desktop.status());   // the Desktop page: is there an xrdp session to show
+    // noVNC (the Desktop page's viewer, MPL-2.0, Debian package novnc 1.3.0) served from the system copy: its core/ and vendor/ ES modules only
+    if (req.method === 'GET' && /^\/novnc\/(core|vendor)\/[\w./-]+\.js$/.test(url.pathname) && !url.pathname.includes('..')) {
+      let js; try { js = fs.readFileSync(path.join('/usr/share/novnc', url.pathname.slice(7))); } catch { return json(res, 404, { error: 'not found' }); }
+      return sendZ(req, res, 200, 'text/javascript; charset=utf-8', js);
+    }
     if (req.method === 'GET' && url.pathname === '/api/seats') return sendZ(req, res, 200, 'application/json; charset=utf-8', JSON.stringify(seatsView()));
     if (req.method === 'GET' && url.pathname === '/api/routines') return json(res, 200, routines.view());
     if (req.method === 'GET' && url.pathname === '/api/todos') { todoChecks(60000).catch(() => {}); return json(res, 200, todosView()); }   // checks run behind the page load; a close reloads it by SSE
@@ -1887,6 +2008,7 @@ async function handler(req, res) {
         const was = c.cwd; c.cwd = cwd; saveState(); broadcast({ conv: summary(c) });
         console.log(`[cwd] conv=${c.id.slice(0, 8)} ${was} -> ${cwd}`); return json(res, 200, { ok: true, from: was, cwd });
       }
+      if (url.pathname === '/api/noautohandoff') { c.noAutoHandoff = !!b.off; if (c.noAutoHandoff && ['armed', 'asked'].includes(c.autoHandoff?.stage)) c.autoHandoff = undefined; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Don't auto-handoff" for this conversation
       if (url.pathname === '/api/keep') { c.keep = !!b.keep; saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }   // ⋯ "Keep shown": the row stays when its seat is folded (all devices)
       if (url.pathname === '/api/archive') { c.archived = !!b.archived; if (!c.archived) c.noAutoArchive = true;   /* brought back: not archived on its own again until the user writes */ saveState(); broadcast({ conv: summary(c) }); return json(res, 200, { ok: true }); }
       if (url.pathname === '/api/delete') {
@@ -1937,7 +2059,7 @@ function bindTailscale() {
   s.listen(PORT, tsIp, () => { tsBindErr = null; console.log(`Seat Console on http://${tsIp}:${PORT} pid=${process.pid}`); });
 }
 bindTailscale(); setInterval(bindTailscale, 10000).unref();
-if (!ISOLATED) tg.start();   // a test instance never polls Telegram
+if (!ISOLATED || process.env.SEAT_TG_API) tg.start();   // a test instance never polls Telegram, unless a test hands it a fake Bot API (test-todos)
 if (crashLoopStart && !ISOLATED && crashWarnDue(state, Date.now())) { saveState(); tg.send('⚠️ ' + t('bot.server.crashLoop')).catch(notifyFailed); }
 routines.start();
 setInterval(guard('multi', () => multi.tick()), 30000).unref();   // after reattachAll: never sends into a conversation still being reattached

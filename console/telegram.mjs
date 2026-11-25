@@ -158,11 +158,12 @@ export function buildDigest(data, now, base) {
 // onDecision(convShort, requestId, allow) -> Promise<string> outcome text, throws when already answered.
 // msgMap (persisted by the caller) maps each sent message_id -> conversation id, so a Telegram REPLY finds its conversation.
 // onReply(convId, { text, images:[{data:Buffer}], files:[{data:Buffer, name}] }) -> Promise<string> confirmation line (HTML, see sentLine).
+// onTodoMessage(taskId, { text, images, files, audio }) -> Promise<string> answer line (throws: task closed, conversation gone); todoWhat(taskId) -> the task text while it is open, else null.
 // onNewTask({seat, model, mode, text}) starts the conversation (throws if it cannot); onList() -> [{id, seat, title, status}]; findConv(idPrefix) -> {id, seat, title}|null; seats = seat names; phoneBase = console URL for "open" buttons.
 // Uploads of every conversation share ONE serial queue (see sendFiles).
 let fileQueue = Promise.resolve();
 export const TG_FILE_MAX = 20 * 1024 * 1024;   // Telegram's own limit for a bot's getFile download
-export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, onTodoDone = null, onTodoDismiss = null, onIdea = null, ideaCapture = () => true, findConv, seats = [], phoneBase = '',  msgMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000, retryMs = 30000 }) {
+export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async () => { throw new Error(t('bot.compact.unavailable')); }, onNewTask, onList, onStatus, onDigest = null, onUsage = async () => ({}), onRecoverList = async () => [], onRecover = async () => ({ resumed: [], failed: [] }), onRoutineTap = async () => ({ toast: t('bot.routines.off') }), onRoutineList = null, onMulti = null, onMultiApprove = null, onTodoDone = null, onTodoDismiss = null, onTodoApprove = null, onTodoReject = null, onTodoMessage = null, todoWhat = () => null, onIdea = null, ideaCapture = () => true, findConv, seats = [], phoneBase = '',  msgMap = {}, taskMap = {}, onMapChange = () => {}, getOffset = () => 0, setOffset = () => {}, linkCodeFile = null, apiBase = 'https://api.telegram.org', log = console.log, idleMs = 10000, retryMs = 30000 }) {
   let warned = false;
   const base = () => (typeof phoneBase === 'function' ? phoneBase() : phoneBase); // a function when the console URL can change after start (Tailscale coming up late)
   const readCfg = () => {
@@ -196,6 +197,13 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     msgMap[m.message_id] = convId;
     const keys = Object.keys(msgMap); if (keys.length > 500) for (const k of keys.slice(0, keys.length - 500)) delete msgMap[k];
     try { onMapChange(); } catch (e) { log('telegram map save failed: ' + e.message); } // a failed state save must not break the notification path
+  };
+  // taskMap (persisted by the caller): message_id of a task card / nag / "Write a message for" prompt -> task id, so a reply there is a comment ON THE TASK.
+  const rememberTask = (m, taskId) => {
+    if (!m || !taskId) return;
+    taskMap[m.message_id] = taskId;
+    const keys = Object.keys(taskMap); if (keys.length > 500) for (const k of keys.slice(0, keys.length - 500)) delete taskMap[k];
+    try { onMapChange(); } catch (e) { log('telegram map save failed: ' + e.message); }
   };
   async function send(text, rows) {
     const cfg = readCfg();
@@ -264,6 +272,9 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       if (!r.ok) throw new Error('download ' + r.status);
       return [{ data: Buffer.from(await r.arrayBuffer()), name: att.file_name || String(f.file_path).split('/').pop() }];
     };
+    // 0. a reply to a task card, a nag or its "Write a message for" prompt = a comment on THAT task (onTodoMessage tells the asking chat); a /command keeps its old meaning
+    const taskId = onTodoMessage && msg.reply_to_message && Object.hasOwn(taskMap, msg.reply_to_message.message_id) ? taskMap[msg.reply_to_message.message_id] : undefined;
+    if (taskId && !text.startsWith('/')) return void (await deliverTask(taskId, text, msg, say, reqs));
     // 1. a reply to one of our notifications goes into THAT conversation
     const convId = msg.reply_to_message && Object.hasOwn(msgMap, msg.reply_to_message.message_id) ? msgMap[msg.reply_to_message.message_id] : undefined;
     // 🖥️ messages come from desktop-app sessions (the telegram-app-notify hook, same bot): the console cannot drive those, so say so instead of "unknown conversation".
@@ -339,6 +350,15 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     await say(out);
   }
 
+  // Text, photo, file or voice note (transcribed by the server) for one task; the server's answer line ("✅ Sent to …") or the error goes under the reply.
+  async function deliverTask(taskId, text, msg, say, reqs) {
+    const voice = !!(msg.voice || msg.audio), photo = !!msg.photo?.length, file = !voice && !photo && !!(msg.document || msg.video);
+    let got = []; if (voice || photo || file) { try { got = await reqs(); } catch (e) { return void (await say(e.tooBig ? `📎 <b>${t('bot.file.tooBigTitle')}</b> · ${t('bot.file.tooBig')}` : `❌ <b>${t(photo ? 'bot.photo.downloadFailed' : 'bot.file.downloadFailed')}</b>`)); } }
+    if (!text && !got.length) return void (await say('✍️ ' + t('bot.nothingToSendMedia')));
+    let out; try { out = await onTodoMessage(taskId, { text, images: photo ? got : [], files: file ? got : [], audio: voice ? got : [] }); } catch (e) { out = errLine(t('bot.notSent'), e.message); }
+    await say(out);
+  }
+
   // Picker / continue buttons. Returns the toast text; the picker message itself is edited in place (HTML).
   async function pickerStep(cfg, cb) {
     const [kind, a, b] = cb.data.split(':');
@@ -377,11 +397,24 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
       await call(cfg, 'editMessageReplyMarkup', { chat_id: cfg.chatId, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {});
       return out;
     }
+    if ((kind === 'va' && onTodoApprove) || (kind === 'vr' && onTodoReject)) {   // ✅ / ❌ under an approval task's card: the answer goes to the asking seat, the card shows it
+      if (!/^[0-9a-f]{6}$/.test(a)) return t('bot.toast.unknownButton');
+      let out; try { out = await (kind === 'va' ? onTodoApprove : onTodoReject)(a); } catch (e) { out = String(e.message || e).slice(0, 190); }
+      await edit(`${esc(cb.message.text || '')}\n\n${out}`);
+      return out;
+    }
     if (kind === 'vx' && onTodoDismiss) {   // 🚫 under a task-board message: not relevant anymore; the card is edited to say so, the buttons go
       if (!/^[0-9a-f]{6}$/.test(a)) return t('bot.toast.unknownButton');
       let out; try { out = await onTodoDismiss(a); } catch (e) { out = String(e.message || e).slice(0, 190); }
       await edit(`${esc(cb.message.text || '')}\n\n${out}`);   // editMessageText without reply_markup drops the buttons
       return out;
+    }
+    if (kind === 'vm' && onTodoMessage) {   // 💬 under a task card / nag: a ForceReply prompt; the reply to it is routed like a reply to the card (taskMap)
+      if (!/^[0-9a-f]{6}$/.test(a)) return t('bot.toast.unknownButton');
+      const what = todoWhat(a); if (!what) return t('bot.todo.closed');
+      const m = await callH(cfg, 'sendMessage', { chat_id: cfg.chatId, text: '✍️ ' + t('bot.todo.msgPrompt', { what: `<b>${escClip(what, 200)}</b>` }), reply_to_message_id: cb.message.message_id, allow_sending_without_reply: true, reply_markup: { force_reply: true, selective: true } });
+      rememberTask(m, a);
+      return '✍️ ' + t('bot.todo.msgBtn');
     }
     if (kind === 'k') {   // "Compact" button on a finished-message
       if (!/^[0-9a-f]{8}$/.test(a)) return t('bot.toast.unknownButton');
@@ -425,7 +458,7 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
     const cb = u.callback_query;
     if (!cb || !cfg.chatId) return;
     if (String(cb.message?.chat?.id) !== String(cfg.chatId)) { await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id }).catch(() => {}); return; } // strangers are ignored
-    if (/^(?:[smdcrqkxvi]|vx):/.test(cb.data || '')) { let toast; try { toast = await pickerStep(cfg, cb); } catch (e) { toast = t('bot.toast.failed', { error: e.message }); } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(toast, 190) }).catch(() => {}); return; }
+    if (/^(?:[smdcrqkxvi]|vx|va|vr|vm):/.test(cb.data || '')) { let toast; try { toast = await pickerStep(cfg, cb); } catch (e) { toast = t('bot.toast.failed', { error: e.message }); } await call(cfg, 'answerCallbackQuery', { callback_query_id: cb.id, text: clip(toast, 190) }).catch(() => {}); return; }
     const p = parseCallback(cb.data);
     let outcome;
     if (!p) outcome = t('bot.toast.unknownButton');
@@ -474,5 +507,5 @@ export function createTelegram({ cfgFile, onDecision, onReply, onCompact = async
   async function offerRecover(crash) { const list = await onRecoverList(); if (!list.length) return null; const d = buildRecover(list, Date.now(), crash); return send(d.text, d.rows); }
   // edit a message we sent earlier (a routine ask that expired or was started from the web)
   const editSent = async (messageId, text, rows) => { const cfg = readCfg(); if (!cfg?.chatId) return null; return callH(cfg, 'editMessageText', { chat_id: cfg.chatId, message_id: messageId, text, disable_web_page_preview: true, ...(rows ? { reply_markup: { inline_keyboard: rows } } : {}) }); };
-  return { send, edit: editSent, notify, sendFiles, permButtons, compactButton, offerRecover, handleUpdate, readCfg, start: () => { loop(); }, stop: () => { stopped = true; } };
+  return { send, edit: editSent, rememberTask, notify, sendFiles, permButtons, compactButton, offerRecover, handleUpdate, readCfg, start: () => { loop(); }, stop: () => { stopped = true; } };
 }

@@ -16,6 +16,7 @@
   const main = async () => document.body.classList.remove('drawer');
   const hashTo = (h) => { if (location.hash === h) openHash(); else location.hash = h; };
   const toDraft = async () => { await main(); if (cur.id || onProjects() || onSettings() || onGuide()) await pick(cur.seat, null); };   // the new-chat composer
+  const toOpts = async () => { await toDraft(); if (narrow()) setOpts(true); };   // phone: folder, mode, model and effort sit behind the composer's options toggle
   const toSettings = async (tab) => { await main(); setTab = tab; setNote = null; if (location.hash === '#settings') await openSettings(); else location.hash = 'settings'; };
   const folder = () => projCtx || projDir || multiData.folders?.[0]?.dir || null;
   const toProject = async () => { await main(); const d = folder(); if (d) hashTo('#project/' + encodeURIComponent(d)); };
@@ -36,15 +37,16 @@
     usage: { k: 'usage', h: 'tour.usage.h', p: 'tour.usage.p', go: seatDetails },
     foldall: { k: 'foldall', h: 'side.foldAll', p: 'tour.foldall.p', go: side },
     new: { k: 'new', h: 'side.newConversation', p: 'tour.new.p', go: side },
-    folder: { k: 'folder', h: 'composer.projectAuto', p: 'tour.folder.p', go: toDraft },
-    mode: { k: 'mode', h: 'composer.mode', p: 'tour.mode.p', go: toDraft },
-    model: { k: 'model', h: 'composer.model', p: 'tour.model.p', go: toDraft },
-    effort: { k: 'effort', h: 'composer.effort', p: 'tour.effort.p', go: toDraft },
+    folder: { k: 'folder', h: 'composer.projectAuto', p: 'tour.folder.p', go: toOpts },
+    mode: { k: 'mode', h: 'composer.mode', p: 'tour.mode.p', go: toOpts },
+    model: { k: 'model', h: 'composer.model', p: 'tour.model.p', go: toOpts },
+    effort: { k: 'effort', h: 'composer.effort', p: 'tour.effort.p', go: toOpts },
     attach: { k: 'attach', h: 'composer.attach', p: 'tour.attach.p', go: toDraft },
     mic: { k: 'mic', h: 'composer.mic', p: 'tour.mic.p', go: toDraft },
     slash: { k: 'reply', h: 'tour.slash.h', p: 'tour.slash.p', go: toDraft },   // the "/" and "@" lists open inside the message box
     stop: { k: 'stop', h: 'composer.stop', p: 'tour.stop.p', go: main },
     ideasOpen: { k: 'ideas-open', h: 'ideas.button', p: 'tour.ideas.p', go: side },
+    desktopOpen: { k: 'desktop-open', h: 'desktop.button', p: 'tour.desktop.p', go: side },
     ideaCapture: { k: 'idea-capture', h: 'ideas.save', p: 'tour.ideaCapture.p', go: async () => { await main(); hashTo('#ideas'); } },
     needs: { k: 'needs', h: 'tour.needs.h', p: 'tour.needs.p', go: side },
     perm: { k: 'perm', h: 'tour.perm.h', p: 'tour.perm.p', go: openWaiting },
@@ -72,7 +74,7 @@
   };
   // One tour per Guide section (the keys of GUIDE in app.js); "full" chains the main ones.
   const TOURS = {
-    seats: ['seat', 'usage', 'foldall'], start: ['new', 'folder', 'mode', 'model', 'effort', 'attach', 'mic'], folder: ['folder'], attach: ['attach', 'stop'], voice: ['mic'], slash: ['slash'], ideas: ['ideasOpen', 'ideaCapture'],
+    seats: ['seat', 'usage', 'foldall'], start: ['new', 'folder', 'mode', 'model', 'effort', 'attach', 'mic'], folder: ['folder'], attach: ['attach', 'stop'], voice: ['mic'], slash: ['slash'], ideas: ['ideasOpen', 'ideaCapture'], desktop: ['desktopOpen'],
     approve: ['needs', 'perm', 'reply'], keep: ['menu', 'keep', 'archive', 'archiveDone'], auto: ['archiveDone', 'archiveDays'], search: ['search'],
     projects: ['projOpen', 'folders', 'openProject'], runs: ['runForm'], project: ['pjNeeds', 'pjWorking', 'pjRuns', 'pjHappening'], ctx: ['pbar', 'pbMove'],
     settings: ['settings', 'lang', 'tabUsage', 'fresh'],
