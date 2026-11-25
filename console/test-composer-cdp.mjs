@@ -69,6 +69,15 @@ try {
       await sleep(500);
       await t(`${w}: page loads with 0 uncaught exceptions`, () => { assert.deepEqual(C.errors, []); assert.ok(ready, 'composer not ready'); });
       await t(`${w}: mic visible and tappable`, async () => { const r = await C.ev(`(() => { const b = document.getElementById('mic').getBoundingClientRect(); return { w: b.width, h: b.height, x: b.left, r: b.right }; })()`); assert.ok(r.w > 0 && r.h > 0 && r.x >= 0 && r.r <= w + 0.5, JSON.stringify(r)); });
+      // phone: the message box has its own full-width line above the buttons and, filled with a long text, stays within half the screen (scrolls inside)
+      if (mobile) await t(`${w}: box above the buttons, full width, at most half the screen`, async () => {
+        const r = await C.ev(`(() => { const x = document.getElementById('text'); x.textContent = Array(60).fill('a long dictated line').join('\\n'); const b = x.getBoundingClientRect(), m = document.getElementById('mic').getBoundingClientRect(), a = document.getElementById('addbtn').getBoundingClientRect();
+          const o = { bw: b.width, bh: b.height, bottom: b.bottom, micTop: m.top, addTop: a.top, vh: innerHeight, scroll: x.scrollHeight > x.clientHeight }; x.textContent = ''; return o; })()`);
+        assert.ok(r.bottom <= r.micTop + 0.5 && r.bottom <= r.addTop + 0.5, 'box not above the buttons ' + JSON.stringify(r));
+        assert.ok(r.bw >= w - 40, 'box not full width ' + JSON.stringify(r));
+        assert.ok(r.bh <= r.vh / 2 + 1 && r.scroll, 'box taller than half the screen or not scrolling ' + JSON.stringify(r));
+        return `box ${Math.round(r.bw)}x${Math.round(r.bh)} of ${r.vh}`;
+      });
       await C.ev(`document.getElementById('text').focus(); __sr.scripts[0] = [{ at: 300, text: 'hello there', final: true }]; true`);
       await C.ev(`document.getElementById('mic').click(); true`);
       await t(`${w}: mic starts dictation (stub typed into the box)`, async () => { await until(C.ev, `__sr.made.length > 0 && /hello there/.test(document.getElementById('text').textContent)`, 8000, 'dictated words'); });
