@@ -302,7 +302,7 @@ async function todoChecks(minAgeMs) {
   if (ids.length) sendAll({ todos: true });
 }
 async function todoNotifyAuto(id) {
-  const x = readTodos(TODOS_FILE).find((k) => k.id === id), conv = x?.conv && convOf(x.conv);
+  const x = readTodos(TODOS_FILE).find((k) => k.id === id), conv = x?.conv && liveOf(convOf(x.conv));   // a handed-off conversation: its successor is told (as todoAct)
   if (conv) await send({ conversationId: conv.id, text: `✅ The task "${x.what}" was done — verified automatically` });
 }
 const TODO_NAG_MS = 3600000, quietHour = (d) => d.getHours() >= 23 || d.getHours() < 7;
