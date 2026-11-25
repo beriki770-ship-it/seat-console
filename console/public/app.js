@@ -352,9 +352,14 @@ const micro = (u) => !u ? '' : [['five_hour', 'side.m5h'], ['seven_day', 'side.m
 function avatar(s) {
   const p = PROV[s.agent], u = fiveH(s), n = needN(s), v = u == null ? 0 : Math.min(100, Math.round(u * 100)), col = v >= 85 ? '#f2766d' : '#e8b04a';
   const shape = (extra) => p ? `<rect x="2" y="2" width="32" height="32" rx="9" pathLength="100" ${extra}/>` : `<circle cx="18" cy="18" r="16" pathLength="100" ${extra}/>`;
-  const ring = `<svg class="ring" viewBox="0 0 36 36" aria-hidden="true">${shape('class="trk"')}${v ? shape(`fill="none" stroke="${col}" stroke-dasharray="${v} 100"`) : ''}</svg>`;
-  const tip = s.name + (u != null ? ` · ${tk('usage.window.', 'five_hour')} ${pct(u)}` : '') + (n ? ' · ' + t('projects.needYou', { n: num(n) }) : '');
-  return `<button type="button" class="av ${p ? 'prov' : ''} ${s.remote ? 'remote' : ''}" data-rail="${esc(s.name)}" aria-current="${s.name === cur.seat}" aria-expanded="${!folded(s.name)}" title="${esc(tip)}" aria-label="${esc(t('side.goSeat', { seat: s.name }) + (n ? ', ' + t('projects.needYou', { n: num(n) }) : ''))}">${ring}<span class="ini">${esc(initials(s.name))}</span>${p ? `<span class="pmark" aria-hidden="true">${p.mark}</span>` : ''}${n ? `<span class="badge">${num(n)}</span>` : ''}</button>`;
+  // Beri 2026-11-25: a second, inner ring for the weekly window, and a small countdown chip to the weekly reset ("2d", "9h"); only when the account reports it.
+  const wk = s.usage?.windows?.seven_day, wkOn = wk && wk.resetsAt * 1000 > Date.now(), wv = wkOn ? Math.min(100, Math.round(wk.utilization * 100)) : 0, wcol = wv >= 85 ? '#f2766d' : '#7fb3e0';
+  const inner = !wkOn ? '' : `<circle class="wtrk" cx="18" cy="18" r="11.5" pathLength="100"/>${wv ? `<circle cx="18" cy="18" r="11.5" pathLength="100" fill="none" stroke="${wcol}" stroke-dasharray="${wv} 100"/>` : ''}`;
+  const ring = `<svg class="ring" viewBox="0 0 36 36" aria-hidden="true">${shape('class="trk"')}${v ? shape(`fill="none" stroke="${col}" stroke-dasharray="${v} 100"`) : ''}${inner}</svg>`;
+  const left = wkOn ? wk.resetsAt * 1000 - Date.now() : 0, wdays = Math.floor(left / 864e5);
+  const wchip = !wkOn ? '' : `<span class="wreset ${wv >= 85 ? 'hot' : ''}" aria-hidden="true">${wdays >= 1 ? num(wdays, { style: 'unit', unit: 'day', unitDisplay: 'narrow' }) : num(Math.max(1, Math.ceil(left / 36e5)), { style: 'unit', unit: 'hour', unitDisplay: 'narrow' })}</span>`;
+  const tip = s.name + (u != null ? ` · ${tk('usage.window.', 'five_hour')} ${pct(u)}` : '') + (wkOn ? ` · ${tk('usage.window.', 'seven_day')} ${pct(wk.utilization)}, ${resetText(wk.resetsAt * 1000)}` : '') + (n ? ' · ' + t('projects.needYou', { n: num(n) }) : '');
+  return `<button type="button" class="av ${p ? 'prov' : ''} ${s.remote ? 'remote' : ''}" data-rail="${esc(s.name)}" aria-current="${s.name === cur.seat}" aria-expanded="${!folded(s.name)}" title="${esc(tip)}" aria-label="${esc(t('side.goSeat', { seat: s.name }) + (n ? ', ' + t('projects.needYou', { n: num(n) }) : ''))}">${ring}<span class="ini">${esc(initials(s.name))}</span>${wchip}${p ? `<span class="pmark" aria-hidden="true">${p.mark}</span>` : ''}${n ? `<span class="badge">${num(n)}</span>` : ''}</button>`;
 }
 function showRail() {
   const allFolded = seats.every((s) => folded(s.name));
