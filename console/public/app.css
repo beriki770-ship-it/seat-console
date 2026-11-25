@@ -52,8 +52,11 @@ main { display:flex; flex-direction:column; min-width:0; min-height:0; height:10
 .av .ring .trk { fill:var(--rail-hi); stroke:#3a3936; }
 .av .ring .wtrk { fill:none; stroke:#34332f; stroke-width:2.5; }   /* inner ring = the weekly window (app.js avatar) */
 .av .ring circle[r="11.5"] { stroke-width:2.5; }
-.av .wreset { position:absolute; bottom:-1px; inset-inline-start:-2px; min-width:15px; height:14px; padding:0 3px; border-radius:7px; background:#2b3a48; color:#cfe3f5; font-size:9px; font-weight:700; line-height:14px; text-align:center; box-shadow:0 0 0 2px var(--rail); white-space:nowrap; }   /* time left to the weekly reset */
+.av .wreset { position:absolute; bottom:-1px; inset-inline-end:-2px; min-width:15px; height:14px; padding:0 3px; border-radius:7px; background:#2b3a48; color:#cfe3f5; font-size:9px; font-weight:700; line-height:14px; text-align:center; box-shadow:0 0 0 2px var(--rail); white-space:nowrap; }   /* time left to the weekly reset */
 .av .wreset.hot { background:#5a2a26; color:#ffd9d5; }
+.av .hreset { position:absolute; bottom:-1px; inset-inline-start:-2px; min-width:15px; height:14px; padding:0 3px; border-radius:7px; background:#4a3a1c; color:#f5dca8; font-size:9px; font-weight:700; line-height:14px; text-align:center; box-shadow:0 0 0 2px var(--rail); white-space:nowrap; }   /* time left to the 5 h reset (orange family = the outer ring) */
+.av .hreset.hot { background:#5a2a26; color:#ffd9d5; }
+.av.prov .pmark { bottom:auto; top:1px; inset-inline-end:auto; inset-inline-start:1px; }   /* the G / A mark moves to the top corner: the bottom corners hold the two reset chips */
 [dir=rtl] .av .ring { transform:rotate(-90deg) scaleY(-1); }   /* the ring fills clockwise from the top in LTR, the other way round in RTL */
 .av .ini { position:relative; font-size:12px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; }
 .av.all .ini { font-size:11px; }
