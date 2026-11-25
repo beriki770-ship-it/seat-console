@@ -9,8 +9,9 @@ if (process.platform === 'win32') { console.log('SKIP | test-autohandoff-e2e | L
 const PORT = await new Promise((r) => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 const WORK = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-autohandoff-')), DATA = path.join(WORK, 'data'), CWD = path.join(WORK, 'proj');
 fs.mkdirSync(path.join(CWD, '.git'), { recursive: true }); fs.mkdirSync(path.join(WORK, 'home'), { recursive: true }); fs.mkdirSync(DATA, { recursive: true });
-const SEATS_JSON = path.join(WORK, 'seats.json'); fs.writeFileSync(SEATS_JSON, JSON.stringify({ projectsDir: WORK, seats: { ops: { email: 'ops@example.com', role: 'test seat' } } }));   // own seats file: a fresh clone (CI) has no seats.json
-const SEAT = 'ops';
+const ROOT_SEATS = path.join(HERE, '..', 'seats.json'), OWN_SEATS = !fs.existsSync(ROOT_SEATS);   // seat init (seat.sh) reads the repo's seats.json: a fresh clone (CI) gets a throwaway one, removed at the end
+if (OWN_SEATS) fs.writeFileSync(ROOT_SEATS, JSON.stringify({ projectsDir: WORK, seats: { demo: { email: 'demo@example.com', role: 'test seat' } } }));
+const SEAT = Object.entries(JSON.parse(fs.readFileSync(ROOT_SEATS, 'utf8').replace(/^﻿/, '')).seats).filter(([, v]) => !v.agent).pop()[0];
 fs.writeFileSync(path.join(DATA, 'settings.json'), JSON.stringify({ language: 'en', guideOffered: 'done', autoHandoff: true }));   // auto handoff is opt-in (off by default)
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^CLAUDE/i.test(k))); env.HOME = path.join(WORK, 'home');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -26,7 +27,7 @@ async function until(fn, ms, what) { const t0 = Date.now(); for (;;) { let v; tr
 const log = () => { try { return fs.readFileSync(path.join(DATA, 'server.log'), 'utf8'); } catch { return ''; } };
 const conv = async (id) => (await api('GET', '/api/conversation?id=' + id)).json;
 const fd = fs.openSync(path.join(DATA, 'server.log'), 'a');
-const srv = spawn(process.execPath, [path.join(HERE, 'server.mjs'), '--port', String(PORT), '--data', DATA, '--seats', SEATS_JSON, '--claude', path.join(HERE, 'fixtures', 'fake-claude.mjs')], { stdio: ['ignore', fd, fd], env, cwd: HERE });
+const srv = spawn(process.execPath, [path.join(HERE, 'server.mjs'), '--port', String(PORT), '--data', DATA, '--claude', path.join(HERE, 'fixtures', 'fake-claude.mjs')], { stdio: ['ignore', fd, fd], env, cwd: HERE });
 fs.closeSync(fd);
 let failed = false;
 try {
@@ -64,5 +65,5 @@ try {
   assert.equal((log().match(/handoff asked/g) || []).length, 1, 'asked exactly once');
   console.log('ok  no loop (asked once, successor not armed), "don\'t auto-handoff" conversation untouched at 50%');
 } catch (e) { failed = true; console.log('FAIL', e.message, '\n--- server.log tail ---\n' + log().split('\n').slice(-30).join('\n')); }
-finally { srv.kill('SIGTERM'); await sleep(1500); if (srv.exitCode === null) srv.kill('SIGKILL'); fs.rmSync(WORK, { recursive: true, force: true }); }
+finally { srv.kill('SIGTERM'); await sleep(1500); if (srv.exitCode === null) srv.kill('SIGKILL'); fs.rmSync(WORK, { recursive: true, force: true }); if (OWN_SEATS) fs.rmSync(ROOT_SEATS, { force: true }); }
 console.log(failed ? 'test-autohandoff-e2e FAIL' : 'test-autohandoff-e2e PASS'); process.exit(failed ? 1 : 0);
