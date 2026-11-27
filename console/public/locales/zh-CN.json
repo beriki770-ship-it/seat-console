@@ -1014,5 +1014,7 @@
   "set.update.hint": "每天向 GitHub 查询一次，不会发送任何与你有关的信息。",
   "set.update.upToDate": "已是最新版本。",
   "set.update.available": "可用更新：{n}",
-  "set.update.checked": "上次检查：{time}"
+  "set.update.checked": "上次检查：{time}",
+  "todos.agentTag": "给代理",
+  "bot.todo.agentGone": "设置此提醒的对话已不存在。"
 }

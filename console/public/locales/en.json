@@ -1032,5 +1032,7 @@
   "set.update.hint": "Checks GitHub once a day. Nothing about you is sent.",
   "set.update.upToDate": "You are up to date.",
   "set.update.available": "Updates available: {n}",
-  "set.update.checked": "Last checked {time}"
+  "set.update.checked": "Last checked {time}",
+  "todos.agentTag": "for the agent",
+  "bot.todo.agentGone": "The conversation that set this reminder no longer exists."
 }

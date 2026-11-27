@@ -1048,5 +1048,7 @@
   "set.update.hint": "Controlla GitHub una volta al giorno. Non viene inviato nulla su di te.",
   "set.update.upToDate": "Sei aggiornato.",
   "set.update.available": "Aggiornamenti disponibili: {n}",
-  "set.update.checked": "Ultimo controllo: {time}"
+  "set.update.checked": "Ultimo controllo: {time}",
+  "todos.agentTag": "per l'agente",
+  "bot.todo.agentGone": "La conversazione che ha creato questo promemoria non esiste più."
 }

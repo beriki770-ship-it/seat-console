@@ -1014,5 +1014,7 @@
   "set.update.hint": "하루에 한 번 GitHub를 확인합니다. 사용자에 관한 정보는 전송되지 않습니다.",
   "set.update.upToDate": "최신 상태입니다.",
   "set.update.available": "사용 가능한 업데이트: {n}개",
-  "set.update.checked": "마지막 확인: {time}"
+  "set.update.checked": "마지막 확인: {time}",
+  "todos.agentTag": "에이전트용",
+  "bot.todo.agentGone": "이 알림을 설정한 대화가 더 이상 없습니다."
 }

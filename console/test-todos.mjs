@@ -107,6 +107,11 @@ async function telegramE2E() {
     addTodo(TF, conv, 'Far away task', new Date(Date.now() + 7 * 864e5).toISOString());
     await wait(() => calls.some((c) => c.method === 'sendMessage' && /Upload the screenshot of Pages/.test(c.body.text || '') && !c.body.reply_markup?.force_reply));
     assert.ok(!calls.some((c) => /Far away task/.test(c.body?.text || '')), 'a task due in a week was announced at once');
+    // --agent: a reminder for the conversation itself; at its due time it goes into that conversation, closes, and never reaches Telegram
+    const ag = addTodo(TF, conv, 'Check the store review again', new Date(Date.now() - 1000).toISOString(), null, 'agent');
+    await wait(() => /Reminder you scheduled for yourself[^\n]*Check the store review again/.test(fs.readFileSync(log, 'utf8')));
+    await wait(() => readTodos(TF).find((k) => k.id === ag)?.doneAt);
+    assert.ok(!calls.some((c) => /Check the store review again/.test(c.body?.text || '')), 'an agent reminder reached Telegram');
     updates = [{ update_id: 1, callback_query: { id: 'q1', data: 'vm:' + tid, message: { message_id: 7, chat: { id: 555 }, text: 'card' } } }];
     await wait(() => calls.some((c) => c.method === 'sendMessage' && c.body.reply_markup?.force_reply));
     const prompt = calls.find((c) => c.method === 'sendMessage' && c.body.reply_markup?.force_reply), promptId = 500 + calls.filter((c) => c.method === 'sendMessage').indexOf(prompt) + 1;

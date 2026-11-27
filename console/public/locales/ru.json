@@ -1065,5 +1065,7 @@
   "set.update.hint": "Обращается к GitHub раз в сутки. Ничего о вас не отправляется.",
   "set.update.upToDate": "У вас последняя версия.",
   "set.update.available": "Доступно обновлений: {n}",
-  "set.update.checked": "Последняя проверка: {time}"
+  "set.update.checked": "Последняя проверка: {time}",
+  "todos.agentTag": "для агента",
+  "bot.todo.agentGone": "Разговора, который поставил это напоминание, больше нет."
 }

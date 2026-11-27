@@ -1031,5 +1031,7 @@
   "set.update.hint": "Fragt einmal am Tag bei GitHub nach. Es werden keine Daten über dich gesendet.",
   "set.update.upToDate": "Du bist auf dem neuesten Stand.",
   "set.update.available": "Verfügbare Updates: {n}",
-  "set.update.checked": "Zuletzt geprüft: {time}"
+  "set.update.checked": "Zuletzt geprüft: {time}",
+  "todos.agentTag": "für den Agenten",
+  "bot.todo.agentGone": "Das Gespräch, das diese Erinnerung gesetzt hat, gibt es nicht mehr."
 }

@@ -1031,5 +1031,7 @@
   "set.update.hint": "GitHub'a günde bir kez bakar. Sizinle ilgili hiçbir şey gönderilmez.",
   "set.update.upToDate": "Güncelsiniz.",
   "set.update.available": "Mevcut güncellemeler: {n}",
-  "set.update.checked": "Son kontrol: {time}"
+  "set.update.checked": "Son kontrol: {time}",
+  "todos.agentTag": "ajan için",
+  "bot.todo.agentGone": "Bu hatırlatıcıyı kuran konuşma artık yok."
 }

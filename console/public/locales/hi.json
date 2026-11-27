@@ -1031,5 +1031,7 @@
   "set.update.hint": "दिन में एक बार GitHub देखता है। आपके बारे में कुछ नहीं भेजा जाता।",
   "set.update.upToDate": "आप अप-टू-डेट हैं।",
   "set.update.available": "उपलब्ध अपडेट: {n}",
-  "set.update.checked": "आखिरी जाँच: {time}"
+  "set.update.checked": "आखिरी जाँच: {time}",
+  "todos.agentTag": "एजेंट के लिए",
+  "bot.todo.agentGone": "जिस बातचीत ने यह रिमाइंडर सेट किया था, वह अब मौजूद नहीं है।"
 }

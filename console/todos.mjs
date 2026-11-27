@@ -2,7 +2,8 @@
 // reply that scrolls away. A seat adds one through SEAT_TODO_CLI; the page lists every open one; ticking it (or sending a comment) posts
 // a message back into the conversation that asked for it (server.mjs /api/todo).
 // One append-only JSONL file for all conversations (<data>/todos.jsonl, env SEAT_TODOS; the asking conversation = env SEAT_CONV).
-//   CLI (the seats):  node todos.mjs add "<what the user has to do, where, why>" [--due <ISO time | +30m | +2h | +1d>]   -> prints the id
+//   CLI (the seats):  node todos.mjs add "<what the user has to do, where, why>" [--due <ISO time | +30m | +2h | +1d>] [--agent]   -> prints the id
+//   --agent (kind 'agent'): a step the seat does itself later; at its due time the server sends it into the asking conversation and closes it (server.mjs todoAgentTick), no Telegram
 //   Library (server): readTodos(file), addTodo(file, conv, what, due), markTodo(file, id, 'done' | 'comment' | 'dismiss' | 'reopen', text), parseDue(s, now)
 // No --due = due one hour after it was added (DEFAULT_DUE_MS); the server nags on Telegram once an hour after that (server.mjs todoTick).
 import fs from 'node:fs';
@@ -26,7 +27,7 @@ export function readTodos(file) {
   for (const l of raw.split('\n')) {
     if (!l.trim()) continue; let e; try { e = JSON.parse(l); } catch { continue; }
     if (!ID_RE.test(e?.id)) continue;
-    if (e.t === 'add') map.set(e.id, { id: e.id, conv: e.conv || null, what: e.what || '', at: e.at, due: e.due || new Date(Date.parse(e.at) + DEFAULT_DUE_MS).toISOString(), ...(typeof e.check === 'string' && e.check ? { check: e.check } : {}), ...(e.kind === 'approval' ? { kind: 'approval' } : {}), comments: [] });
+    if (e.t === 'add') map.set(e.id, { id: e.id, conv: e.conv || null, what: e.what || '', at: e.at, due: e.due || new Date(Date.parse(e.at) + DEFAULT_DUE_MS).toISOString(), ...(typeof e.check === 'string' && e.check ? { check: e.check } : {}), ...(e.kind === 'approval' || e.kind === 'agent' ? { kind: e.kind } : {}), comments: [] });
     const x = map.get(e.id); if (!x || e.t === 'add') continue;
     if (['comment', 'done', 'dismiss', 'approve', 'reject'].includes(e.t)) { if (e.text) x.comments.push({ text: e.text, at: e.at, ...(e.src === 'telegram' ? { src: 'telegram' } : {}) }); }   // src: written from a Telegram reply (the page tags it)
     if (e.t === 'done') { x.doneAt = e.at; if (e.auto) x.auto = true; }
@@ -45,7 +46,7 @@ export function addTodo(file, conv, what, due = null, check = null, kind = null)
   what = String(what || '').trim(); if (!what) throw new Error('add needs a description of what the user has to do');
   const taken = new Set(readTodos(file).map((x) => x.id));
   let id; do id = crypto.randomBytes(3).toString('hex'); while (taken.has(id));
-  append(file, { t: 'add', id, ...(conv ? { conv } : {}), what: what.slice(0, 600), ...(due ? { due } : {}), ...(check ? { check: String(check).slice(0, 1000) } : {}), ...(kind === 'approval' ? { kind } : {}) });
+  append(file, { t: 'add', id, ...(conv ? { conv } : {}), what: what.slice(0, 600), ...(due ? { due } : {}), ...(check ? { check: String(check).slice(0, 1000) } : {}), ...(kind === 'approval' || kind === 'agent' ? { kind } : {}) });
   return id;
 }
 // 'done' / 'dismiss' close an open task (an optional comment / reason rides along); 'comment' needs text and leaves the task open;
@@ -105,16 +106,19 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === fs.realpathSync(proces
     if (cmd === 'add') {
       const flag = (n) => { const i = rest.indexOf(n); if (i < 0) return null; const v = rest[i + 1]; rest.splice(i, 2); return v ?? ''; };
       const approve = rest.includes('--approve'); if (approve) rest.splice(rest.indexOf('--approve'), 1);   // the user's yes/no before an outward step
+      const agent = rest.includes('--agent'); if (agent) rest.splice(rest.indexOf('--agent'), 1);   // a reminder for the seat itself: at --due the console sends it into this conversation, the user is not notified
       const dueRaw = flag('--due'), check = flag('--check'), due = dueRaw === null ? null : parseDue(dueRaw);
       if (check === '') die('--check needs a command');
       if (approve && check) die('--approve and --check do not mix: only the user closes an approval');
-      process.stdout.write(addTodo(file, process.env.SEAT_CONV || null, rest.join(' '), due, check, approve ? 'approval' : null) + '\n');
+      if (agent && (approve || check)) die('--agent is a reminder for this conversation: no --approve or --check');
+      if (agent && !process.env.SEAT_CONV) die('--agent needs the conversation to remind (SEAT_CONV)');
+      process.stdout.write(addTodo(file, process.env.SEAT_CONV || null, rest.join(' '), due, check, approve ? 'approval' : agent ? 'agent' : null) + '\n');
     } else if (cmd === 'done' || cmd === 'dismiss') {   // a seat closes its own task: only from the conversation that asked for it
       const [id, ...why] = rest, x = readTodos(file).find((k) => k.id === id);
       if (!x) die(`no task ${id}`);
       if (!x.conv || x.conv !== process.env.SEAT_CONV) die('that task was not added by this conversation');
       markTodo(file, id, cmd, why.join(' '), {});
       process.stdout.write('ok\n');
-    } else die('usage: add "<what the user has to do, where, why>" [--due +2h | 2026-11-24T10:00] [--check "<command that exits 0 when done>"] [--approve = a yes/no for the user, closes only with their Approve/Reject] | done <id> "<how verified>" | dismiss <id> "<why>"');
+    } else die('usage: add "<what the user has to do, where, why>" [--due +2h | 2026-11-24T10:00] [--check "<command that exits 0 when done>"] [--approve = a yes/no for the user, closes only with their Approve/Reject] [--agent = a reminder for this conversation itself at --due, not for the user] | done <id> "<how verified>" | dismiss <id> "<why>"');
   } catch (e) { die(e.message); }
 }

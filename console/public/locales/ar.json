@@ -1099,5 +1099,7 @@
   "set.update.hint": "يتحقق من GitHub مرة في اليوم. لا يُرسل أي شيء عنك.",
   "set.update.upToDate": "أنت على أحدث إصدار.",
   "set.update.available": "التحديثات المتاحة: {n}",
-  "set.update.checked": "آخر فحص: {time}"
+  "set.update.checked": "آخر فحص: {time}",
+  "todos.agentTag": "للوكيل",
+  "bot.todo.agentGone": "المحادثة التي ضبطت هذا التذكير لم تعد موجودة."
 }

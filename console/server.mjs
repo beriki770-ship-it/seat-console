@@ -252,7 +252,7 @@ const openElsewhere = (ids) => ids.filter(Boolean).flatMap((id) => openOf(id).ma
 const SNIPPETS_FILE = path.join(DATA, 'snippets.json');   // the composer's "@" snippets (slash.mjs), the owner's own text: gitignored like settings.json
 // The owner's task board (todos.mjs): seats add what only the owner can do; a seat's add is seen by polling the file's mtime, the page is told to reload.
 const TODOS_FILE = path.join(DATA, 'todos.jsonl'), TODOS_CLI = path.join(HERE, 'todos.mjs');
-fs.watchFile(TODOS_FILE, { interval: 2000 }, () => { sendAll({ todos: true }); setTimeout(() => todoTick().catch(() => {}), 500); });
+fs.watchFile(TODOS_FILE, { interval: 2000 }, () => { sendAll({ todos: true }); setTimeout(() => { todoTick().catch(() => {}); todoAgentTick().catch(() => {}); }, 500); });
 function todosView() {
   const all = readTodos(TODOS_FILE).map(({ check, ...x }) => { const c = x.conv && convOf(x.conv); return { ...x, hasCheck: !!check, title: c?.title || null, seat: c?.seat || null }; });   // the check command never leaves the server
   return { open: all.filter((x) => !x.doneAt && !x.dismissedAt), done: all.filter((x) => x.doneAt).slice(0, 30), dismissed: all.filter((x) => x.dismissedAt).slice(0, 30) };
@@ -321,6 +321,7 @@ async function todoTick(now = Date.now()) {
   }
   if (quietHour(new Date(now))) { if (dirty) saveState(); return; }   // night: nothing is sent, a task added now is announced at 07:00
   for (const x of open) {
+    if (x.kind === 'agent') continue;   // the seat's own reminder: never on Telegram (todoAgentTick)
     const last = state.todoTg[x.id], late = now >= Date.parse(x.due);
     if (!Number.isFinite(Date.parse(x.due)) || (last && (!late || now - last < TODO_NAG_MS)) || (!last && now < Date.parse(x.due) - TODO_LEAD_MS)) continue;   // a hand-edited bad due never blocks the others
     dirty = true;
@@ -334,6 +335,22 @@ async function todoTick(now = Date.now()) {
   }
   if (dirty) saveState();
 }
+// A step the seat itself has to do later (add --agent): at its due time the reminder goes into the asking conversation (its auto-handoff
+// successor if any) and the task closes, with nothing for the user to do. A failed send is retried next minute; a vanished conversation
+// gets one Telegram line instead. Runs also at night and without Telegram.
+async function todoAgentTick(now = Date.now()) {
+  for (const x of todosView().open.filter((k) => k.kind === 'agent' && now >= Date.parse(k.due))) {
+    const conv = x.conv && convOf(x.conv) && liveOf(convOf(x.conv));   // the conversation now carrying the work: an auto-handoff successor, not the old session
+    if (conv?.quotaWait) continue;   // it waits out its seat's limit: a send now would hit the limit again; the reminder goes in once it resumed
+    if (conv) {
+      try { await send({ conversationId: conv.id, text: `⏰ Reminder you scheduled for yourself on the task board (${x.id}, due ${new Date(x.due).toISOString()}): "${x.what}"\nDo it now. The user was not asked; involve them only if the step itself needs them.` }); }
+      catch (e) { console.log(`[todos] agent reminder ${x.id}: send failed, retry next minute: ${e.message}`); continue; }
+    } else if (tg.readCfg()?.chatId) await tg.send(`⏰ ${esc(x.what)}\n<i>${esc(t('bot.todo.agentGone'))}</i>`).catch(() => {});
+    try { markTodo(TODOS_FILE, x.id, 'done', conv ? 'reminder sent to the conversation' : 'conversation gone', { auto: true }); } catch {}
+    sendAll({ todos: true }); console.log(`[todos] agent reminder ${x.id} -> ${conv ? conv.id.slice(0, 8) : 'no conversation'}`);
+  }
+}
+setInterval(() => todoAgentTick().catch((e) => console.log('[todos] agent tick failed: ' + e.message)), 60000);
 setInterval(() => todoTick().catch((e) => console.log('[todos] tick failed: ' + e.message)), 60000);
 setInterval(() => todoChecks(600000).then(() => {}, (e) => console.log('[todos] check failed: ' + e.message)), 60000);   // each task's own 10-min clock is in checkTodos
 const liveHosts = new Set(Object.values(state.conversations).filter((c) => { try { const i = hostInfoOf(c); return i && (c.remote || pidAlive(i.pid)); } catch { return false; } }).map((c) => c.id)); // a malformed entry is handled (and logged) by reattachAll; a remote host is asked over ssh after the start (reattachRemotes)
@@ -887,7 +904,7 @@ async function startProc(c) {
   const JOURNAL_RULE = `Make external actions SAFE TO REPEAT whenever you can: deploy/upload with a sync or deploy script that can simply be re-run (rsync, an idempotent deploy script), and give one-shot publish scripts a guard (a state file that refuses a second post/send). Only for an external action that is NOT safe to repeat (sending an email or chat message, posting or commenting on a site, a payment, creating an issue/ticket, a non-idempotent API write) record it: \`${JOURNAL_CMD} intent "<what>" --check "<how to verify it happened>"\` before (it prints an id), \`${JOURNAL_CMD} done <id> "<result>"\` (or \`fail <id> "<error>"\`) after. Local file edits are not external actions.`;
   const journalEnv = { SEAT_JOURNAL: journalOf(c.id), SEAT_JOURNAL_CLI: JOURNAL_CLI, SEAT_TODOS: TODOS_FILE, SEAT_TODO_CLI: TODOS_CLI, SEAT_CONV: c.id };
   // A step only the user can do gets lost in a long reply: it goes on their task board as well.
-  const TODO_RULE = 'When a step needs the user themselves (open or sign up for an account, log in, verify an email or phone, pay, sign, a call, a decision that blocks you), say it in the reply AND put it on their task board: `node "$SEAT_TODO_CLI" add "<what to do, where (URL), why>" --due <+30m | +2h | 2026-11-24T10:00> --check "<shell command>"` (one line, their language; --due = by when it has to be done, default one hour; past it they are reminded on Telegram every hour). Give --check when the result is machine-checkable (exit 0 = done, e.g. a `claude auth status` that shows the email, a curl that returns HTTP 200, `test -f <file>`): the console runs it every ~10 minutes and closes the task by itself. When you need a yes/no from the user BEFORE an irreversible or outward step (sending, publishing, paying, deleting), add the task with `--approve` (`node "$SEAT_TODO_CLI" add "<what to approve, with the exact item or link>" --approve`) and wait for the APPROVED / REJECTED message instead of asking in chat; do not do the step before APPROVED arrives. When they tick it or comment, you get a message in this conversation; continue from there. When you later see the step was done (they tell you, or you verify it), close it yourself: `node "$SEAT_TODO_CLI" done <id> "<evidence>"` (`dismiss <id> "<why>"` if it no longer matters).'.replaceAll('node "$SEAT_TODO_CLI"', `node "${TODOS_CLI}"`);   // the absolute path: the same command in bash, cmd and PowerShell (as JOURNAL_RULE)
+  const TODO_RULE = 'When a step needs the user themselves (open or sign up for an account, log in, verify an email or phone, pay, sign, a call, a decision that blocks you), say it in the reply AND put it on their task board: `node "$SEAT_TODO_CLI" add "<what to do, where (URL), why>" --due <+30m | +2h | 2026-11-24T10:00> --check "<shell command>"` (one line, their language; --due = by when it has to be done, default one hour; past it they are reminded on Telegram every hour). Give --check when the result is machine-checkable (exit 0 = done, e.g. a `claude auth status` that shows the email, a curl that returns HTTP 200, `test -f <file>`): the console runs it every ~10 minutes and closes the task by itself. When you need a yes/no from the user BEFORE an irreversible or outward step (sending, publishing, paying, deleting), add the task with `--approve` (`node "$SEAT_TODO_CLI" add "<what to approve, with the exact item or link>" --approve`) and wait for the APPROVED / REJECTED message instead of asking in chat; do not do the step before APPROVED arrives. For a step YOU must do yourself later (check back after a review, retry after a wait), do not put it on the user: schedule it with `node "$SEAT_TODO_CLI" add "<what you will do>" --agent --due <when>`; at that time the console sends it into this conversation by itself and the user is not notified. When they tick it or comment, you get a message in this conversation; continue from there. When you later see the step was done (they tell you, or you verify it), close it yourself: `node "$SEAT_TODO_CLI" done <id> "<evidence>"` (`dismiss <id> "<why>"` if it no longer matters).'.replaceAll('node "$SEAT_TODO_CLI"', `node "${TODOS_CLI}"`);   // the absolute path: the same command in bash, cmd and PowerShell (as JOURNAL_RULE)
   const ending = 'End every final reply with one last line that starts with "Summary:" — at most 3 short sentences: what was done, the result, and what (if anything) is needed from the user.';
   const role = rem ? `You are a Claude session on the remote machine '${rem.name}', driven from the user's Seat Console. ${ending}`
     : `You are the '${c.seat}' seat (${SEATS[c.seat].email}) in the user's multi-seat setup. Your area: ${SEATS[c.seat].role}. Prefer work in that area, but a task the user sends you explicitly is always yours to do. ${JOURNAL_RULE} ${TODO_RULE} ${ending}`;

@@ -1049,5 +1049,7 @@
   "set.update.hint": "בודק ב-GitHub פעם ביום. שום דבר עליך לא נשלח.",
   "set.update.upToDate": "הכול מעודכן.",
   "set.update.available": "עדכונים זמינים: {n}",
-  "set.update.checked": "נבדק לאחרונה: {time}"
+  "set.update.checked": "נבדק לאחרונה: {time}",
+  "todos.agentTag": "לסוכן",
+  "bot.todo.agentGone": "השיחה שקבעה את התזכורת הזאת כבר לא קיימת."
 }

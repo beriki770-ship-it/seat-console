@@ -1014,5 +1014,7 @@
   "set.update.hint": "GitHub に 1 日 1 回確認します。あなたに関する情報は送信されません。",
   "set.update.upToDate": "最新の状態です。",
   "set.update.available": "利用可能な更新：{n}",
-  "set.update.checked": "最終確認：{time}"
+  "set.update.checked": "最終確認：{time}",
+  "todos.agentTag": "エージェント用",
+  "bot.todo.agentGone": "このリマインダーを設定した会話はもう存在しません。"
 }

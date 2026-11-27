@@ -1048,5 +1048,7 @@
   "set.update.hint": "Consulta GitHub una vez al día. No se envía nada sobre ti.",
   "set.update.upToDate": "Estás al día.",
   "set.update.available": "Actualizaciones disponibles: {n}",
-  "set.update.checked": "Última comprobación: {time}"
+  "set.update.checked": "Última comprobación: {time}",
+  "todos.agentTag": "para el agente",
+  "bot.todo.agentGone": "La conversación que creó este recordatorio ya no existe."
 }

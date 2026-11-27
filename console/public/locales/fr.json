@@ -1048,5 +1048,7 @@
   "set.update.hint": "Interroge GitHub une fois par jour. Rien sur vous n'est envoyé.",
   "set.update.upToDate": "Vous êtes à jour.",
   "set.update.available": "Mises à jour disponibles : {n}",
-  "set.update.checked": "Dernière vérification : {time}"
+  "set.update.checked": "Dernière vérification : {time}",
+  "todos.agentTag": "pour l'agent",
+  "bot.todo.agentGone": "La conversation qui a créé ce rappel n'existe plus."
 }
