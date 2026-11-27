@@ -116,6 +116,8 @@ No. See the disclaimer below.
 
 ## Contributing
 
+**Have an idea?** Post it in [Discussions → Ideas](https://github.com/beriki770-ship-it/seat-console/discussions/categories/ideas), or open a [feature request](https://github.com/beriki770-ship-it/seat-console/issues/new?template=feature_request.yml). Found a bug? [Report it](https://github.com/beriki770-ship-it/seat-console/issues/new?template=bug_report.yml).
+
 Pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first (no npm dependencies, offline tests must pass). Good first issues:
 
 - **Translations.** The 14 non-English locales in [`console/public/locales/`](console/public/locales) were machine-assisted. If you read one of them natively, fix what sounds wrong; `node console/test-i18n.mjs` checks keys, placeholders and plural forms.

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Share an idea or ask a question
+    url: https://github.com/beriki770-ship-it/seat-console/discussions/categories/ideas
+    about: Not sure it's a bug or a feature yet? Start a discussion. Ideas that get traction become issues.
