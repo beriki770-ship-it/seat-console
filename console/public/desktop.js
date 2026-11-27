@@ -37,9 +37,17 @@ async function deskConnect() {
   if (!onDesktop() || deskRfb) return;
   const rfb = deskRfb = new RFB($('dkscreen'), `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/desktop`, { wsProtocols: ['seat', TOKEN] });
   rfb.scaleViewport = true; rfb.viewOnly = $('dkview').checked; rfb.qualityLevel = 6;
-  rfb.addEventListener('connect', () => { if (deskRfb === rfb) deskState(t('desktop.connected', { d: st.display })); });
+  rfb.addEventListener('connect', () => { if (deskRfb === rfb) { deskState(t('desktop.connected', { d: st.display })); deskCursorHome(); } });
   rfb.addEventListener('disconnect', () => { if (deskRfb !== rfb) return; deskRfb = null; deskState(t('desktop.disconnected'), true); });
 }
+// On a touch-capable device noVNC draws the remote mouse pointer on its own canvas appended to <body> (core/util/cursor.js useFallback);
+// in full screen only #desktop is shown, so the pointer vanished. Keep that canvas inside the fullscreen element.
+// _cursor._canvas is noVNC 1.3 internal: if it is missing nothing happens.
+function deskCursorHome() {
+  const c = deskRfb?._cursor?._canvas, home = document.fullscreenElement || document.body;
+  if (c && c.isConnected && c.parentNode !== home) home.appendChild(c);
+}
+document.addEventListener('fullscreenchange', deskCursorHome);
 // One key press on the remote, with the sticky Ctrl/Alt of the keys bar held around it; they let go after that one key (Ctrl, then C).
 function deskKey(keysym, code) {
   const r = deskRfb; if (!r || r.viewOnly) return;

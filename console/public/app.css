@@ -928,6 +928,7 @@ body.todos #todos { display:block; flex:1; min-height:0; overflow:auto; padding:
 #ideas { display:none; }
 .td-dismiss { color:var(--mute); background:none; }
 .td-dismissed .td-what { color:var(--mute); }
+.td-due { white-space:nowrap; } .td-due.late { color:var(--warn, #b26a00); font-weight:600; }   /* the task's due time; past it Telegram nags hourly */
 .td-tag { font-weight:600; }
 .td-yes { font-weight:600; }
 .td-rejected .td-what { text-decoration:none; color:var(--mute); }

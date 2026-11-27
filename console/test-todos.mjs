@@ -103,6 +103,10 @@ async function telegramE2E() {
     const conv = JSON.parse(sent.body).conversationId, TF = path.join(DATA, 'todos.jsonl'), log = path.join(DATA, 'logs', SEAT, conv + '.jsonl');
     await wait(() => fs.existsSync(log) && /echo: hello/.test(fs.readFileSync(log, 'utf8')));
     const tid = addTodo(TF, conv, 'Upload the screenshot of Pages');
+    // a task due in a week is not announced now (only from 2 h before its due time); the one due in an hour is
+    addTodo(TF, conv, 'Far away task', new Date(Date.now() + 7 * 864e5).toISOString());
+    await wait(() => calls.some((c) => c.method === 'sendMessage' && /Upload the screenshot of Pages/.test(c.body.text || '') && !c.body.reply_markup?.force_reply));
+    assert.ok(!calls.some((c) => /Far away task/.test(c.body?.text || '')), 'a task due in a week was announced at once');
     updates = [{ update_id: 1, callback_query: { id: 'q1', data: 'vm:' + tid, message: { message_id: 7, chat: { id: 555 }, text: 'card' } } }];
     await wait(() => calls.some((c) => c.method === 'sendMessage' && c.body.reply_markup?.force_reply));
     const prompt = calls.find((c) => c.method === 'sendMessage' && c.body.reply_markup?.force_reply), promptId = 500 + calls.filter((c) => c.method === 'sendMessage').indexOf(prompt) + 1;

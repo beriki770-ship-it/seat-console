@@ -24,7 +24,7 @@ import { applyCtx, parseContextReply, ctxLevel, AUTOCOMPACT_BUFFER } from './con
 import { runRetention, readLogText, restoreLog, gzPath, purgeArchive } from './retention.mjs';
 import { createSearch } from './searchidx.mjs';
 import { TZ as DIGEST_TZ, viennaHm, viennaYmd, viennaHour, dueSlot, digestRefs, classify, digestRoutines, scanLog, buildMorningDigest, buildEveningDigest } from './digest.mjs';
-import { t, tn, hm, useLanguage, pickLang, LANGS, RTL } from './i18n.mjs';
+import { t, tn, hm, fmt, useLanguage, pickLang, LANGS, RTL } from './i18n.mjs';
 import { autoArchivable, markTurn, answered, addManualPin, donePin, activePins, setTitle, autoTitle } from './marks.mjs';
 import { paths as hostPaths, pidAlive, readJson, readOutFrom, spawnHost, connectHost, stopHost } from './hostlink.mjs';
 import { loadRemotes, parseRemotes, followRemote, parseLine, STALE_MS } from './remote.mjs';
@@ -306,6 +306,9 @@ async function todoNotifyAuto(id) {
   const x = readTodos(TODOS_FILE).find((k) => k.id === id), conv = x?.conv && liveOf(convOf(x.conv));   // a handed-off conversation: its successor is told (as todoAct)
   if (conv) await send({ conversationId: conv.id, text: `✅ The task "${x.what}" was done — verified automatically` });
 }
+// A task due days ahead is not announced at once (it read as a nag); Telegram stays quiet until TODO_LEAD_MS before its due time.
+// The due day is written out when it is not today ("Mon 30.11 10:30"), never only the hour.
+const TODO_LEAD_MS = 2 * 3600000, dueWhen = (ms) => new Date(ms).toDateString() === new Date().toDateString() ? hm(ms) : fmt(ms, { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 const TODO_NAG_MS = 3600000, quietHour = (d) => d.getHours() >= 23 || d.getHours() < 7;
 async function todoTick(now = Date.now()) {
   if (!tg.readCfg()?.chatId) return;
@@ -319,10 +322,10 @@ async function todoTick(now = Date.now()) {
   if (quietHour(new Date(now))) { if (dirty) saveState(); return; }   // night: nothing is sent, a task added now is announced at 07:00
   for (const x of open) {
     const last = state.todoTg[x.id], late = now >= Date.parse(x.due);
-    if (!Number.isFinite(Date.parse(x.due)) || (last && (!late || now - last < TODO_NAG_MS))) continue;   // a hand-edited bad due never blocks the others
+    if (!Number.isFinite(Date.parse(x.due)) || (last && (!late || now - last < TODO_NAG_MS)) || (!last && now < Date.parse(x.due) - TODO_LEAD_MS)) continue;   // a hand-edited bad due never blocks the others
     dirty = true;
-    const head = last ? '⏰ ' + t('bot.todo.nag', { since: hm(Date.parse(x.due)) }) : '📝 ' + t('bot.todo.new');
-    const text = `${head}\n<b>${esc(x.what)}</b>${x.title ? `\n<i>${esc(x.seat || '')} · ${esc(String(x.title).slice(0, 60))}</i>` : ''}${last ? '' : `\n🕒 ${t('bot.todo.due', { time: hm(Date.parse(x.due)) })}`}`;
+    const head = last ? '⏰ ' + t('bot.todo.nag', { since: dueWhen(Date.parse(x.due)) }) : '📝 ' + t('bot.todo.new');
+    const text = `${head}\n<b>${esc(x.what)}</b>${x.title ? `\n<i>${esc(x.seat || '')} · ${esc(String(x.title).slice(0, 60))}</i>` : ''}${last ? '' : `\n🕒 ${t('bot.todo.due', { time: dueWhen(Date.parse(x.due)) })}`}`;
     state.todoTg[x.id] = now;   // set first: a failed send is not retried every 5 minutes
     const m = await tg.send(text, [[{ text: '✅ ' + t('bot.todo.approveBtn'), callback_data: 'va:' + x.id }, { text: '❌ ' + t('bot.todo.rejectBtn'), callback_data: 'vr:' + x.id }], x.kind === 'approval' ? [{ text: '🚫 ' + t('bot.todo.dismissBtn'), callback_data: 'vx:' + x.id }] : [{ text: '✅ ' + t('bot.todo.doneBtn'), callback_data: 'v:' + x.id }, { text: '🚫 ' + t('bot.todo.dismissBtn'), callback_data: 'vx:' + x.id }], [{ text: '💬 ' + t('bot.todo.msgBtn'), callback_data: 'vm:' + x.id }]]).catch((e) => { notifyFailed(e); return null; });
     if (m && x.conv) state.telegramMsgs[m.message_id] = x.conv;
