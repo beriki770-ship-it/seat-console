@@ -723,6 +723,7 @@ function settleDone(c) {
 // it is settled, then a fresh conversation continues from that file (or it is compacted). Max AH_MAX_RUNNING handoffs at a time.
 const ahCfg = () => { const s = SET(); return { on: s.autoHandoff === true, pct: s.autoHandoffPct ?? 30, minTokens: (s.autoHandoffMinK ?? 120) * 1000, action: s.autoHandoffAction || 'rollover' }; };
 const ahFile = (c) => handoffFileFor(c.cwd || HOME, HOME, (f) => fs.existsSync(f), path.join, path.dirname);
+const AH_FRESH_MS = 10 * 60000;   // see autoHandoffTick: a HANDOFF this much older than the latest ask still counts
 const ahRunning = () => Object.values(state.conversations).filter((x) => (x.autoHandoff?.stage === 'asked' && !x.archived) || R(x).ahRolling).length;
 function ahView(c, extra = {}) { const v = ctxView(c); return { pct: v?.pct ?? null, used: v?.used ?? 0, agent: !!SEATS[c.seat]?.agent || !!c.multi, ...extra }; }   // project tasks (multi: own projectsFreshAtPct) keep their conversation
 function autoHandoffAtResult(c, text) {
@@ -739,7 +740,9 @@ function autoHandoffTick(c) {
   const settled = r.status === 'idle' && !c.turns && !c.bg?.length && !r.done && !r.slash && !r.starting && now - (a.resAt || 0) >= SETTLE_MS && now - (r.activityAt || 0) >= SETTLE_MS;
   const blocked = !!(r.perms.size || c.needsAnswer || c.quotaWait);
   let fresh = false;
-  if (a.ready) { try { fresh = fs.statSync(a.ready).mtimeMs >= (a.askedAt || 0) - 2000; } catch {} }
+  // fresh = written in this handoff episode: a re-ask (after the user wrote in between, or a retry) gets HANDOFF-READY for a file the conversation
+  // updated minutes earlier and rightly did not touch again; measured from the latest ask alone, that read as stale and the switch gave up.
+  if (a.ready) { try { fresh = fs.statSync(a.ready).mtimeMs >= (a.askedAt || 0) - AH_FRESH_MS; } catch {} }
   const stuck = a.stage === 'asked' && r.status !== 'working' && now - (a.askedAt || now) > AH_STUCK_MS;
   const step = autoHandoffStep(c, ahView(c, { settled, blocked, running: ahRunning(), fresh, stuck }), ahCfg());
   if (!step) return;
