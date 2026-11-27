@@ -785,6 +785,7 @@ async function ahContinue(c, file) {
   const n = await send({ seat: c.seat, cwd: c.cwd, model: c.model, effort: c.effort, mode: c.mode, title: nextTitle(c.title), text: withUnknown(continuePrompt(prev, file), openElsewhere([c.id])), auto: true });   // open intents of this conversation travel with the handoff
   c.autoHandoff = { stage: 'done', action: 'rollover', to: n.id, pct: prev.pct, file, at: Date.now() }; c.archived = true;   // first: nothing below may leave a successor unlinked (a second one later)
   if (c.project) n.project = c.project;
+  if (c.keep) n.keep = true;   // a starred chat's successor is starred too
   pushEvent(c, { type: 'console_note', key: 'log.ahHandedOff', pct: Math.round(prev.pct), file, link: { id: n.id, seat: n.seat, title: n.title } });
   pushEvent(n, { type: 'console_note', key: 'log.ahContinues', file, link: { id: c.id, seat: c.seat, title: c.title } });
   saveState(); broadcast({ conv: summary(n) });

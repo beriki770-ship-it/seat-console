@@ -42,6 +42,7 @@ try {
 
   const r = await api('POST', '/api/send', { seat: SEAT, text: 'ctx=320000 working on it', cwd: CWD, title: 'Demo work' });
   assert.equal(r.status, 200, r.text); const id = r.json.conversationId;
+  assert.equal((await api('POST', '/api/keep', { conversationId: id, keep: true })).status, 200);   // starred: the successor must be starred too
   await until(() => log().includes(`[autohandoff] conv=${id.slice(0, 8)} armed at 32%`), 15000, 'armed at 32%');
   console.log('ok  armed at the result of the turn that crossed 30%');
   await until(() => log().includes(`[autohandoff] conv=${id.slice(0, 8)} at 32%: handoff asked (try 1)`), 20000, 'asked once settled');
@@ -57,6 +58,7 @@ try {
   assert.ok(succ.events.find((e) => e.type === 'console_note' && e.key === 'log.ahContinues' && e.link.id === id), 'successor links back');
   assert.ok((await conv(id)).events.find((e) => e.type === 'console_note' && e.key === 'log.ahHandedOff' && e.link.id === succ.conv.id), 'old links forward');
   const st = JSON.parse(fs.readFileSync(path.join(DATA, 'state.json'), 'utf8')).conversations;
+  assert.equal(st[succ.conv.id].keep, true, 'a starred conversation\'s successor is starred');
   assert.equal(st[id].autoHandoff.stage, 'done'); assert.equal(st[id].autoHandoff.to, succ.conv.id);
   console.log(`ok  linked successor "${succ.conv.title}" started with "Continue from …HANDOFF.md", old archived, notes link both ways`);
   await sleep(8000);
