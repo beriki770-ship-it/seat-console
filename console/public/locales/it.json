@@ -1040,5 +1040,13 @@
   "desktop.pasted": "Negli appunti del server: incollalo lì con Ctrl+V",
   "guide.desktop.h": "Come clicco qualcosa sullo schermo del server?",
   "guide.desktop.p": "Premi {desktop} nella barra. Si apre il desktop del server, adattato allo schermo. Tocco = clic, pressione lunga = clic destro, due dita = scorrere, pizzico = zoom. {keyboard} apre la tastiera del telefono; Ctrl e Alt restano premuti per il tasto successivo. Incolla testo sul server mette il testo nei suoi appunti. Attiva {viewOnly} per guardare senza toccare nulla. Serve una sessione Desktop remoto sul server; dopo 30 minuti senza input si disconnette.",
-  "tour.desktop.p": "Lo schermo del server stesso, per i momenti in cui serve solo un clic lì, come un captcha."
+  "tour.desktop.p": "Lo schermo del server stesso, per i momenti in cui serve solo un clic lì, come un captcha.",
+  "banner.update": "Nuova versione disponibile (aggiornamenti: {n}): {msg}",
+  "banner.updateLink": "Novità",
+  "banner.updateHow": "Per aggiornare: esegui {cmd} nella cartella della console, poi riavvia la console.",
+  "set.update.title": "Avvisami quando esce una nuova versione",
+  "set.update.hint": "Controlla GitHub una volta al giorno. Non viene inviato nulla su di te.",
+  "set.update.upToDate": "Sei aggiornato.",
+  "set.update.available": "Aggiornamenti disponibili: {n}",
+  "set.update.checked": "Ultimo controllo: {time}"
 }

@@ -1040,5 +1040,13 @@
   "desktop.pasted": "Dans le presse-papiers du serveur : collez-le là-bas avec Ctrl+V",
   "guide.desktop.h": "Comment cliquer sur quelque chose à l'écran du serveur ?",
   "guide.desktop.p": "Appuyez sur {desktop} dans la barre. Le bureau du serveur s'ouvre, ajusté à l'écran. Appui = clic, appui long = clic droit, deux doigts = défiler, pincer = zoom. {keyboard} ouvre le clavier du téléphone ; Ctrl et Alt restent enfoncées pour la touche suivante. Coller du texte sur le serveur le met dans son presse-papiers. Activez {viewOnly} pour regarder sans rien toucher. Il faut une session Bureau à distance sur le serveur ; après 30 minutes sans action, la connexion se ferme.",
-  "tour.desktop.p": "L'écran du serveur lui-même, pour les moments où seul un clic là-bas aide, comme un captcha."
+  "tour.desktop.p": "L'écran du serveur lui-même, pour les moments où seul un clic là-bas aide, comme un captcha.",
+  "banner.update": "Nouvelle version disponible (mises à jour : {n}) : {msg}",
+  "banner.updateLink": "Nouveautés",
+  "banner.updateHow": "Pour mettre à jour : lancez {cmd} dans le dossier de la console, puis redémarrez la console.",
+  "set.update.title": "Me prévenir quand une nouvelle version sort",
+  "set.update.hint": "Interroge GitHub une fois par jour. Rien sur vous n'est envoyé.",
+  "set.update.upToDate": "Vous êtes à jour.",
+  "set.update.available": "Mises à jour disponibles : {n}",
+  "set.update.checked": "Dernière vérification : {time}"
 }

@@ -1006,5 +1006,13 @@
   "desktop.pasted": "서버 클립보드에 있음: 거기서 Ctrl+V로 붙여넣기",
   "guide.desktop.h": "서버 화면에서 무언가를 클릭하려면?",
   "guide.desktop.p": "레일에서 {desktop}을 누르세요. 서버 데스크톱이 화면에 맞게 열립니다. 탭 = 클릭, 길게 누르기 = 오른쪽 클릭, 두 손가락 = 스크롤, 핀치 = 확대/축소. {keyboard}는 휴대폰 키보드를 엽니다. Ctrl과 Alt는 다음 키까지 눌린 상태로 유지됩니다. 서버에 텍스트 붙여넣기는 텍스트를 서버 클립보드에 넣습니다. 아무것도 건드리지 않고 보기만 하려면 {viewOnly}를 켜세요. 서버에 원격 데스크톱 세션이 필요하며, 30분 동안 입력이 없으면 연결이 끊깁니다.",
-  "tour.desktop.p": "서버 자체의 화면. 캡차처럼 거기서 클릭해야만 해결되는 순간을 위해."
+  "tour.desktop.p": "서버 자체의 화면. 캡차처럼 거기서 클릭해야만 해결되는 순간을 위해.",
+  "banner.update": "새 버전이 있습니다(업데이트 {n}개): {msg}",
+  "banner.updateLink": "새로운 기능",
+  "banner.updateHow": "업데이트하려면 콘솔 폴더에서 {cmd} 를 실행한 다음 콘솔을 다시 시작하세요.",
+  "set.update.title": "새 버전이 나오면 알려 주세요",
+  "set.update.hint": "하루에 한 번 GitHub를 확인합니다. 사용자에 관한 정보는 전송되지 않습니다.",
+  "set.update.upToDate": "최신 상태입니다.",
+  "set.update.available": "사용 가능한 업데이트: {n}개",
+  "set.update.checked": "마지막 확인: {time}"
 }

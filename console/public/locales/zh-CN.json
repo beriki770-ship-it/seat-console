@@ -1006,5 +1006,13 @@
   "desktop.pasted": "已在服务器剪贴板中：在那里用 Ctrl+V 粘贴",
   "guide.desktop.h": "怎样在服务器屏幕上点击某样东西？",
   "guide.desktop.p": "按侧栏上的{desktop}。服务器桌面会按屏幕大小打开。点按 = 单击，长按 = 右键，双指 = 滚动，捏合 = 缩放。{keyboard}打开手机键盘；Ctrl 和 Alt 会保持按下直到下一个键。“向服务器粘贴文本”把文本放到它的剪贴板。打开{viewOnly}即可只看不碰。服务器上需要有一个远程桌面会话；30 分钟没有操作会自动断开。",
-  "tour.desktop.p": "服务器自己的屏幕，用于只有在那里点一下才能解决的时刻，比如验证码。"
+  "tour.desktop.p": "服务器自己的屏幕，用于只有在那里点一下才能解决的时刻，比如验证码。",
+  "banner.update": "有新版本可用（更新数：{n}）：{msg}",
+  "banner.updateLink": "更新内容",
+  "banner.updateHow": "更新方法：在控制台文件夹中运行 {cmd}，然后重启控制台。",
+  "set.update.title": "新版本发布时通知我",
+  "set.update.hint": "每天向 GitHub 查询一次，不会发送任何与你有关的信息。",
+  "set.update.upToDate": "已是最新版本。",
+  "set.update.available": "可用更新：{n}",
+  "set.update.checked": "上次检查：{time}"
 }

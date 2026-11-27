@@ -1040,5 +1040,13 @@
   "desktop.pasted": "En el portapapeles del servidor: pégalo allí con Ctrl+V",
   "guide.desktop.h": "¿Cómo hago clic en algo de la pantalla del servidor?",
   "guide.desktop.p": "Pulsa {desktop} en la barra. Se abre el escritorio del servidor, ajustado a la pantalla. Toque = clic, pulsación larga = clic derecho, dos dedos = desplazar, pellizcar = zoom. {keyboard} abre el teclado del móvil; Ctrl y Alt quedan pulsadas para la siguiente tecla. Pegar texto en el servidor pone texto en su portapapeles. Activa {viewOnly} para mirar sin tocar nada. Necesita una sesión de Escritorio remoto en el servidor; tras 30 minutos sin actividad se desconecta.",
-  "tour.desktop.p": "La pantalla del propio servidor, para cuando solo sirve un clic allí, como un captcha."
+  "tour.desktop.p": "La pantalla del propio servidor, para cuando solo sirve un clic allí, como un captcha.",
+  "banner.update": "Nueva versión disponible (actualizaciones: {n}): {msg}",
+  "banner.updateLink": "Novedades",
+  "banner.updateHow": "Para actualizar: ejecuta {cmd} en la carpeta de la consola y reinicia la consola.",
+  "set.update.title": "Avisarme cuando salga una versión nueva",
+  "set.update.hint": "Consulta GitHub una vez al día. No se envía nada sobre ti.",
+  "set.update.upToDate": "Estás al día.",
+  "set.update.available": "Actualizaciones disponibles: {n}",
+  "set.update.checked": "Última comprobación: {time}"
 }

@@ -73,3 +73,7 @@ A chat you open from a project page gets a project bar on top: **Back to project
 ## Which settings are worth knowing?
 
 **Settings** sits at the top of the sidebar. **Start** › **Language** sets the language of the page and of the Telegram bot. **Usage & limits** holds the two auto-archive settings. **Projects** › **Fresh conversation at** (40 % by default): when a run's task fills that much of its context window and stops unfinished, it carries on in a new short chat. Press **Save** after a change.
+
+## How do I hear about a new version?
+
+Turn on **Settings** › **Start** › **Tell me when a new version is out**. It is off by default. Once a day the console asks GitHub whether the public repository is ahead of your checkout, and sends nothing about you. If it is, a small notice names the newest change, links to **What's new** and shows the command to update: run `git pull` in the console folder, then restart the console. Close the notice and it stays away until the next release.

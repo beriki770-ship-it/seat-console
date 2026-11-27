@@ -231,10 +231,13 @@ html, body { overflow-x:clip; }
 #saveBanner { position:fixed; top:0; left:0; right:0; z-index:50; padding:8px 24px; background:#b3261e; color:#fff; font-size:13px; }
 #saveBanner[hidden] { display:none; }
 /* "A new version is running - Reload": the event stream sent a build id other than this page's (a restart with new code) */
-#newver { position:fixed; bottom:16px; inset-inline-start:50%; transform:translateX(-50%); z-index:60; display:flex; align-items:center; gap:10px; padding:8px 10px 8px 14px; border-radius:10px; background:var(--ink); color:var(--bg); font-size:13px; box-shadow:0 8px 24px #0004; }
-[dir=rtl] #newver { transform:translateX(50%); }
-#newver[hidden] { display:none; }
-#newver button { background:var(--accent); border-color:var(--accent); color:#fff; }
+#newver, #updver { position:fixed; bottom:16px; inset-inline-start:50%; transform:translateX(-50%); z-index:60; display:flex; align-items:center; gap:10px; padding:8px 10px 8px 14px; border-radius:10px; background:var(--ink); color:var(--bg); font-size:13px; box-shadow:0 8px 24px #0004; }
+[dir=rtl] #newver, [dir=rtl] #updver { transform:translateX(50%); }
+#newver[hidden], #updver[hidden] { display:none; }
+#updver { bottom:64px; flex-wrap:wrap; max-width:min(92vw,640px); }   /* "New version available" (Settings > Start > updateCheck): above the reload notice if both show */
+#updver a { color:inherit; text-decoration:underline; }
+#updver code { user-select:all; padding:1px 6px; border-radius:6px; background:#fff2; }
+#newver button, #updver button { background:var(--accent); border-color:var(--accent); color:#fff; }
 .gd-build { margin-top:28px; font-size:12px; color:var(--mute); }
 #log { flex:1; min-height:0; overflow:auto; padding:20px 24px; display:flex; flex-direction:column; gap:12px; }
 .msg { max-width:820px; width:100%; margin:0 auto; overflow-wrap:anywhere; }

@@ -495,6 +495,7 @@ function onEvent(m) {
   beat = Date.now();
   const d = JSON.parse(m.data);
   if (d.build) { $('newver').hidden = d.build === BUILD || BUILD === '__BUILD__'; return; }   // a restart with new code: offer a reload instead of running old JS
+  if (d.update) { showUpdate(d.update); return; }   // updatecheck.mjs: the server found (or lost) a newer version on GitHub
   if ('saveError' in d) { $('saveBanner').hidden = !d.saveError; return; }   // the server cannot write state.json: shown until a save works again
   if (d.removed) {
     for (const s of seats) s.conversations = s.conversations.filter((c) => c.id !== d.removed);
@@ -1682,6 +1683,18 @@ const yes = (ok, a, b) => `<span class="${ok ? 'sok' : 'sno'}">${ok ? '✓ ' + a
 const cmd = (c) => `<code class="scmd" dir="ltr">${esc(c)}</code>`;
 const tog = (k, title, text) => `<label class="stog"><input type="checkbox" data-set="${k}"${draft[k] ? ' checked' : ''}><span><b>${title}</b><small>${text}</small></span></label>`;
 const seatOpts = (sel, blank) => (blank ? `<option value="">${blank}</option>` : '') + setData.detected.seats.filter((s) => s.active).map((s) => `<option${s.name === sel ? ' selected' : ''}>${esc(s.name)}</option>`).join('');
+// "New version available": dismissed per newest commit (localStorage), so the next release shows again. The same state feeds the line under the Settings checkbox.
+function showUpdate(u) {
+  if (setData) setData.update = u;
+  const box = $('updver'), up = u.on && u.update;
+  if (up && localStorage.getItem('seat-update-dismissed') !== up.latest.sha) {
+    box.innerHTML = `<span dir="auto">${t('banner.update', { n: num(up.behind), msg: esc(up.latest.message) })}</span> <a href="${esc(up.url)}" target="_blank" rel="noopener">${t('banner.updateLink')}</a> <span>${t('banner.updateHow', { cmd: '<code dir="ltr">git pull</code>' })}</span> <button type="button" id="updclose">${t('common.close')}</button>`;
+    box.hidden = false;
+    $('updclose').onclick = () => { localStorage.setItem('seat-update-dismissed', up.latest.sha); box.hidden = true; };
+  } else box.hidden = true;
+  if (onSettings()) showSettings();
+}
+const updateLine = () => { const u = setData.update; return !u?.on ? '' : `<small class="smuted">${u.update ? t('set.update.available', { n: num(u.update.behind) }) : t('set.update.upToDate')}${u.checkedAt ? ' · ' + t('set.update.checked', { time: dfmt(u.checkedAt, { dateStyle: 'medium', timeStyle: 'short' }) }) : ''}</small>`; };
 const dirty = () => JSON.stringify(draft) !== JSON.stringify(setData.settings);
 async function loadSettings() {
   const r = await api('/api/settings').catch(() => null); if (!r?.settings) return;   // a failed read keeps what the page had
@@ -1716,7 +1729,7 @@ const agentRow = (key, name, d, hint) => `<div class="srow"><div><b>${name}</b><
   + `<small>${d.installed ? (d.signedIn ? t('set.agentAdd') : t('set.signIn', { cmd: cmd(d.login) })) : hint}</small></div>`
   + `<form class="sinline" data-form="addagent"><input type="hidden" name="agent" value="${key}"><input name="name" placeholder="${t('set.seatNamePh')}" required pattern="[a-z][a-z0-9\\-]{1,20}" value="${esc(key === 'agy' ? 'antigravity' : 'codex')}${setData.detected.seats.some((s) => s.agent === key) ? '2' : ''}" dir="ltr" spellcheck="false" aria-label="${t('set.agentSeatName', { name })}"><button type="submit"${d.installed ? '' : ' disabled'}>${t('set.addAsSeat')}</button></form></div>`;
 const TABS = {
-  start: () => checklist() + langRow() + `<p class="smuted">${t('set.start.note')}</p>`,
+  start: () => checklist() + langRow() + tog('updateCheck', t('set.update.title'), t('set.update.hint')) + updateLine() + `<p class="smuted">${t('set.start.note')}</p>`,
   seats: () => {
     const d = setData.detected;
     return `<h3>${t('set.tab.seats')}</h3>${d.seats.map(seatRow).join('') || `<small>${t('set.noSeats')}</small>`}`

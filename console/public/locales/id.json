@@ -1006,5 +1006,13 @@
   "desktop.pasted": "Di papan klip server: tempel di sana dengan Ctrl+V",
   "guide.desktop.h": "Bagaimana cara mengklik sesuatu di layar server?",
   "guide.desktop.p": "Tekan {desktop} di bilah samping. Desktop server terbuka, disesuaikan dengan layar. Ketuk = klik, tekan lama = klik kanan, dua jari = gulir, cubit = zoom. {keyboard} membuka keyboard ponsel; Ctrl dan Alt tetap tertekan untuk tombol berikutnya. Tempel teks ke server menaruh teks di papan klipnya. Nyalakan {viewOnly} untuk melihat tanpa menyentuh apa pun. Perlu sesi Remote Desktop di server; setelah 30 menit tanpa input, koneksi diputus.",
-  "tour.desktop.p": "Layar server itu sendiri, untuk saat hanya klik di sana yang membantu, seperti captcha."
+  "tour.desktop.p": "Layar server itu sendiri, untuk saat hanya klik di sana yang membantu, seperti captcha.",
+  "banner.update": "Versi baru tersedia (pembaruan: {n}): {msg}",
+  "banner.updateLink": "Yang baru",
+  "banner.updateHow": "Untuk memperbarui: jalankan {cmd} di folder konsol, lalu mulai ulang konsol.",
+  "set.update.title": "Beri tahu saya saat versi baru rilis",
+  "set.update.hint": "Memeriksa GitHub sekali sehari. Tidak ada data tentang Anda yang dikirim.",
+  "set.update.upToDate": "Anda sudah yang terbaru.",
+  "set.update.available": "Pembaruan tersedia: {n}",
+  "set.update.checked": "Terakhir diperiksa: {time}"
 }

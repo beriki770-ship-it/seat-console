@@ -9,7 +9,7 @@ import { LANGS } from './i18n.mjs';
 import { VOICE_MODELS, VOICE_LANGS, VOICE_ENGINES, SMART_MODELS, SMART_ENGINES, GEMINI_MODELS } from './voice.mjs';
 
 export const SEAT_NAME = /^[a-z][a-z0-9-]{1,20}$/;
-const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests', 'voice', 'voiceSmart', 'voiceRolling', 'ideasTelegram', 'autoHandoff'];
+const BOOLS = ['usageMeters', 'claudeResets', 'codexResets', 'multiProjects', 'quotaWarning', 'digests', 'voice', 'voiceSmart', 'voiceRolling', 'ideasTelegram', 'autoHandoff', 'updateCheck'];
 const MODEL_ID = /^[A-Za-z0-9._:/-]{1,80}$/;
 
 // The defaults, in one place. Optional features are off unless the install already uses them (a codex seat, a disciplines.json).
@@ -18,7 +18,8 @@ export function defaults({ seats = {}, disciplines = false, autoArchiveDays = 3,
   return { usageMeters: true, claudeResets: false, codexResets: Object.values(seats).some((s) => s.agent === 'codex'), multiProjects: !!disciplines,
     quotaWarning: true, digests: true, autoArchiveDays, idleReapMinutes, projectsFreshAtPct: 40, autoHandoff: false, autoHandoffPct: 30, autoHandoffAction: 'rollover', autoHandoffMinK: 120, autoArchiveDoneMin: 30, models: {}, language: '',
     voice: true, voiceEngine: 'live', voiceModel: VOICE_MODELS[0], voiceLang: '', voiceSmart: true, voiceRolling: true, voiceSmartEngine: 'whisper', voiceGeminiModel: GEMINI_MODELS[0], voiceSmartModel: SMART_MODELS[0],   // Gemini Smart finish sends audio to Google: opt-in (Settings > Voice)
-    ideasSeat: '', ideasDigestAt: '18:00', ideasStaleH: 24, ideasTelegram: true };   // language '' = the browser's (the page) / English (the bot); ideasSeat '' = the first Claude seat
+    ideasSeat: '', ideasDigestAt: '18:00', ideasStaleH: 24, ideasTelegram: true,
+    updateCheck: false };   // updateCheck contacts GitHub (updatecheck.mjs): opt-in (Settings > Start). language '' = the browser's (the page) / English (the bot); ideasSeat '' = the first Claude seat
 }
 
 // Known keys with the right type only; the first bad one throws (the page shows the message).

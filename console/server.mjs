@@ -42,6 +42,7 @@ import { createVoice, geminiTranscribe, VOICE_PY, VOICE_MODELS, VOICE_LANGS, SMA
 import { createRolling } from './roll.mjs';
 import { createDesktop } from './desktop.mjs';
 import { listSkills, readSnippets, validateSnippets } from './slash.mjs';
+import { createUpdateCheck } from './updatecheck.mjs';
 import { readSettings, writeJsonAtomic, validateSettings, onlyGuide, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -1520,6 +1521,9 @@ async function serveFile(req, res, url) {
   fs.createReadStream(real, { start, end }).on('error', () => res.destroy()).pipe(res);
 }
 
+// ---- "Tell me when a new version is out" (updatecheck.mjs, Settings > Start): the first look 30 s after the start, then every 24 h; the page hears of it by SSE ----
+const updater = createUpdateCheck({ cwd: path.resolve(HERE, '..'), enabled: () => !!SET().updateCheck, log: (m) => console.log(m), onChange: (v) => sendAll({ update: v }) });
+setTimeout(() => updater.check(), 30e3).unref(); setInterval(() => updater.check(), 864e5).unref();
 // ---- Settings page (settings.mjs): what is turned on, what this machine has, and the config edits. Detection is cached 60 s and never reads a credential's content. ----
 const readJsonFile = (f, empty) => { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^﻿/, '')); } catch (e) { if (e.code === 'ENOENT') return empty; throw new Error(`${path.basename(f)} cannot be read: ${e.message}`); } };
 const runOut = (bin, args, env) => new Promise((ok) => { const js = /\.m?js$/.test(bin);   // a .mjs CODEX_BIN (test fake) runs under this node
@@ -1560,7 +1564,7 @@ async function settingsView() {
   const problems = [settingsNow.error], safe = (fn, empty) => { try { return fn(); } catch (e) { problems.push(e.message); return empty; } };   // a broken config file is shown, never a broken page
   const disc = safe(() => readJsonFile(DISCIPLINES_FILE, null), null), rr = safe(() => readJsonFile(ROUTINES_FILE, []), []), rlist = Array.isArray(rr) ? rr : rr?.routines || [];
   const rem = safe(() => readJsonFile(REMOTES_FILE, { remotes: [] }), {})?.remotes;
-  return { settings: SET(), firstRun: settingsNow.firstRun, restartNeeded, detected: await detect(), telegram: await telegramView(),
+  return { settings: SET(), firstRun: settingsNow.firstRun, restartNeeded, update: updater.view(), detected: await detect(), telegram: await telegramView(),
     access: { user: AUTH.user, phone: PHONE, tailscale: { ip: tsIp, name: tsName, warn: tsWarn }, test: ISOLATED },
     disciplines: disc ? { owner: disc.owner, disciplines: disc.disciplines || {}, off: DISC.off || null } : null,
     routines: routines.view().map((r) => ({ ...r, prompt: rlist.find((x) => x?.id === r.id)?.prompt ?? null })),
@@ -1576,6 +1580,7 @@ async function settingsPost(p, b) {
     const v = validateSettings(b.settings, SEATS), next = { ...SET(), ...v }, guideFirst = settingsNow.firstRun && onlyGuide(v);   // the tour answer alone is not a first save
     writeJsonAtomic(SETTINGS_FILE, guideFirst ? { ...readJsonFile(SETTINGS_FILE, {}), ...v } : next); settingsNow = { settings: next, firstRun: guideFirst, error: null };   // first run: only guideOffered goes to disk, so a restart still sees a first run
     console.log('[settings] saved: ' + Object.keys(v).join(', '));
+    if ('updateCheck' in v) updater.check();   // switched on: look now; off: the notice goes away
     return { ok: true, restartNeeded };
   }
   if (p === '/api/settings/add-seat') {
@@ -1770,7 +1775,8 @@ async function handler(req, res) {
       const wc = out.watch && viewOf(out.watch), total = wc ? (await loadLogAsync(wc)).length : 0;
       if (req.socket.destroyed || res.destroyed) { if (gz) out.destroy(); return; }   // the page left while the log loaded
       if (wc) out.write(`data: ${JSON.stringify({ hello: true, conv: wc.id, total })}\n\n`);
-      if (saveError) out.write('data: {"saveError":true}\n\n'); clients.add(out);
+      if (saveError) out.write('data: {"saveError":true}\n\n');
+      if (updater.view().update) out.write(`data: ${JSON.stringify({ update: updater.view() })}\n\n`); clients.add(out);
       const ka = setInterval(() => out.write('event: ping\ndata: 1\n\n'), 20000); // a named event, so the page can detect a dead stream
       req.on('close', () => { clearInterval(ka); clients.delete(out); if (gz) out.destroy(); }); return;
     }

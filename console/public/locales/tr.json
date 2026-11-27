@@ -1023,5 +1023,13 @@
   "desktop.pasted": "Sunucunun panosunda: orada Ctrl+V ile yapıştırın",
   "guide.desktop.h": "Sunucunun ekranında bir şeye nasıl tıklarım?",
   "guide.desktop.p": "Kenar çubuğunda {desktop} düğmesine basın. Sunucunun masaüstü ekrana sığacak şekilde açılır. Dokunma = tıklama, uzun basma = sağ tık, iki parmak = kaydırma, kıstırma = yakınlaştırma. {keyboard} telefonun klavyesini açar; Ctrl ve Alt bir sonraki tuş için basılı kalır. Sunucuya metin yapıştır, metni onun panosuna koyar. Hiçbir şeye dokunmadan izlemek için {viewOnly} seçin. Sunucuda bir Uzak Masaüstü oturumu gerekir; 30 dakika işlem olmazsa bağlantı kesilir.",
-  "tour.desktop.p": "Sunucunun kendi ekranı; captcha gibi yalnızca oradaki bir tıklamanın işe yaradığı anlar için."
+  "tour.desktop.p": "Sunucunun kendi ekranı; captcha gibi yalnızca oradaki bir tıklamanın işe yaradığı anlar için.",
+  "banner.update": "Yeni sürüm var (güncelleme sayısı: {n}): {msg}",
+  "banner.updateLink": "Yenilikler",
+  "banner.updateHow": "Güncellemek için konsol klasöründe {cmd} çalıştırın, sonra konsolu yeniden başlatın.",
+  "set.update.title": "Yeni sürüm çıkınca haber ver",
+  "set.update.hint": "GitHub'a günde bir kez bakar. Sizinle ilgili hiçbir şey gönderilmez.",
+  "set.update.upToDate": "Güncelsiniz.",
+  "set.update.available": "Mevcut güncellemeler: {n}",
+  "set.update.checked": "Son kontrol: {time}"
 }

@@ -1023,5 +1023,13 @@
   "desktop.pasted": "In der Zwischenablage des Servers: dort mit Strg+V einfügen",
   "guide.desktop.h": "Wie klicke ich etwas auf dem Bildschirm des Servers an?",
   "guide.desktop.p": "Tippen Sie {desktop} in der Leiste. Der Desktop des Servers öffnet sich, passend skaliert. Tippen = Klick, lange drücken = Rechtsklick, zwei Finger = scrollen, zwei Finger auseinander = Zoom. {keyboard} öffnet die Tastatur des Handys; Ctrl und Alt bleiben für die nächste Taste gedrückt. Text an den Server einfügen legt Text in seine Zwischenablage. {viewOnly} zum Zuschauen ohne etwas zu berühren. Es braucht eine Remotedesktop-Sitzung am Server; nach 30 Minuten ohne Eingabe wird getrennt.",
-  "tour.desktop.p": "Der Bildschirm des Servers selbst, für die Momente, in denen nur ein Klick dort hilft, etwa ein Captcha."
+  "tour.desktop.p": "Der Bildschirm des Servers selbst, für die Momente, in denen nur ein Klick dort hilft, etwa ein Captcha.",
+  "banner.update": "Neue Version verfügbar (Updates: {n}): {msg}",
+  "banner.updateLink": "Was ist neu",
+  "banner.updateHow": "Aktualisieren: {cmd} im Konsolenordner ausführen, dann die Konsole neu starten.",
+  "set.update.title": "Benachrichtige mich über neue Versionen",
+  "set.update.hint": "Fragt einmal am Tag bei GitHub nach. Es werden keine Daten über dich gesendet.",
+  "set.update.upToDate": "Du bist auf dem neuesten Stand.",
+  "set.update.available": "Verfügbare Updates: {n}",
+  "set.update.checked": "Zuletzt geprüft: {time}"
 }
