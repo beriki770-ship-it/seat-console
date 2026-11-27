@@ -324,8 +324,8 @@ function showQuota() {
   box.hidden = false;
 }
 const showArch = (() => { try { return JSON.parse(localStorage.getItem('showArch') || '{}'); } catch { return {}; } })();
-// Folded seats (sidebar E): the seat's one-line row, plus the open conversation and the ones waiting on the user (approval, answer,
-// an action with an unknown outcome). Starred chats no longer stay out: "All" is meant to be the seat rows only. Kept per browser.
+// Folded seats (sidebar E): the seat's one-line row, plus the open conversation and the ones waiting on the user (approval, answer;
+// not an action with an unknown outcome: that is the agent's to check). Starred chats no longer stay out: "All" is meant to be the seat rows only. Kept per browser.
 // Folded is the default ("All"): a seat is open only once the user unfolds it or opens one of its conversations. New key, so the new default applies once.
 // fold[name]: undefined = never touched (folded, auto-unfolds when one of its chats is opened), true = folded by the user (stays folded), false = open.
 const showMore = {};   // per seat: list every live conversation, not only the newest 12
@@ -337,7 +337,7 @@ let hlSeat = null, hlTimer = 0;   // the seat a rail jump just landed on, tinted
 let menuFor = null;   // conversation id whose ⋯ menu is open
 const convRow = (c, seat) => `<div class="convrow ${c.archived ? 'archived' : ''}"><button class="conv ${c.id === cur.id ? 'on' : ''} ${c.pending ? 'ask' : ''} ${c.needsAnswer ? 'answer' : ''}"${c.pending || c.needsAnswer ? ' data-guide="needs"' : ''} data-id="${c.id}" data-seat="${seat}">
       <span class="dot ${DOT[c.status] ?? c.status}"></span><span class="t" dir="${dirOf(c.title)}">${c.keep ? `<span class="kept" title="${t('conv.keptTitle')}">★</span> ` : ''}${esc(c.title)}</span>${c.ctx?.pct != null ? `<span class="cxpct cx-${c.ctx.level}" title="${t('ctx.title')} ${esc(ctxText(c.ctx))}">${pct(c.ctx.pct / 100)}</span>` : ''}
-      <small><span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span> ${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">⚠️ ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
+      <small><span class="cost" dir="ltr" title="${t('conv.costTitle')}">~${usd(c.cost || 0)}</span> ${c.mode === 'bypass' ? `<span class="badge bypass">${t('mode.bypass')}</span> ` : ''}${esc(label(c.status))}${c.background ? ' · <bdi>' + esc(c.background) + '</bdi>' : ''}${c.pending ? ' · ' + t('conv.waitingN', { n: num(c.pending) }) : ''}</small>${c.quotaWait ? `<span class="qwait" title="${t('conv.qwaitTitle')}">⏸ ${t('conv.resumesAt', { time: clock(c.quotaWait) })}<span class="dismiss" data-unwait="${c.id}" role="button" title="${t('conv.unwait')}">✕</span></span>` : ''}${c.needsAnswer ? `<span class="needs">❓ ${t('conv.needsAnswer')}<span class="dismiss" data-dismiss="${c.id}" role="button" title="${t('conv.dismissTitle')}">✕</span></span>` : ''}${c.unknownActions ? `<span class="unk" title="${t('conv.unknownTitle')}">🤖 ${t('conv.unknownActions', { n: num(c.unknownActions) })}</span>` : ''}</button>
       ${c.remote ? '' : `<button class="more" data-more="${c.id}" aria-expanded="${menuFor === c.id}" aria-label="${t('conv.menu')}">⋯</button>`}</div>`
   + (menuFor === c.id ? `<div class="cmenu" data-guide="convmenu"><button data-rename="${c.id}" data-seat="${seat}">${t('conv.renameShort')}</button>${c.needsAnswer ? `<button data-dismiss="${c.id}">${t('conv.closeQuestion')}</button>` : ''}<button data-guide="keep" data-keep="${c.id}" data-to="${!c.keep}" title="${t(c.keep ? 'conv.unkeepTitle' : 'conv.keepTitle')}">${t(c.keep ? 'conv.unkeep' : 'conv.keep')}</button><button data-noah="${c.id}" data-to="${!c.noAutoHandoff}" title="${t('conv.noAutoHandoffTitle')}">${t(c.noAutoHandoff ? 'conv.autoHandoffOn' : 'conv.noAutoHandoff')}</button><button data-mvproj="${c.id}">${t('conv.moveProject')}</button><button data-guide="archive" data-archive="${c.id}" data-to="${!c.archived}">${t(c.archived ? 'conv.unarchive' : 'conv.archive')}</button><button class="danger" data-del="${c.id}">${t('common.delete')}</button></div>` : '');
 
@@ -375,7 +375,8 @@ function showRail() {
   $('avs').innerHTML = seats.map(avatar).join('');
 }
 // "N need you" in the panel header opens this list: every conversation, on any seat, that waits on the user, newest first. A row opens it (normal view).
-const needList = () => allConvs().filter((c) => !c.archived && (c.pending || c.needsAnswer || c.quotaWait || c.unknownActions)).sort((a, b) => b.updatedAt - a.updatedAt);
+// Unconfirmed actions are NOT on it: they are the agent's to check (its next message carries them, journal.mjs withUnknown); the row still shows them
+const needList = () => allConvs().filter((c) => !c.archived && (c.pending || c.needsAnswer || c.quotaWait)).sort((a, b) => b.updatedAt - a.updatedAt);
 function showNeedPop() {
   const html = `<h2>${t('side.needList')}</h2>` + needList().map((c) => {
     const s = seats.find((x) => x.name === c.seat), why = [c.pending && t('project.needPerms'), c.needsAnswer && t('project.needAnswer'), c.quotaWait && t('project.needQuota'), c.unknownActions && t('conv.unknownActions', { n: num(c.unknownActions) })].filter(Boolean).join(' · ');
@@ -394,7 +395,7 @@ function showSeats() {
   showQuota(); menuMark(); showRail();
   $('seats').innerHTML = seats.map((s) => {
     const live = s.conversations.filter((c) => !c.archived), arch = s.conversations.filter((c) => c.archived), f = folded(s.name), d = det.has(s.name), p = PROV[s.agent];
-    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.pending || c.needsAnswer || c.unknownActions))) : (showMore[s.name] ? live : live.slice(0, 12)), more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
+    const shown = f ? s.conversations.filter((c) => c.id === cur.id || (!c.archived && (c.pending || c.needsAnswer))) : (showMore[s.name] ? live : live.slice(0, 12)), more = f ? 0 : live.length - shown.filter((c) => !c.archived).length;   // the open conversation stays even when archived
     const w = live.filter((c) => c.status === 'working' || c.status === 'waiting').length, n = needN(s);
     return `<section class="seatbox ${f ? 'folded' : ''} ${d && !f ? 'det' : ''} ${hlSeat === s.name ? 'hl' : ''}" data-seat="${esc(s.name)}"><div class="seathead ${s.name === cur.seat && !cur.id ? 'on' : ''}" data-guide="seat">`
       + `<button type="button" class="chev" data-det="${esc(s.name)}" aria-expanded="${!f}" aria-label="${esc(t('side.details', { seat: s.name }))}">${CHEV}</button>`
