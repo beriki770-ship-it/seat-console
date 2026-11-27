@@ -1016,5 +1016,7 @@
   "set.update.available": "利用可能な更新：{n}",
   "set.update.checked": "最終確認：{time}",
   "todos.agentTag": "エージェント用",
-  "bot.todo.agentGone": "このリマインダーを設定した会話はもう存在しません。"
+  "bot.todo.agentGone": "このリマインダーを設定した会話はもう存在しません。",
+  "todos.mineList": "あなた向け ({n})",
+  "todos.agentList": "エージェント向け ({n})"
 }

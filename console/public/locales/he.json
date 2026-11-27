@@ -1051,5 +1051,7 @@
   "set.update.available": "עדכונים זמינים: {n}",
   "set.update.checked": "נבדק לאחרונה: {time}",
   "todos.agentTag": "לסוכן",
-  "bot.todo.agentGone": "השיחה שקבעה את התזכורת הזאת כבר לא קיימת."
+  "bot.todo.agentGone": "השיחה שקבעה את התזכורת הזאת כבר לא קיימת.",
+  "todos.mineList": "בשבילך ({n})",
+  "todos.agentList": "בשביל הסוכנים ({n})"
 }

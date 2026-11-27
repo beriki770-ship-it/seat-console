@@ -1050,5 +1050,7 @@
   "set.update.available": "Mises à jour disponibles : {n}",
   "set.update.checked": "Dernière vérification : {time}",
   "todos.agentTag": "pour l'agent",
-  "bot.todo.agentGone": "La conversation qui a créé ce rappel n'existe plus."
+  "bot.todo.agentGone": "La conversation qui a créé ce rappel n'existe plus.",
+  "todos.mineList": "Pour toi ({n})",
+  "todos.agentList": "Pour les agents ({n})"
 }

@@ -1034,5 +1034,7 @@
   "set.update.available": "Updates available: {n}",
   "set.update.checked": "Last checked {time}",
   "todos.agentTag": "for the agent",
-  "bot.todo.agentGone": "The conversation that set this reminder no longer exists."
+  "bot.todo.agentGone": "The conversation that set this reminder no longer exists.",
+  "todos.mineList": "For you ({n})",
+  "todos.agentList": "For the agents ({n})"
 }

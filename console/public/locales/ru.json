@@ -1067,5 +1067,7 @@
   "set.update.available": "Доступно обновлений: {n}",
   "set.update.checked": "Последняя проверка: {time}",
   "todos.agentTag": "для агента",
-  "bot.todo.agentGone": "Разговора, который поставил это напоминание, больше нет."
+  "bot.todo.agentGone": "Разговора, который поставил это напоминание, больше нет.",
+  "todos.mineList": "Для тебя ({n})",
+  "todos.agentList": "Для агентов ({n})"
 }

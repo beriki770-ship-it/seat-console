@@ -1050,5 +1050,7 @@
   "set.update.available": "Actualizaciones disponibles: {n}",
   "set.update.checked": "Última comprobación: {time}",
   "todos.agentTag": "para el agente",
-  "bot.todo.agentGone": "La conversación que creó este recordatorio ya no existe."
+  "bot.todo.agentGone": "La conversación que creó este recordatorio ya no existe.",
+  "todos.mineList": "Para ti ({n})",
+  "todos.agentList": "Para los agentes ({n})"
 }

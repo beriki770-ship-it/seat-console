@@ -1016,5 +1016,7 @@
   "set.update.available": "可用更新：{n}",
   "set.update.checked": "上次检查：{time}",
   "todos.agentTag": "给代理",
-  "bot.todo.agentGone": "设置此提醒的对话已不存在。"
+  "bot.todo.agentGone": "设置此提醒的对话已不存在。",
+  "todos.mineList": "给你的 ({n})",
+  "todos.agentList": "给智能体的 ({n})"
 }

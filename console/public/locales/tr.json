@@ -1033,5 +1033,7 @@
   "set.update.available": "Mevcut güncellemeler: {n}",
   "set.update.checked": "Son kontrol: {time}",
   "todos.agentTag": "ajan için",
-  "bot.todo.agentGone": "Bu hatırlatıcıyı kuran konuşma artık yok."
+  "bot.todo.agentGone": "Bu hatırlatıcıyı kuran konuşma artık yok.",
+  "todos.mineList": "Senin için ({n})",
+  "todos.agentList": "Ajanlar için ({n})"
 }

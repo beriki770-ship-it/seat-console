@@ -1050,5 +1050,7 @@
   "set.update.available": "Atualizações disponíveis: {n}",
   "set.update.checked": "Última verificação: {time}",
   "todos.agentTag": "para o agente",
-  "bot.todo.agentGone": "A conversa que criou este lembrete não existe mais."
+  "bot.todo.agentGone": "A conversa que criou este lembrete não existe mais.",
+  "todos.mineList": "Para você ({n})",
+  "todos.agentList": "Para os agentes ({n})"
 }

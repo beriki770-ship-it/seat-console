@@ -1016,5 +1016,7 @@
   "set.update.available": "사용 가능한 업데이트: {n}개",
   "set.update.checked": "마지막 확인: {time}",
   "todos.agentTag": "에이전트용",
-  "bot.todo.agentGone": "이 알림을 설정한 대화가 더 이상 없습니다."
+  "bot.todo.agentGone": "이 알림을 설정한 대화가 더 이상 없습니다.",
+  "todos.mineList": "나에게 ({n})",
+  "todos.agentList": "에이전트에게 ({n})"
 }

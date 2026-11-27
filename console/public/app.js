@@ -2024,7 +2024,8 @@ var todos = { open: [], done: [], dismissed: [] }, todosStale = false;   // var 
 function onTodos() { return document.body.classList.contains('todos'); }
 async function loadTodos() {
   try { todos = await api('/api/todos'); } catch { return; }
-  const bd = $('todobtn').querySelector('.rbadge'); bd.hidden = !todos.open.length; bd.textContent = todos.open.length;
+  const mine = todos.open.filter((x) => x.kind !== 'agent').length;   // the rail counts only what waits on the user: an agent's own reminder needs nothing from them
+  const bd = $('todobtn').querySelector('.rbadge'); bd.hidden = !mine; bd.textContent = mine;
   if (onTodos()) showTodos();
 }
 function todoRow(x) {
@@ -2040,10 +2041,13 @@ function showTodos() {
   if (todoLive) { todosStale = true; return; }   // never rebuilt under a dictation: redrawn when it ends
   if (document.activeElement?.matches?.('#todos .td-note input')) { todosStale = true; return; }   // never rebuilt under a comment being typed: redrawn on blur
   todosStale = false;
+  const mine = todos.open.filter((x) => x.kind !== 'agent'), bots = todos.open.filter((x) => x.kind === 'agent');
   const oldOpen = $('todos').querySelector('.td-old:not(.td-oldx)')?.open, oldxOpen = $('todos').querySelector('.td-oldx')?.open;
   const keep = {}; $('todos').querySelectorAll('[data-todo] .td-note input').forEach((i) => { if (i.value) keep[i.closest('[data-todo]').dataset.todo] = i.value; });   // an SSE reload never eats a comment being typed
   $('todos').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-tdrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('todos.title')}</h2><small>${t('todos.subtitle')}</small></div><button type="button" data-tclose>${t('common.close')}</button></header>`
-    + `<div class="td">${todos.open.length ? todos.open.map(todoRow).join('') : `<p class="td-empty">${t('todos.empty')}</p>`}`
+    // two lists: what waits on the user first, then the steps the agents scheduled for themselves (add --agent), so neither hides the other
+    + `<div class="td">${bots.length ? `<h3 class="td-sec">${t('todos.mineList', { n: mine.length })}</h3>` : ''}${mine.length ? mine.map(todoRow).join('') : `<p class="td-empty">${t('todos.empty')}</p>`}`
+    + (bots.length ? `<h3 class="td-sec td-sec-agent">🤖 ${t('todos.agentList', { n: bots.length })}</h3>${bots.map(todoRow).join('')}` : '')
     + (todos.done.length ? `<details class="td-old"><summary>${t('todos.doneList', { n: todos.done.length })}</summary>${todos.done.map(todoRow).join('')}</details>` : '')
     + (todos.dismissed?.length ? `<details class="td-old td-oldx"><summary>${t('todos.dismissedList', { n: todos.dismissed.length })}</summary>${todos.dismissed.map(todoRow).join('')}</details>` : '') + '</div>';
   for (const [id, v] of Object.entries(keep)) { const i = $('todos').querySelector(`[data-todo="${id}"] .td-note input`); if (i) i.value = v; }

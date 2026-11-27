@@ -1101,5 +1101,7 @@
   "set.update.available": "التحديثات المتاحة: {n}",
   "set.update.checked": "آخر فحص: {time}",
   "todos.agentTag": "للوكيل",
-  "bot.todo.agentGone": "المحادثة التي ضبطت هذا التذكير لم تعد موجودة."
+  "bot.todo.agentGone": "المحادثة التي ضبطت هذا التذكير لم تعد موجودة.",
+  "todos.mineList": "لك ({n})",
+  "todos.agentList": "للوكلاء ({n})"
 }
