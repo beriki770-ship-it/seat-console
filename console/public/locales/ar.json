@@ -1103,5 +1103,6 @@
   "todos.agentTag": "للوكيل",
   "bot.todo.agentGone": "المحادثة التي ضبطت هذا التذكير لم تعد موجودة.",
   "todos.mineList": "لك ({n})",
-  "todos.agentList": "للوكلاء ({n})"
+  "todos.agentList": "للوكلاء ({n})",
+  "desktop.exitFull": "الخروج من ملء الشاشة"
 }

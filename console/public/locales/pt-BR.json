@@ -1052,5 +1052,6 @@
   "todos.agentTag": "para o agente",
   "bot.todo.agentGone": "A conversa que criou este lembrete não existe mais.",
   "todos.mineList": "Para você ({n})",
-  "todos.agentList": "Para os agentes ({n})"
+  "todos.agentList": "Para os agentes ({n})",
+  "desktop.exitFull": "Sair da tela cheia"
 }

@@ -1018,5 +1018,6 @@
   "todos.agentTag": "untuk agen",
   "bot.todo.agentGone": "Percakapan yang membuat pengingat ini sudah tidak ada.",
   "todos.mineList": "Untukmu ({n})",
-  "todos.agentList": "Untuk agen ({n})"
+  "todos.agentList": "Untuk agen ({n})",
+  "desktop.exitFull": "Keluar layar penuh"
 }

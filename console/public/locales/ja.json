@@ -1018,5 +1018,6 @@
   "todos.agentTag": "エージェント用",
   "bot.todo.agentGone": "このリマインダーを設定した会話はもう存在しません。",
   "todos.mineList": "あなた向け ({n})",
-  "todos.agentList": "エージェント向け ({n})"
+  "todos.agentList": "エージェント向け ({n})",
+  "desktop.exitFull": "全画面を終了"
 }

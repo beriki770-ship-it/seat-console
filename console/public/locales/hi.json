@@ -1035,5 +1035,6 @@
   "todos.agentTag": "एजेंट के लिए",
   "bot.todo.agentGone": "जिस बातचीत ने यह रिमाइंडर सेट किया था, वह अब मौजूद नहीं है।",
   "todos.mineList": "आपके लिए ({n})",
-  "todos.agentList": "एजेंटों के लिए ({n})"
+  "todos.agentList": "एजेंटों के लिए ({n})",
+  "desktop.exitFull": "फ़ुल स्क्रीन से बाहर"
 }

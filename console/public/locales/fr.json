@@ -1052,5 +1052,6 @@
   "todos.agentTag": "pour l'agent",
   "bot.todo.agentGone": "La conversation qui a créé ce rappel n'existe plus.",
   "todos.mineList": "Pour toi ({n})",
-  "todos.agentList": "Pour les agents ({n})"
+  "todos.agentList": "Pour les agents ({n})",
+  "desktop.exitFull": "Quitter le plein écran"
 }

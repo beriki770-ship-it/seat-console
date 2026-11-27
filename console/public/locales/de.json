@@ -1035,5 +1035,6 @@
   "todos.agentTag": "für den Agenten",
   "bot.todo.agentGone": "Das Gespräch, das diese Erinnerung gesetzt hat, gibt es nicht mehr.",
   "todos.mineList": "Für dich ({n})",
-  "todos.agentList": "Für die Agenten ({n})"
+  "todos.agentList": "Für die Agenten ({n})",
+  "desktop.exitFull": "Vollbild beenden"
 }

@@ -1017,7 +1017,13 @@ body.desktop #desktop { display:flex; flex-direction:column; flex:1; min-height:
 .dk-clip { flex:none; font-size:13px; }
 .dk-clip > summary { cursor:pointer; color:var(--mute); }
 .dk-clip textarea { display:block; width:100%; box-sizing:border-box; margin:6px 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font:inherit; font-size:16px; }
-#desktop:fullscreen { padding:6px; }
+/* Full screen (phone: on open, see desktop.js deskFull): only the screen and one row below it (body.desktop: beats the padded flex rule above), keys on the left, Exit full screen on the right */
+body.desktop #desktop:fullscreen { display:grid; grid-template-columns:1fr auto; grid-template-rows:minmax(0, 1fr) auto; gap:4px; padding:0 0 4px; background:#111; }
+body.desktop #desktop:fullscreen > #dkscreen { grid-area:1 / 1 / 2 / 3; border-radius:0; }
+body.desktop #desktop:fullscreen > .dk-keys { grid-area:2 / 1; flex-wrap:nowrap; padding-inline-start:4px; }
+body.desktop #desktop:fullscreen > .dk-bar { grid-area:2 / 2; padding-inline-end:4px; }
+body.desktop #desktop:fullscreen > .phead, body.desktop #desktop:fullscreen > .dk-clip, body.desktop #desktop:fullscreen #dkstate, body.desktop #desktop:fullscreen .dk-vo, body.desktop #desktop:fullscreen #dkre { display:none; }
+body.desktop #desktop:fullscreen .dk-keys button, body.desktop #desktop:fullscreen .dk-bar button { min-height:40px; padding:4px 12px; }
 @media (max-width: 700px) {
   body.desktop #desktop { padding:8px 8px 10px; gap:6px; }
   .dk-bar button, .dk-keys button { min-height:44px; }

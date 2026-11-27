@@ -1053,5 +1053,6 @@
   "todos.agentTag": "לסוכן",
   "bot.todo.agentGone": "השיחה שקבעה את התזכורת הזאת כבר לא קיימת.",
   "todos.mineList": "בשבילך ({n})",
-  "todos.agentList": "בשביל הסוכנים ({n})"
+  "todos.agentList": "בשביל הסוכנים ({n})",
+  "desktop.exitFull": "יציאה ממסך מלא"
 }

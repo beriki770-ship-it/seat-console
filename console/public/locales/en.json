@@ -1036,5 +1036,6 @@
   "todos.agentTag": "for the agent",
   "bot.todo.agentGone": "The conversation that set this reminder no longer exists.",
   "todos.mineList": "For you ({n})",
-  "todos.agentList": "For the agents ({n})"
+  "todos.agentList": "For the agents ({n})",
+  "desktop.exitFull": "Exit full screen"
 }

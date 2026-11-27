@@ -1069,5 +1069,6 @@
   "todos.agentTag": "для агента",
   "bot.todo.agentGone": "Разговора, который поставил это напоминание, больше нет.",
   "todos.mineList": "Для тебя ({n})",
-  "todos.agentList": "Для агентов ({n})"
+  "todos.agentList": "Для агентов ({n})",
+  "desktop.exitFull": "Выйти из полноэкранного режима"
 }

@@ -1035,5 +1035,6 @@
   "todos.agentTag": "ajan için",
   "bot.todo.agentGone": "Bu hatırlatıcıyı kuran konuşma artık yok.",
   "todos.mineList": "Senin için ({n})",
-  "todos.agentList": "Ajanlar için ({n})"
+  "todos.agentList": "Ajanlar için ({n})",
+  "desktop.exitFull": "Tam ekrandan çık"
 }

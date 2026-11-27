@@ -1052,5 +1052,6 @@
   "todos.agentTag": "para el agente",
   "bot.todo.agentGone": "La conversación que creó este recordatorio ya no existe.",
   "todos.mineList": "Para ti ({n})",
-  "todos.agentList": "Para los agentes ({n})"
+  "todos.agentList": "Para los agentes ({n})",
+  "desktop.exitFull": "Salir de pantalla completa"
 }

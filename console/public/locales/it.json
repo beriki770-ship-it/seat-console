@@ -1052,5 +1052,6 @@
   "todos.agentTag": "per l'agente",
   "bot.todo.agentGone": "La conversazione che ha creato questo promemoria non esiste più.",
   "todos.mineList": "Per te ({n})",
-  "todos.agentList": "Per gli agenti ({n})"
+  "todos.agentList": "Per gli agenti ({n})",
+  "desktop.exitFull": "Esci da schermo intero"
 }

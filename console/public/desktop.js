@@ -11,13 +11,13 @@ function openDesktop() {
   showDesktop(); deskConnect();
 }
 function closeDesktop() {
-  if (!onDesktop()) return; document.body.classList.remove('desktop'); deskStop();
+  if (!onDesktop()) return; if (document.fullscreenElement === DESK) deskFull(false); document.body.classList.remove('desktop'); deskStop();
   if (location.hash === '#desktop') history.replaceState(null, '', location.pathname + location.search);
 }
 function showDesktop() {
   $('desktop').innerHTML = `<header class="phead shead"><button type="button" class="smenu" data-ddrawer aria-label="${t('side.seats')}">☰</button><div><h2>${t('desktop.title')}</h2><small class="dk-warn">${t('desktop.warn')}</small></div><button type="button" data-dclose>${t('common.close')}</button></header>`
     + `<div class="dk-bar"><span id="dkstate" role="status"></span><button type="button" id="dkre" hidden>${t('desktop.reconnect')}</button>`
-    + `<label class="dk-vo"><input type="checkbox" id="dkview"> ${t('desktop.viewOnly')}</label><button type="button" id="dkfull">${t('desktop.fullscreen')}</button></div>`
+    + `<label class="dk-vo"><input type="checkbox" id="dkview"> ${t('desktop.viewOnly')}</label><button type="button" id="dkfull">${t(document.fullscreenElement === DESK ? 'desktop.exitFull' : 'desktop.fullscreen')}</button></div>`
     + `<div id="dkscreen" data-guide="desktop-screen"></div>`
     + `<div class="dk-keys" role="toolbar" aria-label="${t('desktop.keys')}"><button type="button" id="dkkb">${t('desktop.keyboard')}</button>`
     + `<button type="button" data-dmod="ctrl" aria-pressed="false">Ctrl</button><button type="button" data-dmod="alt" aria-pressed="false">Alt</button><button type="button" data-dkey="esc">Esc</button><button type="button" data-dkey="tab">Tab</button></div>`
@@ -48,6 +48,18 @@ function deskCursorHome() {
   if (c && c.isConnected && c.parentNode !== home) home.appendChild(c);
 }
 document.addEventListener('fullscreenchange', deskCursorHome);
+// Phone: opening the Desktop from the rail goes straight to full screen, turned to landscape (the server's screen is wide). Only inside the
+// tap: a browser allows full screen from a user gesture only, so an open from a link or a reload keeps the Full screen button.
+// Full screen shows just the screen and one row of keys (app.css #desktop:fullscreen).
+const DESK_TOUCH = matchMedia('(pointer: coarse)').matches;
+function deskFull(on) {
+  if (!on) { try { screen.orientation?.unlock?.(); } catch {} return document.exitFullscreen?.().catch(() => {}); }
+  DESK.requestFullscreen?.({ navigationUI: 'hide' }).then(() => screen.orientation?.lock?.('landscape').catch(() => {}), () => {});   // lock works only in full screen, and not on every phone: a refusal changes nothing
+}
+document.addEventListener('fullscreenchange', () => {
+  const b = document.getElementById('dkfull'); if (b) b.textContent = t(document.fullscreenElement === DESK ? 'desktop.exitFull' : 'desktop.fullscreen');
+  if (!document.fullscreenElement) try { screen.orientation?.unlock?.(); } catch {}
+});
 // One key press on the remote, with the sticky Ctrl/Alt of the keys bar held around it; they let go after that one key (Ctrl, then C).
 function deskKey(keysym, code) {
   const r = deskRfb; if (!r || r.viewOnly) return;
@@ -69,12 +81,12 @@ const DESK = document.getElementById('desktop');
 // Linux with xrdp + x11vnc + novnc only (desktop.mjs available): elsewhere the button is hidden, #desktop still says why it cannot connect.
 document.getElementById('deskbtn').hidden = true;
 fetch('/api/desktop').then((r) => r.json()).then((st) => { document.getElementById('deskbtn').hidden = !st.available; }, () => {});
-document.getElementById('deskbtn').onclick = () => { if (onDesktop()) return closeDesktop(); if (location.hash === '#desktop') openDesktop(); else location.hash = 'desktop'; };   // second click closes
+document.getElementById('deskbtn').onclick = () => { if (onDesktop()) return closeDesktop(); if (location.hash === '#desktop') openDesktop(); else location.hash = 'desktop'; if (DESK_TOUCH) deskFull(true); };   // second click closes; a phone opens it in full screen
 DESK.onclick = (e) => {
   if (e.target.closest('[data-dclose]')) return closeDesktop();
   if (e.target.closest('[data-ddrawer]')) return document.body.classList.add('drawer');
   if (e.target.id === 'dkre') return deskConnect();
-  if (e.target.id === 'dkfull') return document.fullscreenElement ? document.exitFullscreen() : $('desktop').requestFullscreen?.().catch(() => {});
+  if (e.target.id === 'dkfull') return deskFull(document.fullscreenElement !== DESK);
   if (e.target.id === 'dkkb') { const el = $('dkkbin'); if (document.activeElement === el) return el.blur(); el.value = deskPrev = DESK_PAD; return el.focus(); }   // focus inside the tap: the phone opens its keyboard
   const m = e.target.closest('[data-dmod]')?.dataset.dmod;
   if (m && deskRfb && !deskRfb.viewOnly) { deskMods[m] = !deskMods[m]; e.target.setAttribute('aria-pressed', String(deskMods[m])); deskRfb.sendKey(m === 'ctrl' ? 0xffe3 : 0xffe9, m === 'ctrl' ? 'ControlLeft' : 'AltLeft', deskMods[m]); return; }

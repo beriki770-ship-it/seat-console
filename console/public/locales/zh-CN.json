@@ -1018,5 +1018,6 @@
   "todos.agentTag": "给代理",
   "bot.todo.agentGone": "设置此提醒的对话已不存在。",
   "todos.mineList": "给你的 ({n})",
-  "todos.agentList": "给智能体的 ({n})"
+  "todos.agentList": "给智能体的 ({n})",
+  "desktop.exitFull": "退出全屏"
 }
