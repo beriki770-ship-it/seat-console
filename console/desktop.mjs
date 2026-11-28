@@ -4,7 +4,7 @@
 // no VNC port exists on any interface and no VNC password is needed, because only this OS user can open the socket and that user can
 // already reach the X display. The gate is the console's own: Basic auth / Host / Origin (server.mjs gate) + the page token as the
 // WebSocket subprotocol. x11vnc stops a few minutes after the last viewer left; a viewer with no input for 30 minutes is disconnected.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -34,6 +34,29 @@ export function available(x11vnc = 'x11vnc') {
     availableCache.set(x11vnc, vnc && fs.existsSync('/usr/share/novnc/core/rfb.js'));
   }
   return availableCache.get(x11vnc);
+}
+
+// Files between the device and the server (the Desktop page's Files panel). Only under the home folder and never through a hidden folder
+// (.ssh, .config...): homePath answers the real path, or null.
+export function homePath(home, p) {
+  let root, real; try { root = fs.realpathSync(home); real = fs.realpathSync(path.resolve(root, String(p || '').trim().replace(/^~(?=$|\/)/, root))); } catch { return null; }
+  const rel = path.relative(root, real);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || rel.split(path.sep).some((s) => s.startsWith('.'))) return null;
+  return real;
+}
+// The newest files (not folders) in ~/Downloads and ~/Desktop, for the "get from the server" list
+export function recentFiles(home, dirs = ['Downloads', 'Desktop'], n = 30) {
+  const out = [];
+  for (const d of dirs) { let names = []; try { names = fs.readdirSync(path.join(home, d)); } catch { continue; }
+    for (const name of names) { if (name.startsWith('.')) continue; try { const st = fs.statSync(path.join(home, d, name)); if (st.isFile()) out.push({ path: `~/${d}/${name}`, name, size: st.size, mtime: st.mtimeMs }); } catch {} } }
+  return out.sort((a, b) => b.mtime - a.mtime).slice(0, n);
+}
+// A file name from the device, made safe and not overwriting anything: "photo.jpg" -> "photo (2).jpg" when taken
+export function freeName(dir, name) {
+  let n = path.basename(String(name || '')).replace(/[\u0000-\u001f\/\\]/g, '_').replace(/^\.+/, '').trim().slice(0, 180) || 'file';
+  const ext = path.extname(n), stem = n.slice(0, n.length - ext.length);
+  for (let i = 2; fs.existsSync(path.join(dir, n)); i++) n = `${stem} (${i})${ext}`;
+  return n;
 }
 
 // A viewer is "doing something" when its message holds more than FramebufferUpdateRequests (type 3, 10 bytes each), which noVNC sends all
@@ -91,5 +114,18 @@ export function createDesktop({ auth, dir, log = () => {}, display = () => findD
     vncConn.on('close', () => { why = 'vnc closed'; ws.close(); end(why); });
     vncConn.on('error', () => {});
   }
-  return { upgrade, status: () => ({ available: available(x11vnc), display: display(), running: !!vnc, viewers: viewers.size }), stop: () => { clearTimeout(stopTimer); stopVnc('console exit'); } };
+  // Paste from the phone straight into the server: the text or image goes onto the X clipboard of the RDP session with xclip (UTF-8, so
+  // non-Latin text survives: the VNC clipboard message is Latin-1 only), then xdotool presses Ctrl+V there. xclip stays in the background
+  // serving the clipboard until something else takes it, as a copy on that desktop would. press:false = clipboard only (the Files panel).
+  async function paste(data, type, { press = true } = {}) {
+    const d = display(); if (!d) throw Object.assign(new Error('nobody is logged in over RDP'), { status: 409 });
+    const env = { ...process.env, DISPLAY: d };
+    await new Promise((ok, no) => {
+      const p = spawn('xclip', ['-selection', 'clipboard', ...(type ? ['-t', type] : []), '-i'], { env, stdio: ['pipe', 'ignore', 'ignore'] });
+      p.on('error', no); p.on('exit', (c) => (c === 0 ? ok() : no(new Error('xclip exited ' + c)))); p.stdin.end(data);
+    });
+    if (press) await new Promise((ok, no) => execFile('xdotool', ['key', '--clearmodifiers', 'ctrl+v'], { env, timeout: 5000 }, (e) => (e ? no(e) : ok())));
+    log(`[desktop] ${press ? 'pasted' : 'clipboard set,'} ${data.length} bytes${type ? ' ' + type : ''} on ${d}`);
+  }
+  return { upgrade, paste, status: () => ({ available: available(x11vnc), display: display(), running: !!vnc, viewers: viewers.size }), stop: () => { clearTimeout(stopTimer); stopVnc('console exit'); } };
 }

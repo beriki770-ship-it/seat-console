@@ -6,6 +6,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pipeline } from 'node:stream';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { StringDecoder } from 'node:string_decoder';
@@ -40,7 +41,7 @@ import { createIdeas, digestDue } from './ideas.mjs';
 import { readCodexAccount, consumeCodexReset, codexModels } from './agents/codex-account.mjs';
 import { createVoice, geminiTranscribe, VOICE_PY, VOICE_MODELS, VOICE_LANGS, SMART_MODELS, VOICE_MAX, VOICE_MAX_SEC } from './voice.mjs';
 import { createRolling } from './roll.mjs';
-import { createDesktop } from './desktop.mjs';
+import { createDesktop, homePath, recentFiles, freeName } from './desktop.mjs';
 import { listSkills, readSnippets, validateSnippets } from './slash.mjs';
 import { createUpdateCheck } from './updatecheck.mjs';
 import { readSettings, writeJsonAtomic, validateSettings, onlyGuide, addSeat, removeSeat, checkDisciplines, saveRoutine, addRemote, telegramToken } from './settings.mjs';
@@ -176,6 +177,7 @@ if (!fs.existsSync(AUTH_FILE)) fs.writeFileSync(AUTH_FILE, JSON.stringify({ user
 let AUTH = JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8'));
 const basic = (a) => 'Basic ' + Buffer.from(`${a.user}:${a.password}`).toString('base64');
 let AUTH_HEADER = basic(AUTH);   // replaced live when the Settings page changes the password
+const deskTickets = new Map();   // Files panel download tickets: id -> { f, exp } (server.mjs /api/desktop/ticket)
 const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(b); return x.length === y.length && crypto.timingSafeEqual(x, y); };
 
 // ---- Tailscale: second listener + extra allowed names. Tailscale down -> loopback only. ----
@@ -1722,6 +1724,16 @@ async function handler(req, res) {
     }
     if (req.method === 'GET' && url.pathname === '/health') return json(res, 200, { ready: true });
     if (req.method === 'GET' && url.pathname === '/api/desktop') return json(res, 200, desktop.status());   // the Desktop page: is there an xrdp session to show
+    // Files panel, server -> device: one file by a one-time ticket (60 s, one use) the page asked for with its token: a plain link, so the phone's
+    // browser saves a big file straight to storage instead of holding it in memory, and the token never appears in a URL.
+    if (req.method === 'GET' && url.pathname === '/api/desktop/file') {
+      const k = url.searchParams.get('ticket') || '', tk = deskTickets.get(k); deskTickets.delete(k);
+      const f = tk && tk.exp > Date.now() && homePath(HOME, tk.f) === tk.f ? tk.f : null; let st = null; try { st = f && fs.statSync(f); } catch {}   // checked again: still under home, not swapped for a link
+      if (!st?.isFile()) return json(res, 404, { error: 'no such file, or the link expired' });
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': st.size, 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(f))}`, 'Cache-Control': 'no-store' });
+      console.log(`[desktop] file to the device: ${f} (${st.size} bytes)`);
+      return pipeline(fs.createReadStream(f), res, (e) => { if (e && e.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.log(`[desktop] file to the device failed: ${e.message}`); });   // an unreadable file or a client that left never throws
+    }
     // noVNC (the Desktop page's viewer, MPL-2.0, Debian package novnc 1.3.0) served from the system copy: its core/ and vendor/ ES modules only
     if (req.method === 'GET' && /^\/novnc\/(core|vendor)\/[\w./-]+\.js$/.test(url.pathname) && !url.pathname.includes('..')) {
       let js; try { js = fs.readFileSync(path.join('/usr/share/novnc', url.pathname.slice(7))); } catch { return json(res, 404, { error: 'not found' }); }
@@ -1858,6 +1870,36 @@ async function handler(req, res) {
         const e = (/\.([a-z0-9]{1,5})$/i.exec(url.searchParams.get('name') || '') || [])[1]?.toLowerCase(), ext = /^(webm|ogg|oga|opus|m4a|mp4|mp3|wav|jpe?g|png|gif|webp|heic)$/.test(e || '') ? e : kind === 'audio' ? 'webm' : 'jpg';
         const id = `${crypto.randomBytes(8).toString('hex')}-${kind}.${ext}`; fs.writeFileSync(path.join(IDEAS_STAGED, id), buf, { mode: 0o600 });
         return json(res, 200, { ok: true, id });
+      }
+      if (url.pathname === '/api/desktop/files' || url.pathname === '/api/desktop/ticket') {   // Files panel: the recent list / a download ticket for one file
+        if (!fromPage(req)) return json(res, 403, { error: 'only from the console page' });
+        if (url.pathname === '/api/desktop/files') return json(res, 200, { files: recentFiles(HOME) });
+        const f = homePath(HOME, url.searchParams.get('path')); let st = null; try { st = f && fs.statSync(f); } catch {}
+        if (!st?.isFile()) return json(res, 404, { error: 'no such file under the home folder' });
+        for (const [k, v] of deskTickets) if (v.exp < Date.now()) deskTickets.delete(k);
+        const ticket = crypto.randomBytes(24).toString('hex'); deskTickets.set(ticket, { f, exp: Date.now() + 60000 });
+        return json(res, 200, { ticket, name: path.basename(f), size: st.size });
+      }
+      if (url.pathname === '/api/desktop/upload') {   // Files panel, device -> server: into ~/Downloads (where file dialogs look first), its path onto the session clipboard
+        if (!fromPage(req)) return json(res, 403, { error: 'only from the console page' });
+        const dir = path.join(HOME, 'Downloads'); fs.mkdirSync(dir, { recursive: true });
+        const name = freeName(dir, url.searchParams.get('name')), dest = path.join(dir, name), MAX = 500 * 1024 * 1024;
+        if (+req.headers['content-length'] > MAX) return json(res, 413, { error: 'over 500 MB' });
+        let created = false;   // only a file this request created is removed on failure ('wx': a same-name upload at the same moment fails, never overwrites)
+        try {
+          await new Promise((ok, no) => { let n = 0; const w = fs.createWriteStream(dest, { flags: 'wx' }); w.on('open', () => { created = true; }); req.on('data', (x) => { n += x.length; if (n > MAX) { req.destroy(); w.destroy(); no(Object.assign(new Error('over 500 MB'), { status: 413 })); } }); req.on('aborted', () => { w.destroy(); no(new Error('upload aborted')); }); w.on('error', no); w.on('finish', ok); req.pipe(w); });
+        } catch (e) { if (created) try { fs.rmSync(dest); } catch {} return json(res, e.status || (e.code === 'EEXIST' ? 409 : 500), { error: e.message }); }
+        await desktop.paste(Buffer.from(dest), '', { press: false }).catch(() => {});   // no RDP session: the file is still there
+        console.log(`[desktop] file from the device: ${dest} (${fs.statSync(dest).size} bytes)`);
+        return json(res, 200, { ok: true, path: '~/Downloads/' + name });
+      }
+      if (url.pathname === '/api/desktop/paste') {   // the Desktop page's Paste: the device clipboard onto the server's, then Ctrl+V there (desktop.mjs paste)
+        if (!fromPage(req)) return json(res, 403, { error: 'only from the console page' });
+        const type = url.searchParams.get('type') || '', img = /^image\/(png|jpeg|gif|webp)$/.test(type);
+        if (type && !img) return json(res, 415, { error: 'text or an image only' });
+        let buf; try { buf = await binBody(req, 20 * 1024 * 1024); } catch { return json(res, 413, { error: 'over 20 MB' }); }
+        if (!buf.length) return json(res, 422, { error: 'empty' });
+        try { await desktop.paste(buf, img ? type : ''); return json(res, 200, { ok: true }); } catch (e) { return json(res, e.status || 500, { error: e.message }); }
       }
       const b = await body(req);
       if (url.pathname === '/api/client-log') return json(res, 200, { ok: true, n: clientLog(b, req) });   // optional diagnostics, see clientLog

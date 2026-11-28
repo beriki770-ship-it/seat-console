@@ -1016,18 +1016,26 @@ body.desktop #desktop { display:flex; flex-direction:column; flex:1; min-height:
 .dk-kbin { position:fixed; left:0; bottom:0; width:1px; height:1px; opacity:0; border:0; padding:0; resize:none; font-size:16px; }   /* 16px: no zoom when the phone keyboard opens */
 .dk-clip { flex:none; font-size:13px; }
 .dk-clip > summary { cursor:pointer; color:var(--mute); }
+.dk-up { display:inline-block; margin:6px 0; padding:10px 14px; border:1px solid var(--line); border-radius:8px; background:var(--panel); cursor:pointer; }   /* Files: the file input's label is the button */
+.dk-fh { display:block; color:var(--mute); margin:6px 0 4px; }
+#dkflist { display:flex; flex-direction:column; gap:4px; max-height:30vh; overflow:auto; }
+.dk-f { display:flex; justify-content:space-between; gap:8px; text-align:start; min-height:40px; }
+.dk-f span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .dk-f small { flex:none; color:var(--mute); }
+.dk-get { display:flex; gap:6px; margin-top:6px; } .dk-get input { flex:1; min-width:0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font-size:16px; }
 .dk-clip textarea { display:block; width:100%; box-sizing:border-box; margin:6px 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink); font:inherit; font-size:16px; }
 /* Full screen (phone: on open, see desktop.js deskFull): only the screen and one row below it (body.desktop: beats the padded flex rule above), keys on the left, Exit full screen on the right */
 body.desktop #desktop:fullscreen { display:grid; grid-template-columns:1fr auto; grid-template-rows:minmax(0, 1fr) auto; gap:4px; padding:0 0 4px; background:#111; }
 body.desktop #desktop:fullscreen > #dkscreen { grid-area:1 / 1 / 2 / 3; border-radius:0; }
 body.desktop #desktop:fullscreen > .dk-keys { grid-area:2 / 1; flex-wrap:nowrap; padding-inline-start:4px; }
 body.desktop #desktop:fullscreen > .dk-bar { grid-area:2 / 2; padding-inline-end:4px; }
-body.desktop #desktop:fullscreen > .phead, body.desktop #desktop:fullscreen > .dk-clip, body.desktop #desktop:fullscreen #dkstate, body.desktop #desktop:fullscreen .dk-vo, body.desktop #desktop:fullscreen #dkre { display:none; }
+body.desktop #desktop:fullscreen > .phead, body.desktop #desktop:fullscreen > .dk-clip:not([open]), body.desktop #desktop:fullscreen #dkstate, body.desktop #desktop:fullscreen .dk-vo, body.desktop #desktop:fullscreen #dkre { display:none; }
+body.desktop #desktop:fullscreen > .dk-clip[open] { position:absolute; inset-inline:8px; bottom:52px; padding:8px; border-radius:8px; background:var(--bg); }   /* Paste's fallback box, over the screen */
 body.desktop #desktop:fullscreen .dk-keys button, body.desktop #desktop:fullscreen .dk-bar button { min-height:40px; padding:4px 12px; }
 @media (max-width: 700px) {
   body.desktop #desktop { padding:8px 8px 10px; gap:6px; }
   .dk-bar button, .dk-keys button { min-height:44px; }
   .dk-keys button { flex:1 1 0; min-width:0; }
+  .dk-keys button { padding-inline:4px; } .dk-keys #dkkb { flex-grow:1.7; } .dk-keys #dkpaste, .dk-keys #dkfilesbtn { flex:0 0 44px; } .dk-keys .dk-lbl { display:none; }   /* a narrow phone: Paste is its icon only, so "Keyboard" keeps room */
 }
 
 /* ---- header line 2 + compact composer (on the phone the title was one letter and the composer ate half the screen) ----

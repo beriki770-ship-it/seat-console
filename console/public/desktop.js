@@ -20,9 +20,11 @@ function showDesktop() {
     + `<label class="dk-vo"><input type="checkbox" id="dkview"> ${t('desktop.viewOnly')}</label><button type="button" id="dkfull">${t(document.fullscreenElement === DESK ? 'desktop.exitFull' : 'desktop.fullscreen')}</button></div>`
     + `<div id="dkscreen" data-guide="desktop-screen"></div>`
     + `<div class="dk-keys" role="toolbar" aria-label="${t('desktop.keys')}"><button type="button" id="dkkb">${t('desktop.keyboard')}</button>`
-    + `<button type="button" data-dmod="ctrl" aria-pressed="false">Ctrl</button><button type="button" data-dmod="alt" aria-pressed="false">Alt</button><button type="button" data-dkey="esc">Esc</button><button type="button" data-dkey="tab">Tab</button></div>`
+    + `<button type="button" data-dmod="ctrl" aria-pressed="false">Ctrl</button><button type="button" data-dmod="alt" aria-pressed="false">Alt</button><button type="button" data-dkey="esc">Esc</button><button type="button" data-dkey="tab">Tab</button><button type="button" id="dkpaste" aria-label="${t('desktop.pasteBtn')}" title="${t('desktop.pasteBtn')}">📋<span class="dk-lbl"> ${t('desktop.pasteBtn')}</span></button><button type="button" id="dkfilesbtn" aria-label="${t('desktop.files')}" title="${t('desktop.files')}">📁<span class="dk-lbl"> ${t('desktop.files')}</span></button></div>`
     + `<textarea id="dkkbin" class="dk-kbin" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="${t('desktop.keyboard')}"></textarea>`
-    + `<details class="dk-clip"><summary>${t('desktop.paste')}</summary><textarea id="dkclip" dir="auto" rows="2" placeholder="${t('desktop.pastePh')}"></textarea><button type="button" id="dkclipgo">${t('desktop.pasteSend')}</button></details>`;
+    + `<details class="dk-clip"><summary>${t('desktop.paste')}</summary><textarea id="dkclip" dir="auto" rows="2" placeholder="${t('desktop.pastePh')}"></textarea><button type="button" id="dkclipgo">${t('desktop.pasteSend')}</button></details>`
+    + `<details class="dk-clip dk-files" id="dkfiles"><summary>${t('desktop.files')}</summary><label class="dk-up"><input type="file" id="dkupin" multiple hidden>📤 ${t('desktop.sendFile')}</label>`
+    + `<small class="dk-fh">${t('desktop.recent')}</small><div id="dkflist"></div><form id="dkgetf" class="dk-get"><input id="dkpath" dir="ltr" autocapitalize="off" spellcheck="false" placeholder="${t('desktop.getPh')}" aria-label="${t('desktop.getPh')}"><button type="submit">⬇ ${t('desktop.get')}</button></form></details>`;
 }
 const deskState = (text, retry) => { const s = $('dkstate'); if (s) s.textContent = text; const r = $('dkre'); if (r) r.hidden = !retry; };
 function deskStop() { const r = deskRfb; deskRfb = null; if (r) try { r.disconnect(); } catch {} deskMods = { ctrl: false, alt: false }; }
@@ -76,6 +78,51 @@ function deskInput() {
   deskPrev = v;
   if (!deskComposing && (v.length < 4 || v.length > 60)) el.value = deskPrev = DESK_PAD;   // never reset in the middle of a composed word
 }
+// Paste: what the phone has copied, text or an image, goes onto the server's clipboard and is pasted there at once
+// (server: /api/desktop/paste, xclip + Ctrl+V; Hebrew works). Reading the clipboard needs the browser's permission and a tap; refused or
+// unsupported -> the paste box opens, its Send does the same.
+async function deskPasteSend(data, type) {
+  const r = await fetch('/api/desktop/paste' + (type ? '?type=' + encodeURIComponent(type) : ''), { method: 'POST', headers: { 'X-Seat-Token': TOKEN }, body: data }).catch(() => null);
+  deskState(r?.ok ? t('desktop.pasteDone') : t('desktop.failed'));
+}
+async function deskPaste() {
+  if (!deskRfb || deskRfb.viewOnly) return;
+  let data = null, type = '';
+  try {
+    if (navigator.clipboard?.read) {
+      for (const it of await navigator.clipboard.read()) {
+        const img = it.types.find((x) => /^image\/(png|jpeg|gif|webp)$/.test(x));
+        if (img) { data = await it.getType(img); type = img; break; }
+        if (it.types.includes('text/plain')) { data = await (await it.getType('text/plain')).text(); break; }
+      }
+    } else data = await navigator.clipboard.readText();
+  } catch { data = null; type = 'denied'; }
+  if (type === 'denied' || !navigator.clipboard) { const d = $('desktop').querySelector('.dk-clip'); d.open = true; $('dkclip').focus(); return deskState(t('desktop.pasteDenied')); }
+  if (!data || (typeof data === 'string' && !data.length)) return deskState(t('desktop.pasteEmpty'));
+  deskPasteSend(data, type);
+}
+// Files: device -> server into ~/Downloads (its path lands on the server's clipboard, ready for a file dialog), and
+// server -> device: the newest files in ~/Downloads and ~/Desktop, or any path under the home folder (server: /api/desktop/upload|files|file).
+const deskSize = (n) => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+async function deskFilesList() {
+  const r = await fetch('/api/desktop/files', { method: 'POST', headers: { 'X-Seat-Token': TOKEN } }).then((x) => x.json(), () => null), el = $('dkflist'); if (!el) return;
+  el.innerHTML = r?.files?.length ? r.files.map((f) => `<button type="button" class="dk-f" data-dget="${esc(f.path)}"><span dir="auto">⬇ ${esc(f.name)}</span><small>${deskSize(f.size)} · ${esc(f.path.split('/')[1])}</small></button>`).join('') : `<small class="dk-fh">${t('desktop.noFiles')}</small>`;
+}
+async function deskUpload(files) {
+  for (const f of files) {
+    deskState(t('desktop.uploading', { name: f.name }));
+    const r = await fetch('/api/desktop/upload?name=' + encodeURIComponent(f.name), { method: 'POST', headers: { 'X-Seat-Token': TOKEN }, body: f }).then((x) => x.json(), () => null);
+    if (!r?.ok) return deskState(r?.error || t('desktop.failed'));
+    deskState(t('desktop.sent', { path: r.path }));
+  }
+  deskFilesList();
+}
+async function deskDownload(p) {
+  const r = await fetch('/api/desktop/ticket?path=' + encodeURIComponent(p), { method: 'POST', headers: { 'X-Seat-Token': TOKEN } }).then((x) => (x.ok ? x.json() : null), () => null);
+  if (!r?.ticket) return deskState(t('desktop.notFound'));
+  const a = document.createElement('a'); a.href = '/api/desktop/file?ticket=' + r.ticket; a.download = r.name; document.body.appendChild(a); a.click(); a.remove();   // the browser streams it to its downloads
+  deskState(t('desktop.got', { name: r.name }));
+}
 // wiring at load: this file runs before app.js (so app.js can call closeDesktop at any time), hence getElementById and not app.js's $ here
 const DESK = document.getElementById('desktop');
 // Linux with xrdp + x11vnc + novnc only (desktop.mjs available): elsewhere the button is hidden, #desktop still says why it cannot connect.
@@ -92,9 +139,17 @@ DESK.onclick = (e) => {
   if (m && deskRfb && !deskRfb.viewOnly) { deskMods[m] = !deskMods[m]; e.target.setAttribute('aria-pressed', String(deskMods[m])); deskRfb.sendKey(m === 'ctrl' ? 0xffe3 : 0xffe9, m === 'ctrl' ? 'ControlLeft' : 'AltLeft', deskMods[m]); return; }
   const k = e.target.closest('[data-dkey]')?.dataset.dkey;
   if (k) return deskKey(k === 'esc' ? 0xff1b : 0xff09, k === 'esc' ? 'Escape' : 'Tab');
-  if (e.target.id === 'dkclipgo') { const v = $('dkclip').value; if (v && deskRfb) { deskRfb.clipboardPasteFrom(v); $('dkclip').value = ''; deskState(t('desktop.pasted')); } }
+  if (e.target.closest('#dkpaste')) return deskPaste();
+  if (e.target.closest('#dkfilesbtn')) { const d = $('dkfiles'); d.open = !d.open; return; }
+  const g = e.target.closest('[data-dget]')?.dataset.dget; if (g) return deskDownload(g);
+  if (e.target.id === 'dkclipgo') { const v = $('dkclip').value; if (v && deskRfb && !deskRfb.viewOnly) { $('dkclip').value = ''; deskPasteSend(v, ''); } }   // the box: same path as Paste (pasted there at once, Hebrew too)
 };
-DESK.onchange = (e) => { if (e.target.id === 'dkview' && deskRfb) deskRfb.viewOnly = e.target.checked; };
+DESK.onchange = (e) => { if (e.target.id === 'dkview' && deskRfb) deskRfb.viewOnly = e.target.checked; if (e.target.id === 'dkupin' && e.target.files.length) { deskUpload([...e.target.files]); e.target.value = ''; } };
+DESK.addEventListener('toggle', (e) => { if (e.target.id === 'dkfiles' && e.target.open) deskFilesList(); }, true);   // the list is read each time the panel opens
+DESK.addEventListener('submit', (e) => { if (e.target.id !== 'dkgetf') return; e.preventDefault(); const p = $('dkpath').value.trim(); if (p) deskDownload(p); });
+// a computer: files dropped on the screen go to the server like the Send a file button
+DESK.addEventListener('dragover', (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); });
+DESK.addEventListener('drop', (e) => { if (!e.dataTransfer?.files?.length) return; e.preventDefault(); deskUpload([...e.dataTransfer.files]); });
 DESK.addEventListener('input', (e) => { if (e.target.id === 'dkkbin') deskInput(); });
 DESK.addEventListener('compositionstart', () => { deskComposing = true; });
 DESK.addEventListener('compositionend', () => { deskComposing = false; });

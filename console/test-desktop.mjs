@@ -104,11 +104,57 @@ if (LINUX && process.env.DESKTOP_SKIP_LIVE !== '1') {
       assert.equal((await get('/novnc/core/rfb.js')).code, fs.existsSync('/usr/share/novnc/core/rfb.js') ? 200 : 404);   // 404 without the novnc package
       for (const p of ['/novnc/vnc.html', '/novnc/core/../../../etc/passwd', '/novnc/core/%2e%2e/%2e%2e/etc/hostname.js', '/novnc/utils/novnc_proxy']) assert.notEqual((await get(p)).code, 200, p);
     });
+    // Files panel: device -> ~/Downloads (no overwrite), the recent list, server -> device; page only; never outside home or through a hidden folder
+    const rq = (method, p, headers = {}, body) => new Promise((ok) => { const r = http.request({ host: '127.0.0.1', port: PORT, path: p, method, headers }, (res) => { const c = []; res.on('data', (x) => c.push(x)); res.on('end', () => ok({ code: res.statusCode, body: Buffer.concat(c), h: res.headers })); }); r.on('error', (e) => ok({ code: 'err ' + e.message })); r.end(body); });
+    const PG = { 'X-Seat-Token': TOKEN, Origin: ORIGIN, Referer: ORIGIN + '/' }, HOMEDIR = path.join(WORK, 'home');
+    await t('files: upload lands in ~/Downloads, a second one with the same name is kept apart', async () => {
+      const a = await rq('POST', '/api/desktop/upload?name=' + encodeURIComponent('דוח.pdf'), PG, Buffer.from('one')), b = await rq('POST', '/api/desktop/upload?name=' + encodeURIComponent('דוח.pdf'), PG, Buffer.from('two'));
+      assert.equal(a.code, 200, String(a.body)); assert.equal(JSON.parse(a.body).path, '~/Downloads/דוח.pdf'); assert.equal(JSON.parse(b.body).path, '~/Downloads/דוח (2).pdf');
+      assert.equal(fs.readFileSync(path.join(HOMEDIR, 'Downloads', 'דוח.pdf'), 'utf8'), 'one'); assert.equal(fs.readFileSync(path.join(HOMEDIR, 'Downloads', 'דוח (2).pdf'), 'utf8'), 'two');
+      assert.equal((await rq('POST', '/api/desktop/upload?name=x', { 'X-Seat-Token': TOKEN }, Buffer.from('x'))).code, 403, 'not from the page');
+      // paste is reachable (never sent for real here: it would press Ctrl+V on the live session): a wrong type = 415, not from the page = 403
+      assert.equal((await rq('POST', '/api/desktop/paste?type=text/html', PG, Buffer.from('x'))).code, 415); assert.equal((await rq('POST', '/api/desktop/paste', { 'X-Seat-Token': TOKEN }, Buffer.from('x'))).code, 403);
+    });
+    await t('files: recent list + download byte for byte; hidden folders, outside home and no token refused', async () => {
+      const l = await rq('POST', '/api/desktop/files', PG); assert.equal(l.code, 200); assert.ok(JSON.parse(l.body).files.some((f) => f.path === '~/Downloads/דוח (2).pdf'));
+      const tk = JSON.parse((await rq('POST', '/api/desktop/ticket?path=' + encodeURIComponent('~/Downloads/דוח.pdf'), PG)).body).ticket;
+      const d = await rq('GET', '/api/desktop/file?ticket=' + tk); assert.equal(d.code, 200);
+      assert.equal((await rq('GET', '/api/desktop/file?ticket=' + tk)).code, 404, 'a ticket is used once'); assert.equal((await rq('GET', '/api/desktop/file?path=~/Downloads/x')).code, 404, 'no ticket'); assert.equal(String(d.body), 'one'); assert.match(d.h['content-disposition'], /attachment; filename\*=UTF-8''/);
+      fs.mkdirSync(path.join(HOMEDIR, '.ssh'), { recursive: true }); fs.writeFileSync(path.join(HOMEDIR, '.ssh', 'id'), 'secret');
+      for (const p of ['~/.ssh/id', '/etc/hostname', '~/../../etc/hostname', '~/Downloads']) assert.equal((await rq('POST', '/api/desktop/ticket?path=' + encodeURIComponent(p), PG)).code, 404, p);
+      assert.equal((await rq('POST', '/api/desktop/files', { Origin: ORIGIN, Referer: ORIGIN + '/' })).code, 403, 'no token');
+    });
   } finally {
     srv.kill(); await sleep(500);
     const sockDir = path.join(process.env.XDG_RUNTIME_DIR || (fs.existsSync(`/run/user/${process.getuid()}`) ? `/run/user/${process.getuid()}` : os.tmpdir()), `seat-console-desktop-${PORT}`);   // the instance's x11vnc goes with it (exit handler); this catches a straggler
     for (const pid of fs.readdirSync('/proc').filter((x) => /^\d+$/.test(x))) { try { if (fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(sockDir)) process.kill(+pid); } catch {} }
     fs.rmSync(sockDir, { recursive: true, force: true }); fs.rmSync(WORK, { recursive: true, force: true });
+  }
+}
+
+// ---- Paste (desktop.mjs paste): on a throwaway Xvfb, never the real session. Hebrew text and a PNG land on its clipboard byte for byte,
+// and the Ctrl+V key press runs. Skipped where Xvfb / xclip / xdotool are missing (CI on Windows / macOS).
+{
+  const has = (b) => process.env.PATH.split(path.delimiter).some((d) => fs.existsSync(path.join(d, b)));
+  if (LINUX && has('Xvfb') && has('xclip') && has('xdotool')) {
+    const disp = ':' + (90 + Math.floor(Math.random() * 9)), xv = spawn('Xvfb', [disp, '-screen', '0', '640x480x24'], { stdio: 'ignore' });
+    const { execFileSync } = await import('node:child_process'), env = { ...process.env, DISPLAY: disp };
+    try {
+      for (let i = 0; i < 50 && !fs.existsSync('/tmp/.X11-unix/X' + disp.slice(1)); i++) await sleep(100);
+      const dk = createDesktop({ auth: () => true, dir: os.tmpdir(), display: () => disp });
+      await t('paste: Hebrew text onto the session clipboard (UTF-8), Ctrl+V pressed', async () => {
+        const text = 'שלום עולם – hello 123'; await dk.paste(Buffer.from(text), '');
+        assert.equal(execFileSync('xclip', ['-selection', 'clipboard', '-o'], { env, encoding: 'utf8', timeout: 5000 }), text);
+      });
+      await t('paste: an image as image/png, byte for byte', async () => {
+        const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex'); await dk.paste(png, 'image/png');
+        assert.ok(execFileSync('xclip', ['-selection', 'clipboard', '-t', 'image/png', '-o'], { env, timeout: 5000 }).equals(png));
+      });
+      await t('paste: no RDP session = 409, nothing run', async () => {
+        const none = createDesktop({ auth: () => true, dir: os.tmpdir(), display: () => null });
+        await assert.rejects(none.paste(Buffer.from('x'), ''), (e) => e.status === 409);
+      });
+    } finally { xv.kill(); }   // its xclip exits with the display (never pkill: the real session's xclip would go too)
   }
 }
 
